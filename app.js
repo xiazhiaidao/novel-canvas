@@ -430,8 +430,38 @@ function highlightMatch(idx) {
     : (world.querySelector(`.node[data-id="${id}"]`) || document.querySelector(`#axisNodes .node[data-id="${id}"]`));
   if (el) {
     el.classList.add('hit');
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // 轴视图：transform 平移缩放容器，scrollIntoView 移不动视野 → 手动平移到命中节点居中
+    if (axisFirst && el.closest('#axisNodes')) axisPanToNode(el);
+    else el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     document.getElementById('searchCount').textContent = '🔍 ' + (currentMatch + 1) + '/' + matchIndices.length;
+  }
+}
+// 进度轴视图内：把视野平移到某个节点居中（搜索命中定位）
+function axisPanToNode(el) {
+  const g = axisGeom;
+  const axisView = document.getElementById('axisView');
+  if (!g || !axisView) return;
+  const vw = axisView.offsetWidth || 1000;
+  const vh = axisView.offsetHeight || 600;
+  if (axisViewT.scale < 0.35) axisViewT.scale = 0.55; // 过小比例 → 放大到可读
+  const cx = (parseFloat(el.style.left) || 0) + (el.offsetWidth || 60) / 2;
+  const cy = (parseFloat(el.style.top) || 0) + (el.offsetHeight || 24) / 2;
+  axisViewT.x = vw / 2 - cx * axisViewT.scale;
+  axisViewT.y = vh / 2 - cy * axisViewT.scale;
+  applyAxisTransform();
+}
+// 搜索框键盘导航：Enter/↓ 下一个命中，↑/Shift+Enter 上一个，Esc 清空
+function searchNav(e) {
+  if (!matchIndices.length) return;
+  if (e.key === 'Enter' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    highlightMatch(currentMatch + 1);
+  } else if (e.key === 'ArrowUp' || (e.key === 'Enter' && e.shiftKey)) {
+    e.preventDefault();
+    highlightMatch(currentMatch - 1);
+  } else if (e.key === 'Escape') {
+    search.value = '';
+    applyFilters();
   }
 }
 function clearHighlight() {
@@ -685,16 +715,32 @@ function updateEgoHighlight() {
 // ── 关系矩阵（密集关系用表格看）─────────────────────────────
 let matrixMode = 'roleChapter';
 
+// 命中检测：返回匹配到的别名列表（含出现次数），如 ['莫余×3','阿余×1']；无命中返回 []
+function matrixHits(rText, title) {
+  const out = [];
+  for (const al of entityAliases(title)) {
+    if (al.length < 2) continue;
+    let cnt = 0, idx = 0;
+    while ((idx = rText.indexOf(al, idx)) !== -1) { cnt++; idx += al.length; }
+    if (cnt) out.push(al + '×' + cnt);
+  }
+  return out;
+}
+
 function buildMatrixTable(rowTitle, colTitle, rowNodes, colNodes, matchFn) {
   let html = '<table class="matrixTable"><thead><tr><th>' + escapeHtml(rowTitle) + ' \\ ' + escapeHtml(colTitle) + '</th>';
-  for (const c of colNodes) html += '<th title="' + escapeHtml(c.title) + '">' + escapeHtml(c.title) + '</th>';
+  for (const c of colNodes) html += '<th class="mxColHead" data-id="' + escapeHtml(c.id) + '" title="点击查看：' + escapeHtml(c.title) + '">' + escapeHtml(c.title) + '</th>';
   html += '</tr></thead><tbody>';
   for (const r of rowNodes) {
-    html += '<tr><th title="' + escapeHtml(r.title) + '">' + escapeHtml(r.title) + '</th>';
+    html += '<tr><th class="mxRowHead" data-id="' + escapeHtml(r.id) + '" title="点击查看：' + escapeHtml(r.title) + '">' + escapeHtml(r.title) + '</th>';
     const rText = (r.content || '') + ' ' + (r.title || '');
     for (const c of colNodes) {
-      const hit = matchFn(r, c, rText);
-      html += '<td class="center' + (hit ? ' hitCell' : '') + '">' + (hit ? '✓' : '') + '</td>';
+      const hits = matchFn(r, c, rText);
+      const hit = hits.length > 0;
+      const tip = hit
+        ? '命中：' + hits.join('、') + (matrixMode === 'roleChapter' || matrixMode === 'foreshadowChapter' ? '\n点击跳到' + escapeHtml(r.title) : '\n点击查看' + escapeHtml(r.title))
+        : '';
+      html += '<td class="center' + (hit ? ' hitCell' : '') + '" data-row="' + escapeHtml(r.id) + '" data-col="' + escapeHtml(c.id) + '" title="' + tip + '">' + (hit ? '✓' + (hits.length > 1 ? hits.length : '') : '') + '</td>';
     }
     html += '</tr>';
   }
@@ -713,22 +759,24 @@ function renderMatrix() {
   let html = '';
   if (matrixMode === 'roleChapter') {
     html = chapters.length && roles.length
-      ? buildMatrixTable('章节', '角色', chapters, roles, (r, c, rText) => entityAliases(c.title).some(al => al.length >= 2 && rText.includes(al)))
+      ? buildMatrixTable('章节', '角色', chapters, roles, (r, c, rText) => matrixHits(rText, c.title))
       : '<div class="empty">还没有章节或角色数据</div>';
   } else if (matrixMode === 'foreshadowChapter') {
     html = chapters.length && foreshadows.length
-      ? buildMatrixTable('章节', '伏笔', chapters, foreshadows, (r, c, rText) => entityAliases(c.title).some(al => al.length >= 2 && rText.includes(al)))
+      ? buildMatrixTable('章节', '伏笔', chapters, foreshadows, (r, c, rText) => matrixHits(rText, c.title))
       : '<div class="empty">还没有章节或伏笔数据</div>';
   } else if (matrixMode === 'settingRole') {
     html = settings.length && roles.length
       ? buildMatrixTable('设定', '角色', settings, roles, (r, c, rText) => {
           const cText = (c.content || '') + ' ' + (c.title || '');
-          return entityAliases(c.title).some(al => al.length >= 2 && rText.includes(al)) ||
-                 entityAliases(r.title).some(al => al.length >= 2 && cText.includes(al));
+          return [...matrixHits(rText, c.title), ...matrixHits(cText, r.title)];
         })
       : '<div class="empty">还没有设定或角色数据</div>';
   }
   body.innerHTML = html;
+  // 提示行：✓=命中，数字=命中别名数；点格/表头可跳转或查看
+  const tip = document.getElementById('matrixTip');
+  if (tip) tip.style.display = 'block';
 }
 
 function openMatrix() {
@@ -740,6 +788,44 @@ function openMatrix() {
 function closeMatrix() {
   const m = document.getElementById('matrixModal');
   if (m) m.classList.remove('show');
+}
+// 矩阵点击：✓ 格 → 章节模式跳章 / 设定×角色看行节点；表头 → 查看节点
+function wireMatrixClicks() {
+  const body = document.getElementById('matrixBody');
+  if (!body || body._mxWired) return;
+  body._mxWired = true;
+  body.addEventListener('click', (e) => {
+    const cell = e.target.closest('td.hitCell');
+    if (cell) {
+      e.stopPropagation();
+      const rn = nodeMap[cell.dataset.row], cn = nodeMap[cell.dataset.col];
+      if (!rn) return;
+      if (matrixMode === 'roleChapter' || matrixMode === 'foreshadowChapter') {
+        closeMatrix();
+        const ch = nodeAxisData(rn).chapter;
+        if (ch != null) axisJumpTo(ch);
+        showDetail(rn);
+      } else {
+        closeMatrix();
+        showDetail(rn);
+      }
+      return;
+    }
+    const rowHead = e.target.closest('th.mxRowHead');
+    if (rowHead) {
+      e.stopPropagation();
+      const n = nodeMap[rowHead.dataset.id];
+      if (n) { closeMatrix(); showDetail(n); }
+      return;
+    }
+    const colHead = e.target.closest('th.mxColHead');
+    if (colHead) {
+      e.stopPropagation();
+      const n = nodeMap[colHead.dataset.id];
+      if (n) { closeMatrix(); showDetail(n); }
+      return;
+    }
+  });
 }
 
 // ── 状态看板（章节 / 伏笔）─────────────────────────────────
@@ -1950,10 +2036,23 @@ function renderAxisTimelinePins() {
   wrap.innerHTML = '';
   if (!axisGeom) return;
   const g = axisGeom;
+  const placed = []; // 已放置 pin 的占用区（用于同位置堆叠错位）
+  const PIN_H = 22, PIN_W = 150, STACK_GAP = 4;
   for (const tn of timelineNodes) {
     const ch = Number(tn.chapter) || 0;
     if (ch < 1 || ch > g.maxChapter) continue; // 无章号/超范围：不在轴上画
     const prog = timelineNodeProgress(tn, g.maxChapter);
+    const baseX = g.chapterStart[ch] + g.chapterW[ch] / 2;
+    const baseY = yForProgress(prog) - PIN_H / 2;
+    // 同章节/同位置堆叠：与已放置 pin 横向重叠（同一章列 ±60px 内）→ 向下错位
+    let y = baseY;
+    let guard = 0;
+    while (guard < 20) {
+      const clash = placed.some(p => Math.abs(p.x - baseX) < 60 && y < p.y + PIN_H + STACK_GAP && y + PIN_H + STACK_GAP > p.y);
+      if (!clash) break;
+      y += PIN_H + STACK_GAP;
+      guard++;
+    }
     const pin = document.createElement('div');
     pin.className = 'tlPin';
     pin.dataset.id = tn.id;
@@ -1961,11 +2060,12 @@ function renderAxisTimelinePins() {
     pin.dataset.progress = prog;
     pin.innerHTML = '<span class="tlPinIcon">⚑</span><span class="tlPinTitle">' + escapeHtml(tn.title) + '</span>';
     pin.title = '第' + ch + '章 · ' + prog + '% · ' + tn.title + (tn.note ? '：' + tn.note : '') + '\n拖动调整位置（左右=章号，上下=剧情推进）';
-    pin.style.left = (g.chapterStart[ch] + g.chapterW[ch] / 2) + 'px';
-    pin.style.top = (yForProgress(prog) - 10) + 'px';
+    pin.style.left = baseX + 'px';
+    pin.style.top = y + 'px';
     pin.style.transform = 'translateX(-50%)';
     wireTimelinePinDrag(pin, tn);
     wrap.appendChild(pin);
+    placed.push({ x: baseX, y, w: PIN_W, h: PIN_H });
   }
 }
 // pin 拖动：水平→章号，垂直→剧情推进；释放后写回 timelineNodes 并持久化
@@ -2490,6 +2590,26 @@ function renderAxisView() {
     const withCh = geom.items.length - unrecCount;
     const segText = geom.segSize > 1 ? ' · ' + geom.nSegs + '段' : '';
     statsEl.textContent = '共' + maxChapter + '章' + segText + ' · ' + withCh + '已识别 · ' + unrecCount + '未分类';
+  }
+  // 空项目/无已识别内容引导：一个节点都没有时给出明确指引（模板项目也是空轴）
+  const isEmpty = geom.items.length === 0 || maxChapter === 0;
+  const oldEmpty = axisView.querySelector('.axisEmpty');
+  if (oldEmpty) oldEmpty.remove();
+  if (isEmpty) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'axisEmpty';
+    emptyEl.innerHTML =
+      '<div class="axisEmptyIcon">🗂️</div>' +
+      '<div class="axisEmptyTitle">这个项目还没有可显示的内容</div>' +
+      '<div class="axisEmptyText">进度轴按「章节」展开：请确认项目里有正文章节文件（如 <code>正文/第1章 xxx.md</code>），' +
+      '或在左侧「文件」面板打开项目文件。若章节文件是其它命名/目录，可在项目根目录的 <code>novel-canvas.config.json</code> 里调整扫描规则。</div>' +
+      '<button class="axisEmptyBtn" id="axisEmptyFileBtn">打开文件面板</button>';
+    const fileBtn = emptyEl.querySelector('#axisEmptyFileBtn');
+    if (fileBtn) fileBtn.addEventListener('click', () => {
+      const filesActivity = document.getElementById('activityFiles');
+      if (filesActivity) filesActivity.click();
+    });
+    axisView.appendChild(emptyEl);
   }
   initAxisBarEvents();
   syncAxisYModeSel();
@@ -4183,7 +4303,8 @@ projectSelect.onchange = () => {
   currentProject = projectSelect.value;
   chatJustSwitched = true;
   resetFileEditor();
-  loadData().then(() => fitView()).catch(e => showToast('切换项目失败：' + e.message, 'error'));
+  // loadData 内部已进入轴视图并 fitAxisView，无需再调用自由视图的 fitView（操作隐藏的 #world，无意义）
+  loadData().catch(e => showToast('切换项目失败：' + e.message, 'error'));
   loadSkills();
   loadPendingProposals();
 };
@@ -4246,6 +4367,7 @@ document.querySelectorAll('.matrixTab').forEach(tab => {
     renderMatrix();
   });
 });
+wireMatrixClicks();
 const boardBtn = document.getElementById('boardBtn');
 if (boardBtn) boardBtn.addEventListener('click', openBoard);
 const boardClose = document.getElementById('boardClose');

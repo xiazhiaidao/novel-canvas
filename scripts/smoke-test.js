@@ -752,6 +752,81 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(未识别隐藏/恢复)' : v; } catch (_) { return v; }
   });
+  await check('关系矩阵可交互(命中计数/点击跳章)', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        const btn = document.getElementById('matrixBtn');
+        if (!btn) return JSON.stringify({ ok: false, why: 'no matrix btn' });
+        btn.click();
+        await sleep(250);
+        const cells = Array.from(document.querySelectorAll('#matrixBody td.hitCell'));
+        if (!cells.length) return JSON.stringify({ ok: false, why: 'no hit cells' });
+        const first = cells[0];
+        const clickableOk = getComputedStyle(first).cursor === 'pointer';
+        const hasCountTip = /命中：/.test(first.title || '');
+        const hasData = !!(first.dataset.row && first.dataset.col);
+        const modalOpen = document.getElementById('matrixModal').classList.contains('show');
+        // 点击第一个命中格：应关闭矩阵并打开详情
+        first.click();
+        await sleep(300);
+        const modalClosed = !document.getElementById('matrixModal').classList.contains('show');
+        const detailTitle = (document.querySelector('#detail h2') || {}).textContent || '';
+        const ok = clickableOk && hasCountTip && hasData && modalOpen && modalClosed && !!detailTitle;
+        return JSON.stringify({ ok, clickableOk, hasCountTip, hasData, modalOpen, modalClosed, detailTitle });
+      } catch (e) {
+        return JSON.stringify({ ok: false, why: 'ERR ' + e.message });
+      }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(✓命中/点击跳章)' : v; } catch (_) { return v; }
+  });
+  await check('搜索键盘导航+轴视图平移定位', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        // 确保轴视图可见（冒烟测试前置可能已退出轴视图）——不保存，避免污染布局
+        if (typeof viewMode !== 'undefined' && viewMode !== 'axis') enterAxisView(false);
+        const s = document.getElementById('search');
+        const axisIds = () => new Set(Array.from(document.querySelectorAll('#axisNodes .node')).map(el => el.dataset.id));
+        // 选一个轴内章节节点标题的 2 字片段作为查询词（保证至少一个命中在轴内）
+        const chap = Array.from(document.querySelectorAll('#axisNodes .node')).find(el => (nodeMap[el.dataset.id] || {}).label === '章节');
+        if (!chap) return JSON.stringify({ ok: false, why: 'no axis chapter node' });
+        const title = nodeMap[chap.dataset.id].title;
+        const m = title.match(/[^\d\\-_第章：: ]{2,}/);
+        const q = (m ? m[0].slice(0, 2) : title.slice(-2));
+        s.value = q;
+        s.dispatchEvent(new Event('input'));
+        await sleep(300);
+        if (!matchIndices.length) return JSON.stringify({ ok: false, why: 'no matches for ' + q });
+        // 人为把视野挪走，再按 ↓ 循环导航，直到当前命中落在轴内节点上
+        axisViewT.x = -3000; axisViewT.y = -300;
+        applyAxisTransform();
+        let panMovedOk = false, hitExists = false, inView = false;
+        for (let k = 0; k <= matchIndices.length; k++) {
+          s.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+          await sleep(120);
+          const hitEl = document.querySelector('#axisNodes .node.hit');
+          if (!hitEl) continue;
+          hitExists = true;
+          panMovedOk = Math.abs(axisViewT.x + 3000) > 50 || Math.abs(axisViewT.y + 300) > 50;
+          const r = hitEl.getBoundingClientRect();
+          const vr = document.getElementById('axisView').getBoundingClientRect();
+          inView = r.left >= vr.left - 10 && r.right <= vr.right + 10 && r.top >= vr.top - 10 && r.bottom <= vr.bottom + 10;
+          if (panMovedOk && inView) break;
+        }
+        // 清理：清空搜索并恢复视野
+        s.value = '';
+        s.dispatchEvent(new Event('input'));
+        axisViewT.x = 0; axisViewT.y = 0;
+        applyAxisTransform();
+        await sleep(100);
+        return JSON.stringify({ ok: panMovedOk && hitExists && inView, q, panMovedOk, hitExists, inView });
+      } catch (e) {
+        return JSON.stringify({ ok: false, why: 'ERR ' + e.message });
+      }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(键盘导航+视野跟随)' : v; } catch (_) { return v; }
+  });
   await check('自动精修 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/consistency/polish', {
       method: 'POST',

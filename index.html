@@ -521,6 +521,20 @@
     background: var(--panel); border: 1px solid var(--panel-border);
     padding: 4px 10px; border-radius: 8px; z-index: 3; pointer-events: none;
   }
+  /* 空项目引导：轴视图无任何可显示内容时的居中提示 */
+  #axisView .axisEmpty {
+    position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+    text-align: center; max-width: 420px; z-index: 4; pointer-events: none;
+  }
+  #axisView .axisEmpty .axisEmptyIcon { font-size: 40px; margin-bottom: 8px; }
+  #axisView .axisEmpty .axisEmptyTitle { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  #axisView .axisEmpty .axisEmptyText { font-size: 12px; color: var(--muted); line-height: 1.7; }
+  #axisView .axisEmpty code { background: rgba(15,23,42,.07); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+  #axisView .axisEmpty .axisEmptyBtn {
+    margin-top: 12px; padding: 7px 16px; border: 1px solid var(--panel-border); border-radius: 10px;
+    background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; pointer-events: auto;
+  }
+  #axisView .axisEmpty .axisEmptyBtn:hover { border-color: var(--accent); color: var(--accent); }
   /* 底部导航条：章号跳转 + 全图 + 章节刻度 + 统计 */
   #axisBar {
     position: absolute; bottom: 0; left: 0; right: 0; height: 38px;
@@ -1287,11 +1301,15 @@
   #settingsPaneAi .row { margin-top: 12px; }
   #settingsPaneAi .row button { flex: 0 0 auto; padding: 9px 14px; }
   .matrixBody { overflow: auto; flex: 1; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(255,255,255,.5); }
+  .matrixTip { font-size: 11px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }
   .matrixTable { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
   .matrixTable th, .matrixTable td { border: 1px solid var(--panel-border); padding: 4px 8px; white-space: nowrap; }
   .matrixTable th { position: sticky; top: 0; background: #f7f8fb; color: var(--muted); font-weight: 600; z-index: 1; }
   .matrixTable td.center { text-align: center; }
-  .matrixTable .hitCell { color: var(--accent); font-weight: 700; }
+  .matrixTable .hitCell { color: var(--accent); font-weight: 700; cursor: pointer; }
+  .matrixTable .hitCell:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .matrixTable .mxRowHead, .matrixTable .mxColHead { cursor: pointer; }
+  .matrixTable .mxRowHead:hover, .matrixTable .mxColHead:hover { color: var(--accent); background: rgba(15,23,42,.06); }
   .boardModal { width: min(1000px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
   .boardSummary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .boardCard { border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px 14px; background: rgba(255,255,255,.55); }
@@ -1813,6 +1831,7 @@
         <button class="matrixTab" data-matrix="foreshadowChapter">伏笔 × 章节</button>
         <button class="matrixTab" data-matrix="settingRole">设定 × 角色</button>
       </div>
+      <div id="matrixTip" class="matrixTip">✓=该章/该设定出现该实体；数字=命中别名数，悬停看明细；点 ✓ 跳转到对应章节，点表头查看节点。</div>
       <div id="matrixBody" class="matrixBody"></div>
     </div>
   </div>
