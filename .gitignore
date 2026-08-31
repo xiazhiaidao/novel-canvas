@@ -1,0 +1,33 @@
+# 本地临时/调试文件
+node_modules/
+release/
+*.log
+_domdump*
+_idcheck*
+_patch_*
+_edge_*
+_cdp_*
+_*.js
+_*.png
+
+# 运行时数据（快照/审计历史）
+.data/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 小说内容与个人数据（若仓库范围意外包含上级目录）
+设定.md
+大纲.md
+正文/
+追踪/
+白球降临/
+*.bak
+小说画布.json
+CLAUDE.md
+.claude/
+.story-deployed
+.obsidian/

@@ -1,0 +1,18 @@
+{
+  "name": "novel-canvas",
+  "version": "1.11.0",
+  "description": "小说画布 - 本地写作工作台（Electron 桌面壳 + 本地服务）",
+  "main": "main.js",
+  "scripts": {
+    "start": "set ELECTRON_RUN_AS_NODE=&& electron .",
+    "dev": "node scripts/dev.js",
+    "test": "node scripts/smoke-test.js",
+    "build": "electron-builder",
+    "build:portable": "node scripts/build-portable.js"
+  },
+  "devDependencies": {
+    "electron": "42.5.0",
+    "electron-builder": "^26.15.3",
+    "electron-packager": "^17.1.2"
+  }
+}

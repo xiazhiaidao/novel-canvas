@@ -1,0 +1,2 @@
+# 统一 LF 行尾，避免 Windows 下 CRLF 转换噪音
+* text=auto eol=lf

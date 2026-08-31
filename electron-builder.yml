@@ -1,0 +1,29 @@
+appId: com.novelcanvas.app
+productName: 小说画布
+directories:
+  output: release
+  buildResources: build
+files:
+  - main.js
+  - preload.js
+  - server.js
+  - index.html
+  - app.js
+  - canvas_upgrade.js
+  - file_editor.js
+  - canvas_theme.css
+  - package.json
+  - README.md
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: 小说画布-${version}-win-x64-portable.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: 小说画布-${version}-win-x64-setup.${ext}
+electronVersion: 42.5.0
