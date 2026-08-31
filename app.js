@@ -1415,6 +1415,11 @@ function showDetail(n) {
 function focusNode(id) {
   const n = nodeMap[id];
   if (!n) return;
+  // 点侧栏节点 = "跳到这个节点"：清掉搜索关键字，避免该节点被搜索过滤隐藏
+  if (search.value) {
+    search.value = '';
+    applyFilters();
+  }
   if (!n.synthetic && collapsedGroups.has(n.label)) toggleGroup(n.label);
   if (!activeCats.has(n.label)) {
     activeCats.add(n.label);
@@ -1422,6 +1427,16 @@ function focusNode(id) {
     applyFilters();
   }
   showDetail(n);
+  // 轴视图（唯一视图）：平移到该节点居中并短暂闪烁提示（对应"左侧栏点击跳转到画布位置"）
+  const axisViewEl = document.getElementById('axisView');
+  const axisFirst = axisViewEl && axisViewEl.style.display !== 'none';
+  const axisEl = axisFirst ? document.querySelector(`#axisNodes .node[data-id="${id}"]`) : null;
+  if (axisEl) {
+    axisPanToNode(axisEl);
+    axisEl.classList.add('flash');
+    setTimeout(() => axisEl.classList.remove('flash'), 900);
+    return;
+  }
   const el = world.querySelector(`.node[data-id="${id}"]`);
   if (el) {
     el.style.transition = 'box-shadow .2s';

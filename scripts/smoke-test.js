@@ -827,6 +827,43 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(键盘导航+视野跟随)' : v; } catch (_) { return v; }
   });
+  await check('左侧栏点击跳转到轴上节点', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        // 确保轴视图可见
+        if (typeof viewMode !== 'undefined' && viewMode !== 'axis') enterAxisView(false);
+        const s = document.getElementById('search');
+        // 找一个轴内节点对应的侧栏项（含卷分组章节项）
+        const axisIds = new Set(Array.from(document.querySelectorAll('#axisNodes .node')).map(el => el.dataset.id));
+        const item = Array.from(document.querySelectorAll('#categoryList .item')).find(b => axisIds.has(b.dataset.id));
+        if (!item) return JSON.stringify({ ok: false, why: 'no sidebar item with axis node' });
+        // 先制造一个活动搜索（验证点击会清空搜索）再人为挪走视野
+        s.value = '不存在关键字xyz';
+        s.dispatchEvent(new Event('input'));
+        await sleep(150);
+        axisViewT.x = -2500; axisViewT.y = -500;
+        applyAxisTransform();
+        const panBefore = { x: axisViewT.x, y: axisViewT.y };
+        item.click();
+        const el = document.querySelector('#axisNodes .node.flash');
+        const flashed = !!el && el.dataset.id === item.dataset.id;
+        const searchCleared = s.value === '';
+        const panMovedOk = Math.abs(axisViewT.x - panBefore.x) > 50 || Math.abs(axisViewT.y - panBefore.y) > 50;
+        const node = document.querySelector('#axisNodes .node[data-id="' + item.dataset.id + '"]');
+        const visibleOk = node ? node.style.display !== 'none' : false;
+        const detailTitle = (document.querySelector('#detail h2') || {}).textContent || '';
+        // 清理：恢复视野、清空搜索
+        axisViewT.x = 0; axisViewT.y = 0;
+        applyAxisTransform();
+        await sleep(100);
+        return JSON.stringify({ ok: flashed && searchCleared && panMovedOk && visibleOk && !!detailTitle, flashed, searchCleared, panMovedOk, visibleOk, detailTitle });
+      } catch (e) {
+        return JSON.stringify({ ok: false, why: 'ERR ' + e.message });
+      }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(侧栏跳轴+闪烁+清搜索)' : v; } catch (_) { return v; }
+  });
   await check('自动精修 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/consistency/polish', {
       method: 'POST',
