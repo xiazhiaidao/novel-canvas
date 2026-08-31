@@ -683,6 +683,75 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(添加/编辑/删除)' : v; } catch (_) { return v; }
   });
+  await check('时间线节点标注在进度轴(pin)可拖动', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const marker = '冒烟轴Pin' + Date.now();
+      try {
+        document.getElementById('timelineBtn').click();
+        await sleep(250);
+        document.getElementById('tlTitle').value = marker;
+        const sel = document.getElementById('tlChapterSel');
+        const ch = sel.options[0].value;
+        sel.value = ch;
+        const prog = document.getElementById('tlProgress');
+        prog.value = '40';
+        document.getElementById('tlAddBtn').click();
+        await sleep(300);
+        const pin = Array.from(document.querySelectorAll('#axisTimeline .tlPin')).find(p => (p.textContent || '').includes(marker));
+        if (!pin) return JSON.stringify({ ok: false, why: 'no pin on axis' });
+        const before = { ch: pin.dataset.chapter, prog: pin.dataset.progress, top: pin.style.top };
+        // 拖动 pin 向上 60px（模拟：mousedown → mousemove → mouseup）
+        const r = pin.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        pin.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy, button: 0 }));
+        window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy - 60, button: 0 }));
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: cx, clientY: cy - 60, button: 0 }));
+        await sleep(300);
+        const pin2 = Array.from(document.querySelectorAll('#axisTimeline .tlPin')).find(p => (p.textContent || '').includes(marker));
+        if (!pin2) return JSON.stringify({ ok: false, why: 'pin gone after drag' });
+        const movedOk = parseFloat(pin2.style.top) < parseFloat(before.top) - 20;
+        // 清理：删除节点
+        let rows = Array.from(document.querySelectorAll('#timelineBody .tlRow'));
+        const row = rows.find(r => (r.textContent || '').includes(marker));
+        if (row) { row.querySelector('.tlDel').click(); await sleep(120); const okBtn = document.getElementById('confirmOkBtn'); if (okBtn) okBtn.click(); }
+        await sleep(300);
+        document.getElementById('timelineClose').click();
+        await sleep(700);
+        return JSON.stringify({ ok: !!pin2 && movedOk, before, after: pin2 ? { top: pin2.style.top } : null });
+      } catch (e) {
+        try { const okBtn = document.getElementById('confirmOkBtn'); if (okBtn && document.getElementById('confirmModal').classList.contains('show')) okBtn.click(); } catch (_) {}
+        return JSON.stringify({ ok: false, why: 'ERR ' + e.message });
+      }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(创建/拖动/删除)' : v; } catch (_) { return v; }
+  });
+  await check('左侧分类筛选对进度轴节点生效', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const chip = Array.from(document.querySelectorAll('.filterChip')).find(c => c.textContent.trim() === '未识别');
+      if (!chip) return JSON.stringify({ ok: false, why: 'no chip' });
+      const labelCount = () => {
+        const axis = Array.from(document.querySelectorAll('#axisNodes .node'));
+        const byLabel = {};
+        for (const el of axis) { const n = nodeMap[el.dataset.id]; if (n) byLabel[n.label] = (byLabel[n.label] || 0) + 1; }
+        return byLabel;
+      };
+      const before = labelCount();
+      if (!before['未识别']) return JSON.stringify({ ok: false, why: 'no 未识别 nodes in axis' });
+      if (!chip.classList.contains('on')) chip.click(); // 先确保开启（全显示）
+      await sleep(150);
+      chip.click(); // 关闭：未识别应隐藏
+      await sleep(250);
+      const hidden = Array.from(document.querySelectorAll('#axisNodes .node')).filter(n => n.style.display === 'none').length;
+      const hiddenOk = hidden >= before['未识别'];
+      chip.click(); // 恢复开启
+      await sleep(150);
+      const after = Array.from(document.querySelectorAll('#axisNodes .node')).filter(n => n.style.display === 'none').length;
+      return JSON.stringify({ ok: hiddenOk && after === 0, before, hidden });
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(未识别隐藏/恢复)' : v; } catch (_) { return v; }
+  });
   await check('自动精修 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/consistency/polish', {
       method: 'POST',

@@ -385,11 +385,22 @@ function applyFilters() {
   currentMatch = -1;
   world.querySelectorAll('.node').forEach(el => {
     const n = nodeMap[el.dataset.id];
+    if (!n) return; // 切换项目时 #world 可能残留旧项目节点（渲染晚于轴视图），跳过而非崩溃
     const catOk = activeCats.has(n.label);
     const hit = !q || n.title.toLowerCase().includes(q) || (n.desc || '').toLowerCase().includes(q);
     el.classList.remove('hit');
     el.style.display = catOk && hit ? '' : 'none';
     if (hit && q) matchIndices.push(n.id);
+  });
+  // 轴视图节点同样受筛选/搜索控制（v1.11：唯一视图为进度轴）
+  document.querySelectorAll('#axisNodes .node').forEach(el => {
+    const n = nodeMap[el.dataset.id];
+    if (!n) return;
+    const catOk = activeCats.has(n.label);
+    const hit = !q || n.title.toLowerCase().includes(q) || (n.desc || '').toLowerCase().includes(q);
+    el.classList.remove('hit');
+    el.style.display = catOk && hit ? '' : 'none';
+    if (hit && q && !matchIndices.includes(n.id)) matchIndices.push(n.id);
   });
   redrawEdges();
   const cnt = document.getElementById('searchCount');
@@ -411,7 +422,12 @@ function highlightMatch(idx) {
   if (!matchIndices.length) return;
   currentMatch = ((idx % matchIndices.length) + matchIndices.length) % matchIndices.length;
   const id = matchIndices[currentMatch];
-  const el = world.querySelector(`.node[data-id="${id}"]`);
+  // 优先可见视图（轴视图为唯一视图；自由视图隐藏时跳过不可见的命中）
+  const axisViewEl = document.getElementById('axisView');
+  const axisFirst = axisViewEl && axisViewEl.style.display !== 'none';
+  const el = axisFirst
+    ? (document.querySelector(`#axisNodes .node[data-id="${id}"]`) || world.querySelector(`.node[data-id="${id}"]`))
+    : (world.querySelector(`.node[data-id="${id}"]`) || document.querySelector(`#axisNodes .node[data-id="${id}"]`));
   if (el) {
     el.classList.add('hit');
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -420,6 +436,7 @@ function highlightMatch(idx) {
 }
 function clearHighlight() {
   world.querySelectorAll('.node.hit').forEach(el => el.classList.remove('hit'));
+  document.querySelectorAll('#axisNodes .node.hit').forEach(el => el.classList.remove('hit'));
 }
 
 
@@ -1918,6 +1935,96 @@ function axisChapterFromX(nx) {
   return chapter;
 }
 
+// 时间线重要节点 → 进度轴 pins（X=章列中心，Y=剧情推进 0-100）
+// 无显式 progress 时：优先用该章已设推进值，否则按章号比例默认（与节点 y=x 一致）
+function timelineNodeProgress(tn, maxChapter) {
+  if (tn.progress != null && !isNaN(Number(tn.progress))) return Math.max(0, Math.min(100, Number(tn.progress)));
+  const ch = Number(tn.chapter) || 0;
+  if (ch >= 1 && axisProgress[ch] != null) return Math.max(0, Math.min(100, Number(axisProgress[ch])));
+  if (ch >= 1 && maxChapter > 1) return Math.round((ch - 1) / (maxChapter - 1) * 100);
+  return 50;
+}
+function renderAxisTimelinePins() {
+  const wrap = document.getElementById('axisTimeline');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!axisGeom) return;
+  const g = axisGeom;
+  for (const tn of timelineNodes) {
+    const ch = Number(tn.chapter) || 0;
+    if (ch < 1 || ch > g.maxChapter) continue; // 无章号/超范围：不在轴上画
+    const prog = timelineNodeProgress(tn, g.maxChapter);
+    const pin = document.createElement('div');
+    pin.className = 'tlPin';
+    pin.dataset.id = tn.id;
+    pin.dataset.chapter = ch;
+    pin.dataset.progress = prog;
+    pin.innerHTML = '<span class="tlPinIcon">⚑</span><span class="tlPinTitle">' + escapeHtml(tn.title) + '</span>';
+    pin.title = '第' + ch + '章 · ' + prog + '% · ' + tn.title + (tn.note ? '：' + tn.note : '') + '\n拖动调整位置（左右=章号，上下=剧情推进）';
+    pin.style.left = (g.chapterStart[ch] + g.chapterW[ch] / 2) + 'px';
+    pin.style.top = (yForProgress(prog) - 10) + 'px';
+    pin.style.transform = 'translateX(-50%)';
+    wireTimelinePinDrag(pin, tn);
+    wrap.appendChild(pin);
+  }
+}
+// pin 拖动：水平→章号，垂直→剧情推进；释放后写回 timelineNodes 并持久化
+function wireTimelinePinDrag(pin, tn) {
+  let startX = 0, startY = 0, origL = 0, origT = 0, moved = false;
+  const dragHint = document.createElement('div');
+  dragHint.className = 'axisDragHint';
+  dragHint.style.display = 'none';
+  document.body.appendChild(dragHint);
+  function move(ev) {
+    if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) moved = true;
+    pin.classList.add('dragging');
+    const scale = axisViewT.scale;
+    pin.style.left = (origL + (ev.clientX - startX) / scale) + 'px';
+    pin.style.top = (origT + (ev.clientY - startY) / scale) + 'px';
+    const g = axisGeom;
+    const nx = parseFloat(pin.style.left), ny = parseFloat(pin.style.top);
+    const ch = axisChapterFromX(nx);
+    const prog = progressFromY(ny + 10);
+    dragHint.textContent = '第' + ch + '章 · ' + prog + '%';
+    dragHint.style.display = 'block';
+    dragHint.style.left = (ev.clientX + 14) + 'px';
+    dragHint.style.top = (ev.clientY + 14) + 'px';
+  }
+  function up() {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    if (dragHint.parentNode) dragHint.parentNode.removeChild(dragHint);
+    pin.classList.remove('dragging');
+    if (!moved) return;
+    pin._dragged = true;
+    const g = axisGeom;
+    const nx = parseFloat(pin.style.left), ny = parseFloat(pin.style.top);
+    const chapter = axisChapterFromX(nx);
+    const progress = progressFromY(ny + 10);
+    const i = timelineNodes.findIndex(t => t.id === tn.id);
+    if (i >= 0) {
+      timelineNodes[i].chapter = chapter;
+      timelineNodes[i].progress = progress;
+      saveLayout();
+      renderAxisTimelinePins(); // 吸附回格位重画
+    }
+  }
+  pin.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (pin._dragged) { pin._dragged = false; return; }
+    axisJumpTo(Number(pin.dataset.chapter) || 1);
+  });
+  pin.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startX = e.clientX; startY = e.clientY;
+    origL = parseFloat(pin.style.left); origT = parseFloat(pin.style.top);
+    moved = false;
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+}
+
 function applyAxisTransform() {
   // transform 施加在 #axisInner 上：#axisView 保持 inset:0 固定裁剪，inner 平移缩放
   const inner = document.getElementById('axisInner') || document.getElementById('axisView');
@@ -2388,6 +2495,8 @@ function renderAxisView() {
   syncAxisYModeSel();
   syncAxisSegSel();
   redrawAxisEdges();
+  renderAxisTimelinePins();
+  applyFilters(); // 渲染后立即套用分类筛选/搜索（轴节点也要被过滤）
 
   const hint = document.createElement('div');
   hint.className = 'axisHint';
@@ -2395,7 +2504,7 @@ function renderAxisView() {
     ? 'Y 按分段（' + geom.bands.join(' / ') + '）· 带内沿章号推进 · 拖节点上下可调该章所在位置'
     : 'Y=剧情推进(0-100%) 默认 y=x · 拖节点上下调推进';
   const segHint = geom.segSize > 1 ? ' · X 按段聚合（每段' + geom.segSize + '章，底部刻度仍可逐章跳转）' : '';
-  hint.textContent = escapeHtml(axisDef.name || '进度轴') + ' · 章节沿 X 轴铺开，' + bandHint + segHint + ' · 灰色带=未分类/无章内容 · 拖空白平移 · 滚轮缩放 · 拖节点左右调章号 · 点节点看详情与关联连线（虚线=自动关联，实线=手动连线，点实线可删）';
+  hint.textContent = escapeHtml(axisDef.name || '进度轴') + ' · 章节沿 X 轴铺开，' + bandHint + segHint + ' · 灰色带=未分类/无章内容 · 拖空白平移 · 滚轮缩放 · 拖节点左右调章号 · 点节点看详情与关联连线（虚线=自动关联，实线=手动连线，点实线可删）' + (timelineNodes.length ? ' · ⚑=时间线重要节点（可拖动标在轴上）' : ' · 时间线弹窗可添加重要节点（⚑标在轴上）');
   axisView.appendChild(hint);
 }
 
@@ -4611,7 +4720,7 @@ function renderTimelineList() {
   }
   const list = sortedTimelineNodes();
   if (!list.length) {
-    body.innerHTML = '<div class="hint">还没有重要节点。在上方填写节点名、选择所属章节，点「添加」创建（如：主角觉醒 · 第5章）。</div>';
+    body.innerHTML = '<div class="hint">还没有重要节点。在上方填写节点名、选择所属章节，点「添加」创建（如：主角觉醒 · 第5章）。添加后节点会以 ⚑ 标注在进度轴上，可直接拖动定位。</div>';
     return;
   }
   body.innerHTML = '<div class="tlList"></div>';
@@ -4620,8 +4729,10 @@ function renderTimelineList() {
     const row = document.createElement('div');
     row.className = 'tlRow';
     row.dataset.id = ev.id;
+    const progBadge = ev.progress != null ? '<span class="tlBadge tlProg">' + Math.round(Number(ev.progress)) + '%</span>' : '';
     row.innerHTML =
       '<span class="tlBadge">第' + escapeHtml(ev.chapter) + '章</span>' +
+      progBadge +
       '<span class="tlTitle">' + escapeHtml(ev.title || '（未命名节点）') + '</span>' +
       '<span class="tlNote">' + escapeHtml(ev.note || '') + '</span>' +
       '<span class="tlActions">' +
@@ -4645,6 +4756,7 @@ function renderTimelineList() {
       timelineNodes = timelineNodes.filter(x => x.id !== ev.id);
       saveLayout();
       renderTimelineList();
+      renderAxisTimelinePins(); // 删除后轴上的 pin 同步移除
     });
     wrap.appendChild(row);
   }
@@ -4653,6 +4765,7 @@ function startEditTimelineNode(row, ev) {
   row.innerHTML =
     '<input class="tlInput tlEditTitle" value="' + escapeHtml(ev.title || '') + '" maxlength="60">' +
     '<input class="tlInput tlEditNote" value="' + escapeHtml(ev.note || '') + '" placeholder="备注（可选）" maxlength="120">' +
+    '<input class="tlInput tlEditProg" type="number" min="0" max="100" value="' + (ev.progress != null ? Math.round(Number(ev.progress)) : '') + '" placeholder="推进% (留空自动)" title="剧情推进 0-100%，留空则按章号默认">' +
     '<span class="tlActions">' +
       '<button class="tlSave">保存</button>' +
       '<button class="tlCancel">取消</button>' +
@@ -4664,8 +4777,11 @@ function startEditTimelineNode(row, ev) {
     if (!t) { showToast('节点名不能为空', 'warn'); return; }
     ev.title = t;
     ev.note = row.querySelector('.tlEditNote').value.trim();
+    const p = row.querySelector('.tlEditProg').value;
+    ev.progress = (p !== '' && !isNaN(Number(p))) ? Math.max(0, Math.min(100, Number(p))) : null;
     saveLayout();
     renderTimelineList();
+    renderAxisTimelinePins(); // 编辑后轴上的 pin 同步更新
   };
   row.querySelector('.tlSave').addEventListener('click', (e) => { e.stopPropagation(); save(); });
   row.querySelector('.tlCancel').addEventListener('click', (e) => { e.stopPropagation(); renderTimelineList(); });
@@ -4675,20 +4791,25 @@ function addTimelineNode() {
   const titleIn = document.getElementById('tlTitle');
   const sel = document.getElementById('tlChapterSel');
   const noteIn = document.getElementById('tlNote');
+  const progIn = document.getElementById('tlProgress');
   const title = titleIn ? titleIn.value.trim() : '';
   const chapter = sel && sel.value ? Number(sel.value) : null;
   if (!title) { showToast('请填写重要节点名', 'warn'); return; }
   if (!chapter) { showToast('请选择所属章节', 'warn'); return; }
+  const p = progIn && progIn.value !== '' ? Number(progIn.value) : null;
   timelineNodes.push({
     id: 'tl-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
     title,
     chapter,
+    progress: (p != null && !isNaN(p)) ? Math.max(0, Math.min(100, p)) : null,
     note: noteIn ? noteIn.value.trim() : ''
   });
   if (titleIn) titleIn.value = '';
   if (noteIn) noteIn.value = '';
+  if (progIn) progIn.value = '';
   saveLayout();
   renderTimelineList();
+  renderAxisTimelinePins(); // 新节点立即标到进度轴上
 }
 function openTimeline() {
   const m = document.getElementById('timelineModal');

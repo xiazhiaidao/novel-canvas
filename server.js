@@ -160,6 +160,8 @@ const DEFAULT_CONFIG = {
       excludeDirs: ['设定', '大纲', '追踪', '正文', '白球降临', '拆文库', 'novel', 'node_modules', '写作参考资料', '参考', '素材', '模板', '资料', '.git', '.claude', '.agents', '.obsidian', 'release', '.data', '.trash', '.tmp', '.trae', 'references'],
       excludeFiles: ['示例', '模板', '说明', 'readme', 'index', '_meta', '设定与大纲', '汇总', '记录', '规范', '指南', '教程', '参考', '状态', '前传', '原稿', 'agent-prompt', 'agent_prompt', '额度'],
     },
+    // 标题切分规则下，命中这些标题的段落不生成节点（元信息/非实体小节，任何项目通用）
+    headingExclude: ['作品简介', '内容简介', '故事简介', '文案简介', '更新记录', '修订记录', '版本记录', '写作记录', '灵感记录', '创作记录', '人物关系表', '剧情线梳理', '设定说明', '备注', '目录'],
   },
   axis: DEFAULT_AXIS,
   junkDirs: ['node_modules', '.git', '.claude', '.agents', '.obsidian', 'release', '.data', '.trash', '.tmp', '拆文库', '参考', '素材', '模板', '资料', '写作参考资料', 'novel', '.trae', 'references'],
@@ -719,11 +721,13 @@ function buildNodes(root) {
   const nodes = [];
 
   // 层1 约定规则：files（保持旧 id 生成逻辑）
+  const headingExclude = (config.scan && config.scan.headingExclude) || [];
   for (const def of config.scan.files) {
     try {
-      const segs = def.table
+      const segs = (def.table
         ? parseTableSegments(def.key || def.match, def.match, def.type, def.label, root)
-        : parseHeadingSegments(def.key || def.match, def.match, def.type, def.label, new RegExp(def.heading || '^##\\s'), root);
+        : parseHeadingSegments(def.key || def.match, def.match, def.type, def.label, new RegExp(def.heading || '^##\\s'), root))
+        .filter(s => !headingExclude.some(h => String(s.title).includes(h)));
       for (const s of segs) {
         const firstLine = s.content.split('\n').find(l => l.trim() && !l.trim().startsWith('#')) || '';
         nodes.push({
@@ -2061,7 +2065,7 @@ const server = http.createServer(async (req, res) => {
         axisSegSize: layout.axisSegSize || 0,
         axisY: layout.axisY || null,
         overrides: layout.overrides || {},
-        timelineNodes: (layout.timelineNodes || []).map(n => ({ id: String(n.id), title: String(n.title || ''), chapter: n.chapter != null ? Number(n.chapter) : null, note: String(n.note || '') })),
+        timelineNodes: (layout.timelineNodes || []).map(n => ({ id: String(n.id), title: String(n.title || ''), chapter: n.chapter != null ? Number(n.chapter) : null, note: String(n.note || ''), progress: n.progress != null ? Number(n.progress) : null })),
         unrecognized: (layout.unrecognized || []).map(String),
       },
     });
