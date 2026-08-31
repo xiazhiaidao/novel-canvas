@@ -412,7 +412,7 @@ async function main() {
     const v = await evalExpr(`fetch('/api/agent/tools').then(r => r.json()).then(d => JSON.stringify(d.tools || []))`);
     let tools = [];
     try { tools = JSON.parse(v); } catch (_) { return v; }
-    const need = ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'move_node', 'create_link', 'remove_link', 'edit_node', 'create_node', 'delete_node'];
+    const need = ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'move_node', 'create_link', 'remove_link', 'edit_node', 'create_node', 'delete_node', 'edit_file'];
     const missing = need.filter(t => !tools.includes(t));
     return missing.length === 0 ? 'OK(' + tools.length + '工具)' : 'MISSING: ' + missing.join(',');
   });
@@ -927,6 +927,31 @@ async function main() {
     try {
       const o = JSON.parse(v);
       return o.ok ? 'OK' : v;
+    } catch (_) { return v; }
+  });
+  await check('提案拒绝 API 生命周期(造→拒→消失)', async () => {
+    const v = await evalExpr(`(async () => {
+      const out = { created: false, rejected: false, gone: false, cleanup: false };
+      // 1) 造一个 edit 提案（自清理，仅用于验证 reject 生命周期）；id 必须用真实节点
+      const probeNode = Object.values(nodeMap).find(x => x.label === '章节') || Object.values(nodeMap)[0];
+      if (!probeNode) return 'no nodes';
+      const mk = await fetch('/api/propose_node_edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: currentProject, id: probeNode.id, content: 'probe', reason: 'smoke' }) }).then(r => r.json());
+      const pid = mk && mk.proposal ? mk.proposal.id : (mk && mk.proposal_id ? mk.proposal_id : '');
+      if (pid) out.created = true;
+      // 2) 拒绝它
+      const rj = await fetch('/api/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: pid }) }).then(r => r.json());
+      if (rj && rj.ok) out.rejected = true;
+      // 3) 确认已从列表中消失
+      const ls = await fetch('/api/proposals?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      out.gone = !(ls.proposals || []).some(p => p.id === pid);
+      // 4) 二次拒绝应报 not found（error 分支）
+      const rj2 = await fetch('/api/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: pid }) }).then(r => r.json());
+      out.cleanup = rj2 && rj2.error === 'proposal not found';
+      return JSON.stringify(out);
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.created && o.rejected && o.gone && o.cleanup) ? 'OK(拒绝后消失+二次拒绝报错)' : v;
     } catch (_) { return v; }
   });
   await check('卷操作 API 可访问', async () => {

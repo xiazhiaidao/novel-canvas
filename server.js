@@ -1773,6 +1773,7 @@ function summarizeAgentResult(tool, args, result) {
   if (tool === 'edit_node') return '提案: 修改《' + (result.title || args.id || '') + '》';
   if (tool === 'create_node') return '提案: 新建《' + (result.title || args.title || '') + '》';
   if (tool === 'delete_node') return '提案: 删除《' + (result.title || args.id || '') + '》';
+  if (tool === 'edit_file') return (result.isNew ? '提案: 新建文件 ' : '提案: 修改文件 ') + (args.path || result.file || '');
   return tool + ' 完成';
 }
 
@@ -1785,6 +1786,7 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'edit_node', description: '修改画布中某个节点的完整 Markdown 内容。生成提案，用户批准后才写盘。', parameters: { type: 'object', properties: { id: { type: 'string', description: '节点 id' }, content: { type: 'string', description: '该节点新的完整 Markdown 内容' } }, required: ['id', 'content'] } } },
   { type: 'function', function: { name: 'create_node', description: '在项目中新建一个节点（角色/势力/设定/伏笔/卷），生成提案，用户批准后写盘。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['role', 'faction', 'setting', 'foreshadow', 'volume'], description: '节点类型' }, title: { type: 'string', description: '标题' }, desc: { type: 'string', description: '简介/内容，可空' } }, required: ['type', 'title'] } } },
   { type: 'function', function: { name: 'delete_node', description: '删除画布中的某个节点。生成提案，用户批准后写盘。', parameters: { type: 'object', properties: { id: { type: 'string', description: '节点 id' } }, required: ['id'] } } },
+  { type: 'function', function: { name: 'edit_file', description: '修改项目内任意 Markdown 文件的完整内容（如大纲、设定文件、上下文文件，或新建章节文件）。path 不存在时视为新建文件（可用于新建章节/新建设定文件）。生成提案，用户批准后才写盘。', parameters: { type: 'object', properties: { path: { type: 'string', description: '项目内相对路径（须以 .md 结尾），如 正文/第08章-新章节.md 或 大纲/第一卷大纲.md' }, content: { type: 'string', description: '该文件新的完整 Markdown 内容；新建文件时就是全部内容' } }, required: ['path', 'content'] } } },
   { type: 'function', function: { name: 'move_node', description: '移动画布中某个节点/板块到指定坐标（画布世界坐标）。立即生效并保存到布局文件。', parameters: { type: 'object', properties: { id: { type: 'string', description: '节点 id' }, x: { type: 'number', description: '目标 x' }, y: { type: 'number', description: '目标 y' } }, required: ['id', 'x', 'y'] } } },
   { type: 'function', function: { name: 'create_link', description: '在画布上为两个节点建立手动连线。立即生效并保存。', parameters: { type: 'object', properties: { a: { type: 'string', description: '节点 id A' }, b: { type: 'string', description: '节点 id B' } }, required: ['a', 'b'] } } },
   { type: 'function', function: { name: 'remove_link', description: '移除画布上两个节点之间的手动连线。立即生效并保存。', parameters: { type: 'object', properties: { a: { type: 'string', description: '节点 id A' }, b: { type: 'string', description: '节点 id B' } }, required: ['a', 'b'] } } }
@@ -1860,6 +1862,15 @@ async function runAgentTool(name, args, root) {
       if (!node) return { error: 'node not found: ' + args.id };
       proposalSet({ id, kind: 'delete', file: node.file, title: node.title, oldContent: node.content || '', newContent: '', root, project: projectNameOfRoot(root) });
       return { proposal_id: id, action: 'delete', file: node.file, title: node.title };
+    }
+    if (name === 'edit_file') {
+      const rel = String(args.path || '');
+      if (!isSafePath(rel, root) || !isMdPath(rel)) return { error: 'unsafe or invalid file path: ' + rel };
+      const full = path.resolve(root, rel);
+      const oldContent = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.readFileSync(full, 'utf8') : '';
+      const newContent = String(args.content || '');
+      proposalSet({ id, kind: 'file_edit', file: rel, title: rel, oldContent, newContent, root, project: projectNameOfRoot(root) });
+      return { proposal_id: id, action: 'file_edit', file: rel, isNew: oldContent === '' };
     }
     if (name === 'move_node') {
       const layout = loadLayout(root);
@@ -2152,6 +2163,19 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (pathname === '/api/proposals/reject' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const { id } = body;
+      if (typeof id !== 'string' || !id) return sendJson(res, { error: 'bad request' });
+      if (!proposals.has(id)) return sendJson(res, { error: 'proposal not found' });
+      proposalDelete(id);
+      return sendJson(res, { ok: true });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+
   if (pathname === '/api/propose_node_edit' && req.method === 'POST') {
     try {
       const body = await readBody(req);
@@ -2247,6 +2271,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (prop.kind === 'file_edit') {
         if (!isSafePath(prop.file, root) || !isMdPath(prop.file)) return sendJson(res, { error: 'unsafe file path' });
+        fs.mkdirSync(path.dirname(path.resolve(root, prop.file)), { recursive: true });
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [prop.file], 'AI 修改');
         writeText(prop.file, String(prop.newContent || ''), root);
         proposalDelete(body.id);
@@ -2430,7 +2455,7 @@ const server = http.createServer(async (req, res) => {
           consistency: '你现在是设定一致性检查员。请结合大纲、设定、角色、上下文，列出设定冲突、时间线矛盾、角色状态不一致的问题。每条给出位置和修改建议。简洁分条。'
         };
         const agentSuffix = agentInstructions[agentMode] ? '\n\n【本次任务】\n' + agentInstructions[agentMode] : '';
-        const toolHint = '\n\n你有工具可用：read_node / read_file / search / list_nodes / get_context 用于查证项目内容（不要凭摘要编造）；move_node / create_link / remove_link 直接操作画布；edit_node / create_node / delete_node 会生成提案（需要用户批准后才生效）。当用户要求查证、修改、分析具体内容时，先调用相应工具再回答。';
+        const toolHint = '\n\n你有工具可用：read_node / read_file / search / list_nodes / get_context 用于查证项目内容（不要凭摘要编造）；move_node / create_link / remove_link 直接操作画布；edit_node / create_node / delete_node 会生成提案（需要用户批准后才生效）；edit_file 可修改或新建项目内任意 Markdown 文件（如大纲/设定/新章节），同样生成提案。当用户要求查证、修改、分析具体内容时，先调用相应工具再回答。';
         const payloadMessages = [
           { role: 'system', content: `你是小说创作助手，正在协助创作《${body.project || path.basename(root)}》。请结合下面的项目资料和可用技能回答或写作。\n\n项目资料：\n${contextText}\n\n可用技能：\n${skills || '（无）'}${agentSuffix}${toolHint}` },
           ...recentMessages

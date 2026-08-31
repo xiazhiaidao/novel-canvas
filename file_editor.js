@@ -593,7 +593,14 @@ function renderFileProposal(proposal) {
       '</div>' +
     '</div>';
   box.querySelector('.accept').addEventListener('click', () => acceptFileProposal(proposal.id));
-  box.querySelector('.reject').addEventListener('click', () => {
+  box.querySelector('.reject').addEventListener('click', async () => {
+    try {
+      await fetch('/api/proposals/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: proposal.id })
+      });
+    } catch (e) { /* 忽略网络错误，仍关闭面板 */ }
     currentFileProposal = null;
     box.innerHTML = '';
   });

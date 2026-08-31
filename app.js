@@ -3278,7 +3278,7 @@ function renderProposals(list) {
     renderedProposalIds.add(p.id);
     const box = document.createElement('div');
     box.className = 'proposal';
-    const kindText = p.kind === 'edit' ? '修改' : p.kind === 'create' ? '新增' : '删除';
+    const kindText = p.kind === 'edit' ? '修改' : p.kind === 'create' ? '新增' : p.kind === 'file_edit' ? '文件修改' : '删除';
     box.innerHTML =
       '<h4>待审阅：' + escapeHtml(kindText) + '「' + escapeHtml(p.title || '') + '」</h4>' +
       '<div class="meta">' + escapeHtml(p.file || '') + '</div>' +
@@ -3306,7 +3306,14 @@ function renderProposals(list) {
         showToast('接受失败：' + e.message, 'error');
       }
     });
-    box.querySelector('.reject').addEventListener('click', () => {
+    box.querySelector('.reject').addEventListener('click', async () => {
+      try {
+        await fetch('/api/proposals/reject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: p.id })
+        });
+      } catch (_) {}
       box.remove();
     });
     chatMessages.appendChild(box);
