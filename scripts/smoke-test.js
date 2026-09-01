@@ -1,6 +1,6 @@
 // 冒烟测试：验证项目加载、主题切换、更换文件夹按钮是否存在
 // 用法：npm test   （自动启动/复用 8787，自动启动 headless Edge）
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const net = require('net');
 const fs = require('fs');
@@ -334,7 +334,10 @@ async function main() {
   });
   await check('布局精确尺寸无重叠(重排后)', async () => {
     const v = await evalExpr(`(async () => {
-      autoLayout();
+      // 不调 autoLayout()（它会 saveLayout 写盘污染用户布局），只用纯计算+渲染
+      computeAutoLayout();
+      renderNodes();
+      redrawEdges();
       await new Promise(r => setTimeout(r, 300));
       const boards = [...document.querySelectorAll('.nodeBoard')];
       let overlaps = 0, overflow = 0;
@@ -1333,6 +1336,57 @@ async function main() {
 
   await check('无 JS 异常(第二轮)', () => exceptions.length === 0 ? true : exceptions.join(' | '));
 
+  await check('文件树 重载按钮存在', async () => evalExpr(`!!document.getElementById('fileTreeReloadBtn')`));
+
+  await check('文件树错误文案分类(超时/断连/业务)', async () => {
+    const v = await evalExpr(`(() => {
+      if (typeof describeFileTreeError !== 'function') return 'describeFileTreeError missing';
+      const net = describeFileTreeError(new TypeError('Failed to fetch'));
+      const abort = describeFileTreeError(new DOMException('aborted', 'AbortError'));
+      const biz = describeFileTreeError(new Error('some server error'));
+      return (/无法连接本地服务/.test(net) && /加载超时/.test(abort) && /some server error/.test(biz)) ? 'OK' : net + ' | ' + abort + ' | ' + biz;
+    })()`);
+    return v === 'OK' ? true : v;
+  });
+
+  await check('/api/files 返回文件列表', async () => {
+    const data = await getJson('http://127.0.0.1:' + PORT + '/api/files');
+    if (!data || data.ok !== true) return 'ok=false: ' + JSON.stringify(data).slice(0, 120);
+    if (!Array.isArray(data.files)) return 'files 非数组';
+    return data.files.length ? 'OK(' + data.files.length + ' 项)' : 'OK(空项目)';
+  });
+
+  await check('listMdFiles 防循环(junction+深嵌套)', async () => {
+    const { listMdFiles } = require(path.join(root, 'server.js'));
+    const tmp = path.join(root, '_smoke_loop_test');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(path.join(tmp, 'a'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'a', 'x.md'), '# x');
+    // 深嵌套：40 层目录放一个 .md，验证深度上限不会递归爆栈
+    let deep = path.join(tmp, 'a');
+    for (let i = 0; i < 40; i++) deep = path.join(deep, 'd' + i);
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'deep.md'), '# deep');
+    // junction 环：tmp/loop -> tmp（自引用）
+    const r = spawnSync('cmd', ['/c', 'mklink', '/J', path.join(tmp, 'loop'), tmp], { encoding: 'utf8' });
+    const t0 = Date.now();
+    let tree = [];
+    let err = null;
+    if (r.status !== 0) err = 'mklink failed: ' + (r.stdout || '') + (r.stderr || '');
+    else {
+      try { tree = listMdFiles(tmp); } catch (e) { err = 'walk threw: ' + e.message; }
+    }
+    const ms = Date.now() - t0;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (err) return err;
+    if (ms > 5000) return 'walk hung ' + ms + 'ms';
+    const flat = [];
+    (function flatten(nodes) { for (const n of nodes) { if (n.type === 'file') flat.push(n.path); else flatten(n.children || []); } })(tree);
+    if (!flat.includes('a/x.md')) return 'x.md 丢失: ' + JSON.stringify(flat.slice(0, 8));
+    if (flat.some(p => p.startsWith('loop/'))) return 'junction 被遍历: ' + JSON.stringify(flat.slice(0, 8));
+    return 'OK(' + ms + 'ms, junction 跳过, 深度受限)';
+  });
+
   ws.close();
 
   const failed = results.filter(r => !r.ok);
@@ -1345,6 +1399,7 @@ function cleanup() {
   try { if (edgeProc && !edgeProc.killed) edgeProc.kill(); } catch (_) {}
   try { if (serverProc && !serverProc.killed) serverProc.kill(); } catch (_) {}
   try { fs.rmSync(path.join(root, '_edge_smoke_test'), { recursive: true, force: true }); } catch (_) {}
+  try { fs.rmSync(path.join(root, '_smoke_loop_test'), { recursive: true, force: true }); } catch (_) {}
 }
 
 // 备份往返测试会通过 writeText 产生 _smoke_test.md.bak（API 删除只删 .md），这里兜底清理

@@ -891,8 +891,10 @@ function isMdPath(p) {
 
 function listMdFiles(root) {
   const EXCLUDE_DIR = /^(\.|\.git|\.obsidian|node_modules|release|_edge_smoke_test|\.trash|\.tmp)$/;
-  function walk(dir, rel) {
+  const MAX_DEPTH = 16; // 防御：目录嵌套过深或符号链接/联接环导致递归失控
+  function walk(dir, rel, depth) {
     const children = [];
+    if (depth > MAX_DEPTH) return children;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -906,10 +908,12 @@ function listMdFiles(root) {
     for (const e of entries) {
       if (e.name.startsWith('.') && !rel) continue;
       if (e.isDirectory() && EXCLUDE_DIR.test(e.name)) continue;
+      // 跳过符号链接/目录联接（junction）：防止目录环把扫描变成无限递归
+      if (e.isSymbolicLink()) continue;
       const full = path.join(dir, e.name);
       const relPath = rel ? rel + '/' + e.name : e.name;
       if (e.isDirectory()) {
-        const sub = walk(full, relPath);
+        const sub = walk(full, relPath, depth + 1);
         if (sub.length) children.push({ name: e.name, path: relPath, type: 'dir', children: sub });
       } else if (e.isFile() && e.name.toLowerCase().endsWith('.md')) {
         children.push({ name: e.name, path: relPath, type: 'file' });
@@ -917,7 +921,7 @@ function listMdFiles(root) {
     }
     return children;
   }
-  return walk(root, '');
+  return walk(root, '', 0);
 }
 
 function readFileText(root, relPath) {
@@ -2947,8 +2951,11 @@ const api = getApiConfig();
   res.end('not found');
 });
 
-loadProposals();
+if (require.main === module) {
+  loadProposals();
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`小说画布已启动: http://127.0.0.1:${PORT}`);
+  });
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`小说画布已启动: http://127.0.0.1:${PORT}`);
-});
+module.exports = { listMdFiles };

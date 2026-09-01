@@ -7,6 +7,7 @@ const net = require('net');
 const PORT = Number(process.env.PORT || 8787);
 const URL = `http://127.0.0.1:${PORT}/`;
 let serverProc = null;
+let serverStarting = false;
 let mainWindow = null;
 let projectsRoot = null;
 
@@ -88,17 +89,27 @@ function waitForServer(timeoutMs = 20000) {
 }
 
 async function startServer() {
-  if (serverProc) return;
-  // 如果端口已被外部占用（例如手动启动过 node server.js），直接复用，不重复拉起
-  if (await isPortOpen()) return;
-  const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
-  if (projectsRoot) env.NOVEL_PROJECTS_ROOT = projectsRoot;
-  serverProc = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
-    env,
-    stdio: 'inherit',
-    windowsHide: true
-  });
-  serverProc.on('exit', () => { serverProc = null; });
+  if (serverProc || serverStarting) return;
+  serverStarting = true;
+  try {
+    // 如果端口已被外部占用（例如手动启动过 node server.js），直接复用，不重复拉起
+    if (await isPortOpen()) return;
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    if (projectsRoot) env.NOVEL_PROJECTS_ROOT = projectsRoot;
+    serverProc = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
+      env,
+      stdio: 'inherit',
+      windowsHide: true
+    });
+    serverProc.on('exit', () => { serverProc = null; });
+  } finally {
+    serverStarting = false;
+  }
+}
+
+// 服务存活自愈：被复用的外部 server 退出或自拉 server 崩溃后，自动重新拉起本地服务
+function ensureServer() {
+  startServer().catch(() => {});
 }
 
 async function changeProjectsRoot() {
@@ -202,6 +213,8 @@ app.whenReady().then(async () => {
   }
   createWindow();
   setupDevReload();
+  // 每 3 秒检查一次：端口无监听且无自拉服务时重新拉起，避免「窗口还开着、服务已死」的假死状态
+  setInterval(ensureServer, 3000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

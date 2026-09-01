@@ -19,6 +19,7 @@ function initFileEditor() {
   document.getElementById('activityTheme').addEventListener('click', () => document.getElementById('themeModal').classList.add('show'));
   document.getElementById('canvasTab').addEventListener('click', () => activateEditorTab('canvas'));
   document.getElementById('newFileBtn').addEventListener('click', () => createFile(fileSelectedDirPath));
+  document.getElementById('fileTreeReloadBtn').addEventListener('click', () => loadFileTree());
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#fileTree') && !e.target.closest('#contextMenu')) {
       fileSelectedDirPath = '';
@@ -96,18 +97,37 @@ function resetFileEditor() {
   if (fileMode) loadFileTree();
 }
 
+// 把文件树加载错误翻译成可操作的中文提示（网络层错误 ≠ 服务端返回的业务错误）
+function describeFileTreeError(e) {
+  if (e && e.name === 'AbortError') return '加载超时：本地服务无响应，请确认服务已启动（npm run dev），再点击 ↻ 重试';
+  const msg = (e && e.message) || '';
+  if (e instanceof TypeError || msg === 'Failed to fetch' || /failed to fetch/i.test(msg)) {
+    return '无法连接本地服务：服务未运行或已退出，请重新运行 npm run dev，再点击 ↻ 重试';
+  }
+  return msg || '加载失败';
+}
+
 async function loadFileTree() {
   const container = document.getElementById('fileTree');
   container.innerHTML = '<div class="fileTreeHint">加载中...</div>';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000); // 8 秒超时，避免服务无响应时一直转圈
   try {
-    const res = await fetch('/api/files?project=' + encodeURIComponent(currentProject));
-    const data = await res.json();
+    const res = await fetch('/api/files?project=' + encodeURIComponent(currentProject), { signal: controller.signal });
+    let data;
+    try {
+      data = await res.json();
+    } catch (_) {
+      throw new Error('服务响应异常（HTTP ' + res.status + '），请确认 npm run dev 仍在运行');
+    }
     if (data.error) throw new Error(data.error);
     fileTree = data.files || [];
     fileTreeLoaded = true;
     renderFileTree(fileTree, container);
   } catch (e) {
-    container.innerHTML = '<div class="fileTreeHint">加载失败：' + escapeHtml(e.message) + '</div>';
+    container.innerHTML = '<div class="fileTreeHint">加载失败：' + escapeHtml(describeFileTreeError(e)) + '</div>';
+  } finally {
+    clearTimeout(timer);
   }
 }
 
