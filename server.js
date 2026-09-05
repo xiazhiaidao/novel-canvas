@@ -716,6 +716,9 @@ function fileFrontMatter(file, root) {
 }
 function invalidateFmCache(root) { for (const k of fmCache.keys()) if (k.startsWith(root + '|')) fmCache.delete(k); }
 
+// 缺文件提示去重：同一项目同一文件缺失只在进程内提示一次，避免每次加载刷屏
+const warnedMissingScanFiles = new Set();
+
 function buildNodes(root) {
   const config = loadProjectConfig(root);
   const nodes = [];
@@ -739,6 +742,12 @@ function buildNodes(root) {
         });
       }
     } catch (e) {
+      // 配置文件里引用的文件不存在（ENOENT）：同一文件只提示一次，不再每次加载都刷屏
+      if (e && e.code === 'ENOENT') {
+        const k = root + '\u0000' + (def.match || '');
+        if (warnedMissingScanFiles.has(k)) continue;
+        warnedMissingScanFiles.add(k);
+      }
       console.error('parse error', def.match, e.message);
     }
   }

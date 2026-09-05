@@ -64,7 +64,7 @@ async function main() {
   const edge = findEdge();
   if (!edge) {
     console.error('❌ 未找到 Edge，无法运行 CDP 测试');
-    cleanup();
+    await cleanup();
     process.exit(1);
   }
 
@@ -1391,14 +1391,25 @@ async function main() {
 
   const failed = results.filter(r => !r.ok);
   console.log('\n' + (failed.length ? '❌ 测试失败 ' + failed.length + ' 项' : '✅ 全部通过 ' + results.length + ' 项'));
-  cleanup();
+  await cleanup();
   process.exit(failed.length ? 1 : 0);
 }
 
-function cleanup() {
-  try { if (edgeProc && !edgeProc.killed) edgeProc.kill(); } catch (_) {}
+async function cleanup() {
+  // 先杀 Edge，并等它真正退出（子进程/文件锁全部释放）再删 profile，避免残留目录
+  if (edgeProc && !edgeProc.killed) {
+    edgeProc.kill();
+    if (edgeProc.exitCode === null) {
+      await Promise.race([
+        new Promise(resolve => edgeProc.once('exit', resolve)),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    }
+    edgeProc = null;
+  }
   try { if (serverProc && !serverProc.killed) serverProc.kill(); } catch (_) {}
-  try { fs.rmSync(path.join(root, '_edge_smoke_test'), { recursive: true, force: true }); } catch (_) {}
+  // Edge 退出后 profile 锁释放有延迟，重试几轮避免残留目录
+  try { fs.rmSync(path.join(root, '_edge_smoke_test'), { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); } catch (_) {}
   try { fs.rmSync(path.join(root, '_smoke_loop_test'), { recursive: true, force: true }); } catch (_) {}
 }
 
@@ -1423,5 +1434,5 @@ function cleanupSmokeBak() {
   } catch (_) {}
 }
 
-main().catch(e => { console.error('❌ ' + e.message); cleanup(); process.exit(1); });
-process.on('SIGINT', () => { cleanup(); process.exit(1); });
+main().catch(async e => { console.error('❌ ' + e.message); await cleanup(); process.exit(1); });
+process.on('SIGINT', () => { cleanup().finally(() => process.exit(1)); });
