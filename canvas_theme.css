@@ -761,3 +761,111 @@ html[data-theme="dark"] .activityBtn:hover {
 .recUnrec .title, .recUnrec .promoteBtn, .axisYLabel, .axisXLabel,
 .recSaved b, #recAiBtn, .recSaved { color: var(--text-strong) !important; }
 
+/* ════════════════════════════════════════════════════════════════════
+   UI 美感精修（v1.14.1）：布局呼吸感 / 状态可读性 / 深色协调
+   只改背景/边框/阴影/间距，不动强调文字颜色（force-black 块在上方仍生效）
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── 深色：左侧筛选按钮可读性增强（未选中提亮、选中琥珀勾边） ── */
+html[data-theme="dark"] .filterChip {
+  background: rgba(255,255,255,.07);
+  border-color: rgba(255,255,255,.14);
+  color: #a9b6c6;
+}
+html[data-theme="dark"] .filterChip:hover {
+  background: rgba(255,255,255,.12);
+  border-color: rgba(255,180,84,.4);
+  color: #fff;
+}
+html[data-theme="dark"] .filterChip.on {
+  background: linear-gradient(135deg, rgba(255,180,84,.22), rgba(122,162,247,.14));
+  border-color: rgba(255,180,84,.55);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 1px 4px rgba(0,0,0,.3);
+}
+
+/* ── 深色：画布提示气泡改为墨色毛玻璃（不再用亮黄渐变，降低刺眼感） ── */
+html[data-theme="dark"] #egoHint {
+  background: rgba(19,24,33,.88);
+  border-color: rgba(255,180,84,.4);
+  color: #e8eef5;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+}
+/* 浅色：画布提示气泡改为柔白毛玻璃 + 琥珀细边（与顶部工具栏呼应） */
+#egoHint {
+  background: rgba(255,255,255,.82);
+  border-color: rgba(180,120,40,.32);
+  color: #000;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(15,23,42,.10);
+}
+html[data-theme="dark"] #edgeDeleteHint {
+  background: rgba(19,24,33,.92);
+  border: 1px solid rgba(248,113,113,.45);
+  color: #fca5a5;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+
+/* ── 深色：画布节点层次感增强（边框提亮、选中更清晰） ── */
+html[data-theme="dark"] .node {
+  border-color: rgba(255,255,255,.16);
+  box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 10px 26px rgba(0,0,0,.22);
+}
+html[data-theme="dark"] .node.nodeBoard {
+  border-color: rgba(255,180,84,.26);
+}
+
+/* ── 深色：顶栏分组分隔线提亮 ── */
+html[data-theme="dark"] .topBarDivider {
+  background: rgba(255,255,255,.14);
+}
+
+/* ── 深色：详情空白态虚线框提亮 ── */
+html[data-theme="dark"] #detail .empty {
+  border-color: rgba(255,255,255,.16);
+  background: rgba(255,255,255,.02);
+}
+html[data-theme="dark"] #detail .emptyTitle { color: #aeb9c8; }
+
+/* ── 深色：AI 对话区标题栏与输入区分层 ── */
+html[data-theme="dark"] #chatHeader {
+  background: linear-gradient(90deg, rgba(255,205,145,.16), rgba(255,180,90,.04));
+  border-bottom-color: rgba(255,180,84,.22);
+}
+html[data-theme="dark"] #chatInput {
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.12);
+}
+html[data-theme="dark"] #chatInput:focus {
+  border-color: rgba(255,190,100,.5);
+  box-shadow: 0 0 0 3px rgba(255,180,84,.10);
+}
+
+/* ── 细节一致性：搜索框焦点光圈 / 详情副文字 / 轴控件字号 ── */
+html[data-theme="dark"] #search:focus {
+  border-color: rgba(255,190,100,.55);
+  box-shadow: 0 0 0 3px rgba(255,180,84,.12);
+}
+#search:focus {
+  border-color: rgba(180,120,40,.55);
+  box-shadow: 0 0 0 3px rgba(245,197,107,.18);
+}
+html[data-theme="dark"] #detail .emptySub { color: #93a3b4; }
+#axisBar select, #axisBar .barBtn, #axisBar input#axisJump {
+  font-size: 12px;
+  letter-spacing: .2px;
+}
+html[data-theme="dark"] #axisBar select:focus,
+html[data-theme="dark"] #axisBar .barBtn:focus-visible {
+  border-color: rgba(255,190,100,.55);
+  outline: 2px solid rgba(255,190,100,.5);
+  outline-offset: 1px;
+}
+#axisBar select:focus,
+#axisBar .barBtn:focus-visible {
+  border-color: rgba(180,120,40,.55);
+  outline: 2px solid rgba(180,120,40,.45);
+  outline-offset: 1px;
+}
+

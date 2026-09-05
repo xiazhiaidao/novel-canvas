@@ -88,15 +88,17 @@
   #statusBar {
     display: flex;
     align-items: center;
-    gap: 16px;
-    height: 24px;
-    padding: 0 12px;
+    gap: 18px;
+    height: 26px;
+    padding: 0 16px;
     background: var(--panel);
     border-top: 1px solid var(--panel-border);
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11.5px;
+    letter-spacing: .2px;
     flex: none;
     z-index: 20;
+    backdrop-filter: blur(10px);
   }
   .statusSpacer { flex: 1; }
   #sidebarResizer.hidden, #detailResizer.hidden { display: none; }
@@ -183,16 +185,19 @@
     color: var(--text); outline: none; transition: border .2s;
   }
   #search:focus { border-color: rgba(245,197,107,.5); }
-  #filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 14px; border-bottom: 1px solid var(--panel-border); }
+  #filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px 12px; border-bottom: 1px solid var(--panel-border); }
   .filterChip {
-    padding: 5px 12px; border-radius: 20px; border: 1px solid var(--panel-border);
-    background: rgba(15,23,42,.04); color: var(--muted); font-size: 12px;
+    padding: 4px 11px; border-radius: 20px; border: 1px solid var(--panel-border);
+    background: transparent; color: var(--muted); font-size: 11.5px;
     cursor: pointer; user-select: none; transition: all .18s;
+    letter-spacing: .2px;
   }
-  .filterChip:hover { color: var(--text); background: rgba(15,23,42,.06); }
+  .filterChip:hover { color: var(--text); background: rgba(15,23,42,.05); border-color: rgba(15,23,42,.16); }
   .filterChip.on {
-    background: linear-gradient(135deg, rgba(245,197,107,.25), rgba(139,123,255,.18));
-    color: var(--accent); border-color: rgba(245,197,107,.35);
+    background: linear-gradient(135deg, rgba(245,197,107,.30), rgba(139,123,255,.16));
+    color: var(--text-strong); border-color: rgba(180,120,40,.45);
+    font-weight: 600;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 1px 3px rgba(180,120,40,.15);
   }
   #categoryList { flex: 1; overflow-y: auto; padding: 6px 10px 14px; }
   #categoryList::-webkit-scrollbar { width: 5px; }
@@ -537,24 +542,28 @@
   #axisView .axisEmpty .axisEmptyBtn:hover { border-color: var(--accent); color: var(--accent); }
   /* 底部导航条：章号跳转 + 全图 + 章节刻度 + 统计 */
   #axisBar {
-    position: absolute; bottom: 0; left: 0; right: 0; height: 38px;
-    display: flex; align-items: center; gap: 8px; padding: 0 12px;
-    background: rgba(15,20,32,.86); border-top: 1px solid rgba(255,255,255,.1);
+    position: absolute; bottom: 0; left: 0; right: 0; height: 42px;
+    display: flex; align-items: center; gap: 10px; padding: 0 16px;
+    background: rgba(15,20,32,.88); border-top: 1px solid rgba(255,255,255,.1);
     z-index: 6; font-size: 12px; color: #cbd5e1;
-    backdrop-filter: blur(4px);
+    backdrop-filter: blur(8px);
   }
-  html[data-theme="light"] #axisBar { background: rgba(255,255,255,.94); border-top-color: rgba(0,0,0,.1); color: #475569; }
+  html[data-theme="light"] #axisBar { background: rgba(255,255,255,.95); border-top-color: rgba(0,0,0,.08); color: #475569; box-shadow: 0 -2px 10px rgba(15,23,42,.05); }
   #axisBar .barLabel { white-space: nowrap; color: #94a3b8; }
   #axisBar input#axisJump {
-    width: 62px; height: 26px; border: 1px solid rgba(255,255,255,.22);
-    background: rgba(0,0,0,.35); color: #fff; border-radius: 6px; padding: 0 8px; font-size: 12px;
+    width: 62px; height: 28px; border: 1px solid rgba(255,255,255,.22);
+    background: rgba(0,0,0,.35); color: #fff; border-radius: 8px; padding: 0 8px; font-size: 12px;
+    outline: none; transition: border-color .18s, box-shadow .18s;
   }
+  #axisBar input#axisJump:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,197,107,.2); }
   html[data-theme="light"] #axisBar input#axisJump { background: #fff; color: #111; border-color: #cbd5e1; }
   #axisBar .barBtn {
-    height: 26px; padding: 0 12px; border: 1px solid rgba(255,255,255,.22);
-    background: rgba(255,255,255,.08); color: inherit; border-radius: 6px; cursor: pointer; font-size: 12px;
+    height: 28px; padding: 0 13px; border: 1px solid rgba(255,255,255,.22);
+    background: rgba(255,255,255,.08); color: inherit; border-radius: 8px; cursor: pointer; font-size: 12px;
+    transition: background .18s, border-color .18s, transform .1s;
   }
-  #axisBar .barBtn:hover { background: rgba(255,255,255,.2); }
+  #axisBar .barBtn:hover { background: rgba(255,255,255,.18); border-color: rgba(245,197,107,.5); }
+  #axisBar .barBtn:active { transform: scale(.97); }
   #axisTicks { flex: 1; display: flex; gap: 1px; height: 18px; align-items: stretch; min-width: 80px; }
   #axisTicks .tick { flex: 1; min-width: 2px; background: rgba(148,163,184,.28); border-radius: 1px; cursor: pointer; position: relative; }
   #axisTicks .tick.has { background: var(--accent, #f97316); opacity: .85; }
@@ -714,7 +723,14 @@
   }
   #detailHead #detailCollapse:hover { background: none; transform: none; box-shadow: none; }
   #detail .status { margin-top: 10px; font-size: 12px; color: #667085; min-height: 18px; }
-  #detail .empty { color: var(--muted); margin-top: 40px; text-align: center; font-size: 14px; }
+  #detail .empty {
+    color: var(--muted); margin: 48px 24px 0; text-align: center; font-size: 14px;
+    padding: 36px 20px; border: 1.5px dashed var(--panel-border); border-radius: 16px;
+    background: rgba(15,23,42,.015); line-height: 1.8;
+  }
+  #detail .emptyIcon { font-size: 28px; opacity: .45; margin-bottom: 10px; }
+  #detail .emptyTitle { font-size: 14px; color: var(--muted); font-weight: 600; }
+  #detail .emptySub { font-size: 12px; opacity: .8; margin-top: 4px; }
   #topBar {
     display: flex;
     align-items: center;
@@ -772,6 +788,7 @@
     box-shadow: var(--shadow-md);
   }
   .topBarDivider { width: 1px; height: 20px; background: var(--panel-border); margin: 0 4px; }
+  .topBarGroup { display: flex; align-items: center; gap: 6px; min-width: 0; }
   #chatPanel {
     flex: none;
     width: 100%;
@@ -1094,10 +1111,12 @@
     white-space: nowrap;
   }
   #egoHint {
-    position: absolute; left: 50%; top: 56px; transform: translateX(-50%);
-    background: rgba(255,255,255,.9); border: 1px solid var(--accent); color: var(--accent);
-    padding: 5px 14px; border-radius: 16px; font-size: 12px; z-index: 5;
-    pointer-events: none; white-space: nowrap; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    position: absolute; left: 14px; top: 14px; transform: none;
+    background: rgba(255,255,255,.78); border: 1px solid rgba(180,120,40,.35);
+    color: var(--text-strong); padding: 5px 13px; border-radius: 18px; font-size: 11.5px; z-index: 5;
+    pointer-events: none; white-space: nowrap; backdrop-filter: blur(8px);
+    box-shadow: 0 3px 12px rgba(15,23,42,.12);
+    letter-spacing: .2px;
   }
   #minimap {
     position: absolute; right: 16px; top: 60px; width: 190px; height: 150px;
@@ -1621,24 +1640,32 @@
       <button id="changeFolderBtn" class="toolBtn" title="切换小说项目根目录">更换文件夹</button>
     </div>
     <div class="topBarRight">
-      <button id="viewModeBtn" class="toolBtn" title="自由布局 / 进度轴视图切换">进度轴</button>
-      <button id="recognitionBtn" class="toolBtn" title="识别报告：查看漏识别/错识别内容">识别</button>
-      <button id="autoLayoutBtn" class="toolBtn" title="自动排列节点">自动排列</button>
-      <button id="fitBtn" class="toolBtn" title="适应视图">适应视图</button>
-      <button id="mapToggleBtn" class="toolBtn" title="显示/隐藏小地图">小地图</button>
-      <button id="legendToggleBtn" class="toolBtn" title="显示/隐藏图例">图例</button>
-      <select id="linkModeSelect" title="自动连线方式" class="toolSelect">
-        <option value="entity">实体关联</option>
-        <option value="title">标题匹配</option>
-        <option value="chapter">章节聚焦</option>
-        <option value="off">关闭连线</option>
-      </select>
-      <button id="matrixBtn" class="toolBtn" title="用表格查看密集关系">矩阵</button>
-      <button id="boardBtn" class="toolBtn" title="章节/伏笔状态看板（含未回收伏笔）">看板</button>
-      <button id="linkManagerBtn" class="toolBtn" title="管理手动连线">连线</button>
-      <button id="bookStatsBtn" class="toolBtn" title="全书健康度统计">统计</button>
-      <button id="timelineBtn" class="toolBtn" title="从章节正文抽取时间标记的时间线">时间线</button>
-      <button id="focusBtn" class="toolBtn" title="专注模式：隐藏侧栏/顶栏/聊天（Ctrl+Shift+F）">⛶ 专注</button>
+      <div class="topBarGroup">
+        <button id="viewModeBtn" class="toolBtn" title="自由布局 / 进度轴视图切换">进度轴</button>
+        <button id="recognitionBtn" class="toolBtn" title="识别报告：查看漏识别/错识别内容">识别</button>
+        <button id="autoLayoutBtn" class="toolBtn" title="自动排列节点">自动排列</button>
+        <button id="fitBtn" class="toolBtn" title="适应视图">适应视图</button>
+        <button id="mapToggleBtn" class="toolBtn" title="显示/隐藏小地图">小地图</button>
+        <button id="legendToggleBtn" class="toolBtn" title="显示/隐藏图例">图例</button>
+        <select id="linkModeSelect" title="自动连线方式" class="toolSelect">
+          <option value="entity">实体关联</option>
+          <option value="title">标题匹配</option>
+          <option value="chapter">章节聚焦</option>
+          <option value="off">关闭连线</option>
+        </select>
+      </div>
+      <span class="topBarDivider"></span>
+      <div class="topBarGroup">
+        <button id="matrixBtn" class="toolBtn" title="用表格查看密集关系">矩阵</button>
+        <button id="boardBtn" class="toolBtn" title="章节/伏笔状态看板（含未回收伏笔）">看板</button>
+        <button id="linkManagerBtn" class="toolBtn" title="管理手动连线">连线</button>
+        <button id="bookStatsBtn" class="toolBtn" title="全书健康度统计">统计</button>
+        <button id="timelineBtn" class="toolBtn" title="从章节正文抽取时间标记的时间线">时间线</button>
+      </div>
+      <span class="topBarDivider"></span>
+      <div class="topBarGroup">
+        <button id="focusBtn" class="toolBtn" title="专注模式：隐藏侧栏/顶栏/聊天（Ctrl+Shift+F）">⛶ 专注</button>
+      </div>
     </div>
   </div>
   <div id="appMain">
@@ -1753,7 +1780,7 @@
     <div id="detailResizer" class="resizer" title="拖拽调整右侧栏宽度"></div>
     <aside id="detail">
       <div id="detailHead"><span>详情 / 编辑</span><button id="detailCollapse">▶</button></div>
-      <div id="detailBody"><div class="empty">点击节点查看完整内容</div></div>
+      <div id="detailBody"><div class="empty"><div class="emptyIcon">◈</div><div class="emptyTitle">点击节点查看完整内容</div><div class="emptySub">在画布中选择角色 · 设定 · 伏笔 · 章节节点</div></div></div>
     </aside>
   </div>
   <div id="statusBar">
