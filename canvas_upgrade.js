@@ -86,6 +86,21 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()
 document.getElementById('newNodeModal').addEventListener('click',function(e){if(e.target===this)closeModal();});
 
 function chatStorageKey() { return "novelChatHistory_" + encodeURIComponent(currentProject || "default"); }
+function roleStorageKey() { return "novelChatRole_" + encodeURIComponent(currentProject || "default"); }
+function currentRole() {
+  try { var r = localStorage.getItem(roleStorageKey()); return r && r !== 'general' ? r : 'general'; } catch (e) { return 'general'; }
+}
+function setCurrentRole(role) {
+  try { localStorage.setItem(roleStorageKey(), role || 'general'); } catch (e) {}
+}
+function syncRoleBar(role) {
+  var bar = document.getElementById('roleBar');
+  if (!bar) return;
+  var target = role || currentRole();
+  Array.prototype.forEach.call(bar.querySelectorAll('.roleChip'), function (chip) {
+    chip.classList.toggle('active', chip.dataset.role === target);
+  });
+}
 function loadChatHistory(showHint) {
   var key = chatStorageKey();
   try { var saved = JSON.parse(localStorage.getItem(key) || "[]"); chatHistory = Array.isArray(saved) ? saved.slice(-20) : []; } catch(e) { chatHistory = []; }
@@ -93,6 +108,7 @@ function loadChatHistory(showHint) {
   if (chatHistory.length) { for (var i=0;i<chatHistory.length;i++) addMsg(chatHistory[i].role, chatHistory[i].content); }
   else if (showHint) { addMsg("ref", "已切换到《" + currentProject + "》，聊天上下文已按项目隔离"); addMsg("assistant", "你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。"); }
   else { addMsg("assistant", "你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。"); }
+  syncRoleBar();
 }
 function addRefToChat(n, selectedText) {
   if (!n) return;
@@ -121,6 +137,7 @@ function expandChatPanel() {
     if (btn) btn.textContent = "—";
     var sb = document.getElementById("skillBar"); if (sb && sb.children.length) sb.style.display = "flex";
     var ab = document.getElementById("agentBar"); if (ab && ab.children.length) ab.style.display = "flex";
+    var rb = document.getElementById("roleBar"); if (rb) rb.style.display = "flex";
     var ac = document.getElementById("activityChat"); if (ac) ac.classList.add("on");
   }
   var bar = document.getElementById("refBar");

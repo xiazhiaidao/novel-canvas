@@ -957,6 +957,110 @@ async function main() {
       return (o.created && o.rejected && o.gone && o.cleanup) ? 'OK(拒绝后消失+二次拒绝报错)' : v;
     } catch (_) { return v; }
   });
+  await check('角色栏存在+切换持久化+欢迎语', async () => {
+    const v = await evalExpr(`(async () => {
+      const bar = document.getElementById('roleBar');
+      if (!bar) return JSON.stringify({ ok: false, why: 'no roleBar' });
+      const chips = [...bar.querySelectorAll('.roleChip')];
+      if (chips.length < 5) return JSON.stringify({ ok: false, why: 'chips<5' });
+      const before = localStorage.getItem('novelChatRole_' + encodeURIComponent(currentProject));
+      // 切换到「正文写手」并验证持久化 + 欢迎语
+      const writer = chips.find(c => c.dataset.role === 'writer');
+      if (!writer) return JSON.stringify({ ok: false, why: 'no writer chip' });
+      writer.click();
+      const saved = localStorage.getItem('novelChatRole_' + encodeURIComponent(currentProject));
+      const lastMsg = [...document.querySelectorAll('#chatMessages .msg')].pop();
+      const welcomeOk = lastMsg && /正文写手/.test(lastMsg.textContent);
+      // 还原为 general（若之前有保存值则还原）
+      const prevChip = before ? chips.find(c => c.dataset.role === before) : chips.find(c => c.dataset.role === 'general');
+      if (prevChip) prevChip.click();
+      return JSON.stringify({ ok: saved === 'writer' && welcomeOk, saved, welcomeOk });
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(角色切换+持久化+欢迎语)' : v; } catch (_) { return v; }
+  });
+
+  await check('AGENT_ROLES 服务端角色预设完整', async () => {
+    try {
+      const { AGENT_ROLES } = require(path.join(root, 'server.js'));
+      const keys = Object.keys(AGENT_ROLES || {});
+      const need = ['general', 'character', 'outline', 'writer', 'polish', 'reviewer'];
+      if (!need.every(k => keys.includes(k))) return '缺角色: ' + keys.join(',');
+      for (const k of need) {
+        const r = AGENT_ROLES[k];
+        if (!r || !r.label || !r.persona || !r.welcome) return k + ' 缺字段';
+        if (r.tools && !Array.isArray(r.tools)) return k + ' tools 非数组';
+      }
+      return 'OK(' + keys.length + ' 个角色, 工具范围/欢迎语/人设齐备)';
+    } catch (e) { return 'require 失败: ' + e.message; }
+  });
+
+  await check('file_edit 冲突保护(改后拒绝应用)', async () => {
+    const v = await evalExpr(`(async () => {
+      const project = currentProject;
+      const j = (r) => r.json();
+      const hdr = { 'Content-Type': 'application/json' };
+      const out = { created: false, conflicted: false, applied: false, cleaned: false };
+      // 1) 建测试文件
+      const c = await fetch('/api/file/create', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_conflict.md' }) }).then(j);
+      if (!c.ok) return JSON.stringify({ ok: false, step: 'create', error: c.error });
+      const w1 = await fetch('/api/file/save', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_conflict.md', content: '# 版本一\\n' }) }).then(j);
+      if (!w1.ok) return JSON.stringify({ ok: false, step: 'write1', error: w1.error });
+      // 2) 生成 file_edit 提案（基于版本一）
+      const p = await fetch('/api/propose_file_edit', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_conflict.md', content: '# 版本二\\n' }) }).then(j);
+      const pid = p && p.proposal ? p.proposal.id : '';
+      if (!pid) return JSON.stringify({ ok: false, step: 'propose', error: JSON.stringify(p).slice(0, 160) });
+      out.created = true;
+      // 3) 提案生成后文件被外部改掉（版本三）→ 模拟冲突
+      const w2 = await fetch('/api/file/save', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_conflict.md', content: '# 版本三\\n' }) }).then(j);
+      if (!w2.ok) return JSON.stringify({ ok: false, step: 'write2', error: w2.error });
+      // 4) 应用提案 → 应被拒绝（conflict）
+      const ap = await fetch('/api/apply_proposal', { method: 'POST', headers: hdr, body: JSON.stringify({ id: pid, project }) }).then(j);
+      out.conflicted = !ap.ok && ap.conflict === true && /已被修改/.test(ap.error || '');
+      // 5) 拒绝后提案应仍在（未误删），清理：reject + 删文件
+      const ls = await fetch('/api/proposals?project=' + encodeURIComponent(project)).then(j);
+      out.applied = (ls.proposals || []).some(x => x.id === pid);
+      await fetch('/api/proposals/reject', { method: 'POST', headers: hdr, body: JSON.stringify({ id: pid }) }).then(j);
+      const d = await fetch('/api/file/delete', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_conflict.md' }) }).then(j);
+      out.cleaned = d.ok === true;
+      return JSON.stringify(out);
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.created && o.conflicted && o.applied && o.cleaned) ? 'OK(冲突被拒+提案保留+清理)' : v;
+    } catch (_) { return v; }
+  });
+  cleanupSmokeBak();
+
+  await check('file_edit 正常应用(无冲突仍可写)', async () => {
+    const v = await evalExpr(`(async () => {
+      const project = currentProject;
+      const j = (r) => r.json();
+      const hdr = { 'Content-Type': 'application/json' };
+      const out = { applied: false, contentOk: false, cleaned: false };
+      const c = await fetch('/api/file/create', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_apply.md' }) }).then(j);
+      if (!c.ok) return JSON.stringify({ ok: false, step: 'create', error: c.error });
+      const w1 = await fetch('/api/file/save', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_apply.md', content: '# A\\n' }) }).then(j);
+      if (!w1.ok) return JSON.stringify({ ok: false, step: 'write1', error: w1.error });
+      const p = await fetch('/api/propose_file_edit', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_apply.md', content: '# B\\n' }) }).then(j);
+      const pid = p && p.proposal ? p.proposal.id : '';
+      if (!pid) return JSON.stringify({ ok: false, step: 'propose', error: JSON.stringify(p).slice(0, 160) });
+      // 不修改文件直接应用 → 应成功
+      const ap = await fetch('/api/apply_proposal', { method: 'POST', headers: hdr, body: JSON.stringify({ id: pid, project }) }).then(j);
+      if (!ap.ok) return JSON.stringify({ ok: false, step: 'apply', error: ap.error });
+      out.applied = true;
+      const f = await fetch('/api/file?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent('_smoke_apply.md')).then(j);
+      out.contentOk = String(f.content || '').trim() === '# B';
+      const d = await fetch('/api/file/delete', { method: 'POST', headers: hdr, body: JSON.stringify({ project, path: '_smoke_apply.md' }) }).then(j);
+      out.cleaned = d.ok === true;
+      return JSON.stringify(out);
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.applied && o.contentOk && o.cleaned) ? 'OK(无冲突应用成功+内容校验)' : v;
+    } catch (_) { return v; }
+  });
+  cleanupSmokeBak();
+
   await check('卷操作 API 可访问', async () => {
     const v = await evalExpr(`(async () => {
       const out = {};
@@ -1413,7 +1517,7 @@ async function cleanup() {
   try { fs.rmSync(path.join(root, '_smoke_loop_test'), { recursive: true, force: true }); } catch (_) {}
 }
 
-// 备份往返测试会通过 writeText 产生 _smoke_test.md.bak（API 删除只删 .md），这里兜底清理
+// 备份往返测试会通过 writeText 产生 _smoke_*.md.bak（API 删除只删 .md），这里兜底清理
 function cleanupSmokeBak() {
   try {
     const base = path.dirname(root);
@@ -1421,11 +1525,12 @@ function cleanupSmokeBak() {
     for (let depth = 0; depth < 4 && dirs.length; depth++) {
       const next = [];
       for (const d of dirs) {
-        const bak = path.join(d, '_smoke_test.md.bak');
-        if (fs.existsSync(bak)) { try { fs.rmSync(bak, { force: true }); } catch (_) {} }
         let entries = [];
         try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
         for (const e of entries) {
+          if (e.isFile() && /^_smoke_.*\.md\.bak$/.test(e.name)) {
+            try { fs.rmSync(path.join(d, e.name), { force: true }); } catch (_) {}
+          }
           if (e.isDirectory() && !e.name.startsWith('.')) next.push(path.join(d, e.name));
         }
       }

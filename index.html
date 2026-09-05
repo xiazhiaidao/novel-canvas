@@ -828,6 +828,38 @@
     cursor: pointer;
     padding: 0 4px;
   }
+  #roleBar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--panel-border);
+    flex-wrap: wrap;
+    background: rgba(255,255,255,.28);
+  }
+  .roleBarLabel {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    margin-right: 2px;
+  }
+  .roleChip {
+    padding: 3px 12px;
+    font-size: 12px;
+    border-radius: 16px;
+    border: 1px solid var(--panel-border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .15s;
+  }
+  .roleChip:hover { border-color: var(--accent); color: var(--accent); }
+  .roleChip.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
   #agentBar {
     display: flex;
     gap: 6px;
@@ -1693,6 +1725,15 @@
       <div id="chatPanel">
         <div id="chatHeader"><span class="chLeft"><span>AI 对话</span><select id="chatModel" title="选择 AI 模型"><option value="deepseek-v4-flash-0731">flash0731</option><option value="deepseek-chat">deepseek-chat</option><option value="deepseek-reasoner">deepseek-reasoner</option></select><select id="chatDock" title="对话框停靠位置"><option value="bottom">底部</option><option value="right">右侧</option><option value="left">左侧</option><option value="float">悬浮</option></select></span><span class="chRight"><button id="newChatBtn" title="清空当前项目对话">清空</button> <button id="chatToggle">＋</button></span></div>
         <div id="chatResizeHandle" title="拖拽调整大小"></div>
+        <div id="roleBar" style="display:none">
+          <span class="roleBarLabel">角色</span>
+          <button class="roleChip active" data-role="general" title="通用助手">通用</button>
+          <button class="roleChip" data-role="character" title="人物设计师">人物</button>
+          <button class="roleChip" data-role="outline" title="大纲规划师">大纲</button>
+          <button class="roleChip" data-role="writer" title="正文写手">正文</button>
+          <button class="roleChip" data-role="polish" title="润色编辑">润色</button>
+          <button class="roleChip" data-role="reviewer" title="审查员">审查</button>
+        </div>
         <div id="agentBar" style="display:none">
           <button class="agentCmd" data-agent="plot">剧情军师</button>
           <button class="agentCmd" data-agent="deslop">去AI味</button>

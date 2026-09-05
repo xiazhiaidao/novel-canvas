@@ -1805,6 +1805,23 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'remove_link', description: '移除画布上两个节点之间的手动连线。立即生效并保存。', parameters: { type: 'object', properties: { a: { type: 'string', description: '节点 id A' }, b: { type: 'string', description: '节点 id B' } }, required: ['a', 'b'] } } }
 ];
 
+// ── 多智能体角色预设（参照 DeepWrite 的角色化分工） ──
+// tools: null = 全部工具；数组 = 允许的工具名子集（按 AGENT_TOOLS 的 function.name）
+const AGENT_ROLES = {
+  general: { key: 'general', label: '通用助手', welcome: '你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。右键节点可“添加到对话”。', tools: null,
+    persona: '你是小说创作助手，正在协助创作《{project}》。请结合项目资料回答或写作，涉及查证时先调用工具再回答。' },
+  character: { key: 'character', label: '人物设计师', welcome: '我是人物设计师。告诉我想设计或深挖的角色，我会结合现有设定给出动机、矛盾、关系网与成长弧光方案。', tools: ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'edit_node', 'create_node', 'delete_node'],
+    persona: '你是资深人物设计师，擅长塑造有动机、有矛盾、有成长弧光的角色。请从动机、内心矛盾、与其他角色的关系、成长弧光四个维度思考，结合画布上的角色卡/设定/大纲给出方案。改动角色卡时生成提案供审阅。' },
+  outline: { key: 'outline', label: '大纲规划师', welcome: '我是大纲规划师。给我故事方向或现有大纲，我来规划章节结构、冲突节奏和钩子。', tools: ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'edit_node', 'create_node', 'delete_node', 'edit_file'],
+    persona: '你是大纲规划师，擅长把人物和剧情整理成可执行的分章大纲。规划时要保证：每章有明确目标、冲突与钩子；伏笔有埋设与回收计划；章节间节奏有起伏。修改大纲文件时生成提案供审阅。' },
+  writer: { key: 'writer', label: '正文写手', welcome: '我是正文写手。告诉我要写哪个章节/场景，我直接产出流畅有画面感的正文。', tools: ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'edit_node', 'edit_file'],
+    persona: '你是长篇网文正文写手，擅长直接产出流畅、有画面感的正文，保持文风一致。写作时：用具体动作和感官细节代替抽象叙述；每章结尾留钩子；保留人名地名与既有设定。修改章节正文时生成提案供审阅。' },
+  polish: { key: 'polish', label: '润色编辑', welcome: '我是润色编辑。把要改的正文发我，我来去AI味、压缩节奏、增强画面感。', tools: ['read_node', 'read_file', 'search', 'list_nodes', 'get_context', 'edit_node', 'edit_file'],
+    persona: '你是资深润色编辑，擅长去AI味、压缩节奏、增强画面感与情绪张力。规则：删解释总结、删光滑排比和“不是…是…”套路、把“告诉情绪”改成动作短句，保留剧情信息和原有人名地名。直接输出润色后的正文。' },
+  reviewer: { key: 'reviewer', label: '审查员', welcome: '我是审查员。告诉我审查范围（大纲/设定/伏笔/正文），我给出问题清单。', tools: ['read_node', 'read_file', 'search', 'list_nodes', 'get_context'],
+    persona: '你是严格的审查员，只做分析、不改内容。请发现并列出：设定冲突、时间线矛盾、角色状态不一致、伏笔失控（该回收未回收/相互矛盾）、章节节奏问题。每条给出位置和修改建议，简洁分条。' }
+};
+
 async function runAgentTool(name, args, root) {
   try {
     const id = 'p' + (proposalSeq++);
@@ -2218,6 +2235,35 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (pathname === '/api/propose_file_edit' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const rel = String(body.path || '');
+      const content = String(body.content || '');
+      if (typeof body.path !== 'string' || typeof body.content !== 'string') {
+        return sendJson(res, { error: 'bad request' });
+      }
+      const root = resolveProjectRoot(body.project || defaultProjectName());
+      if (!isSafePath(rel, root) || !isMdPath(rel)) return sendJson(res, { error: 'unsafe file path' });
+      const full = path.resolve(root, rel);
+      const oldContent = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.readFileSync(full, 'utf8') : '';
+      const proposalId = 'p' + (proposalSeq++);
+      const proposal = proposalSet({
+        id: proposalId,
+        kind: 'file_edit',
+        file: rel,
+        title: rel,
+        oldContent,
+        newContent: content,
+        root,
+        project: projectNameOfRoot(root)
+      });
+      return sendJson(res, { ok: true, proposal });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+
   if (pathname === '/api/node' && req.method === 'POST') {
     try {
       const body = await readBody(req);
@@ -2284,7 +2330,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (prop.kind === 'file_edit') {
         if (!isSafePath(prop.file, root) || !isMdPath(prop.file)) return sendJson(res, { error: 'unsafe file path' });
-        fs.mkdirSync(path.dirname(path.resolve(root, prop.file)), { recursive: true });
+        // 冲突保护：文件在提案生成后被改过（当前内容 ≠ 提案时的旧内容），拒绝应用，避免静默覆盖
+        const fullPath = path.resolve(root, prop.file);
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+          const currentContent = fs.readFileSync(fullPath, 'utf8');
+          if (currentContent !== String(prop.oldContent || '')) {
+            return sendJson(res, { error: '文件已被修改（提案生成后内容有变化），为避免静默覆盖已拒绝应用。请基于最新内容重新让 AI 生成提案。', conflict: true, current: currentContent.slice(0, 200) });
+          }
+        }
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [prop.file], 'AI 修改');
         writeText(prop.file, String(prop.newContent || ''), root);
         proposalDelete(body.id);
@@ -2469,8 +2523,11 @@ const server = http.createServer(async (req, res) => {
         };
         const agentSuffix = agentInstructions[agentMode] ? '\n\n【本次任务】\n' + agentInstructions[agentMode] : '';
         const toolHint = '\n\n你有工具可用：read_node / read_file / search / list_nodes / get_context 用于查证项目内容（不要凭摘要编造）；move_node / create_link / remove_link 直接操作画布；edit_node / create_node / delete_node 会生成提案（需要用户批准后才生效）；edit_file 可修改或新建项目内任意 Markdown 文件（如大纲/设定/新章节），同样生成提案。当用户要求查证、修改、分析具体内容时，先调用相应工具再回答。';
+        const roleKey = String(body.role || 'general');
+        const role = AGENT_ROLES[roleKey] || AGENT_ROLES.general;
+        const rolePersona = role.persona.replace(/\{project\}/g, body.project || path.basename(root));
         const payloadMessages = [
-          { role: 'system', content: `你是小说创作助手，正在协助创作《${body.project || path.basename(root)}》。请结合下面的项目资料和可用技能回答或写作。\n\n项目资料：\n${contextText}\n\n可用技能：\n${skills || '（无）'}${agentSuffix}${toolHint}` },
+          { role: 'system', content: `${rolePersona}\n\n项目资料：\n${contextText}\n\n可用技能：\n${skills || '（无）'}${agentSuffix}${toolHint}` },
           ...recentMessages
         ];
 const api = getApiConfig();
@@ -2484,6 +2541,8 @@ const api = getApiConfig();
         const model = (typeof body.model === 'string' && body.model.trim()) ? body.model : api.model;
         // deepseek-reasoner 不支持函数调用：切纯文本推理
         const useTools = model !== 'deepseek-reasoner';
+        // 角色工具范围：按角色预设过滤可用工具
+        const roleTools = role.tools ? AGENT_TOOLS.filter(t => role.tools.includes(t.function.name)) : AGENT_TOOLS;
         let currentMessages = payloadMessages;
         const createdProposals = [];
         const steps = [];
@@ -2491,7 +2550,7 @@ const api = getApiConfig();
         try {
           for (let round = 0; round < 10; round++) {
             const payload = { model, messages: currentMessages, stream: false };
-            if (useTools) { payload.tools = AGENT_TOOLS; payload.tool_choice = 'auto'; }
+            if (useTools && roleTools.length) { payload.tools = roleTools; payload.tool_choice = 'auto'; }
             const r = await fetch(api.base + '/chat/completions', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api.apiKey },
@@ -2967,4 +3026,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles };
+module.exports = { listMdFiles, AGENT_ROLES };

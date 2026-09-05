@@ -3380,7 +3380,7 @@ async function sendChat() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), model: modelSel ? modelSel.value : '' })
+      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), role: currentRole(), model: modelSel ? modelSel.value : '' })
     });
     const data = await res.json();
     if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
@@ -3440,7 +3440,7 @@ async function runAgent(mode) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), agentMode: mode, model: modelSel ? modelSel.value : '' })
+      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), agentMode: mode, role: currentRole(), model: modelSel ? modelSel.value : '' })
     });
     const data = await res.json();
     if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
@@ -4025,6 +4025,28 @@ initChatPanelDock();
 document.querySelectorAll('.agentCmd').forEach(btn => {
   btn.addEventListener('click', () => runAgent(btn.dataset.agent));
 });
+// 多智能体角色预设：切换角色时持久化 + 显示该角色欢迎语
+const ROLE_WELCOME = {
+  general: '你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。右键节点可“添加到对话”。',
+  character: '我是人物设计师。告诉我想设计或深挖的角色，我会结合现有设定给出动机、矛盾、关系网与成长弧光方案。',
+  outline: '我是大纲规划师。给我故事方向或现有大纲，我来规划章节结构、冲突节奏和钩子。',
+  writer: '我是正文写手。告诉我要写哪个章节/场景，我直接产出流畅有画面感的正文。',
+  polish: '我是润色编辑。把要改的正文发我，我来去AI味、压缩节奏、增强画面感。',
+  reviewer: '我是审查员。告诉我审查范围（大纲/设定/伏笔/正文），我给出问题清单。'
+};
+document.querySelectorAll('.roleChip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const role = chip.dataset.role || 'general';
+    const prev = currentRole();
+    setCurrentRole(role);
+    syncRoleBar(role);
+    if (role !== prev) {
+      const welcome = ROLE_WELCOME[role] || ROLE_WELCOME.general;
+      addMsg('assistant', welcome);
+      showToast('已切换到「' + chip.title + '」角色', 'info');
+    }
+  });
+});
 chatInput.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault();
@@ -4106,12 +4128,14 @@ function toggleChat() {
   const btn = document.getElementById('chatToggle');
   const skillBar = document.getElementById('skillBar');
   const agentBar = document.getElementById('agentBar');
+  const roleBar = document.getElementById('roleBar');
   const activityChat = document.getElementById('activityChat');
   if (msgs.style.display === 'none') {
     msgs.style.display = 'flex';
     row.style.display = 'flex';
     if (skillBar && skillBar.children.length) skillBar.style.display = 'flex';
     if (agentBar && agentBar.children.length) agentBar.style.display = 'flex';
+    if (roleBar) roleBar.style.display = 'flex';
     btn.textContent = '—';
     if (activityChat) activityChat.classList.add('on');
   } else {
@@ -4119,6 +4143,7 @@ function toggleChat() {
     row.style.display = 'none';
     if (skillBar) skillBar.style.display = 'none';
     if (agentBar) agentBar.style.display = 'none';
+    if (roleBar) roleBar.style.display = 'none';
     btn.textContent = '＋';
     if (activityChat) activityChat.classList.remove('on');
   }
