@@ -1,6 +1,6 @@
 {
   "name": "novel-canvas",
-  "version": "1.14.1",
+  "version": "1.15.0",
   "description": "小说画布 - 本地写作工作台（Electron 桌面壳 + 本地服务）",
   "main": "main.js",
   "scripts": {

@@ -979,6 +979,55 @@ async function main() {
     try { const o = JSON.parse(v); return o.ok ? 'OK(角色切换+持久化+欢迎语)' : v; } catch (_) { return v; }
   });
 
+  await check('chatToolbar 自动显隐+分隔线(纯CSS :has)', async () => {
+    const v = await evalExpr(`(async () => {
+      const tb = document.getElementById('chatToolbar');
+      const rb = document.getElementById('roleBar');
+      const ab = document.getElementById('agentBar');
+      const sep = tb ? tb.querySelector('.toolSep') : null;
+      if (!tb || !rb || !ab || !sep) return JSON.stringify({ ok: false, why: '缺元素' });
+      const g = (el) => getComputedStyle(el).display;
+      const beforeRb = rb.getAttribute('style'), beforeAb = ab.getAttribute('style');
+      // 1) 双栏都隐藏 → 工具栏隐藏、分隔线隐藏
+      rb.style.display = 'none'; ab.style.display = 'none';
+      await new Promise(r => setTimeout(r, 30));
+      const h1 = { tb: g(tb), sep: g(sep) };
+      // 2) 只显示角色栏 → 工具栏显示、分隔线隐藏
+      rb.style.display = 'flex';
+      await new Promise(r => setTimeout(r, 30));
+      const h2 = { tb: g(tb), sep: g(sep) };
+      // 3) 双栏都显示 → 工具栏显示、分隔线显示
+      ab.style.display = 'flex';
+      await new Promise(r => setTimeout(r, 30));
+      const h3 = { tb: g(tb), sep: g(sep) };
+      // 还原原始状态
+      rb.setAttribute('style', beforeRb || ''); ab.setAttribute('style', beforeAb || '');
+      return JSON.stringify({
+        ok: h1.tb === 'none' && h2.tb === 'flex' && h2.sep === 'none' && h3.tb === 'flex' && h3.sep === 'block',
+        h1, h2, h3
+      });
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(双栏隐藏→隐藏 / 单栏→显示无分隔 / 双栏→分隔线)' : v; } catch (_) { return v; }
+  });
+
+  await check('发送按钮黑字可读(两主题)', async () => {
+    const v = await evalExpr(`(async () => {
+      const cs = document.getElementById('chatSend');
+      if (!cs) return JSON.stringify({ ok: false, why: 'no chatSend' });
+      const setTheme = (m) => { document.getElementById('themeMode').value = m; document.getElementById('themeOk').click(); };
+      setTheme('dark');
+      await new Promise(r => setTimeout(r, 40));
+      const darkColor = getComputedStyle(cs).color;
+      setTheme('light');
+      await new Promise(r => setTimeout(r, 40));
+      const lightColor = getComputedStyle(cs).color;
+      setTheme('dark');
+      await new Promise(r => setTimeout(r, 40));
+      return JSON.stringify({ ok: darkColor === 'rgb(0, 0, 0)' && lightColor === 'rgb(0, 0, 0)', darkColor, lightColor });
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(浅/深两主题发送按钮均黑字)' : v; } catch (_) { return v; }
+  });
+
   await check('AGENT_ROLES 服务端角色预设完整', async () => {
     try {
       const { AGENT_ROLES } = require(path.join(root, 'server.js'));

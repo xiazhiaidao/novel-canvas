@@ -869,3 +869,158 @@ html[data-theme="dark"] #axisBar .barBtn:focus-visible {
   outline-offset: 1px;
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   v1.15：AI 对话面板重构 —— 工具区合并 / 气泡分层 / 输入区现代化（深色适配）
+   ════════════════════════════════════════════════════════════════════ */
+html[data-theme="dark"] #chatHeader {
+  background: linear-gradient(90deg, rgba(255,205,145,.30), rgba(255,180,90,.10));
+}
+html[data-theme="dark"] #chatToolbar {
+  background: transparent;
+  border-bottom-color: rgba(255,255,255,.08);
+}
+html[data-theme="dark"] #roleBar {
+  background: rgba(255,180,84,.06);
+  border-bottom-color: rgba(255,255,255,.08);
+}
+html[data-theme="dark"] #chatToolbar .toolSep {
+  background: rgba(255,255,255,.14);
+}
+html[data-theme="dark"] .roleChip,
+html[data-theme="dark"] .agentCmd {
+  border-color: rgba(255,255,255,.13);
+  color: #a9b6c6;
+}
+html[data-theme="dark"] .roleChip:hover,
+html[data-theme="dark"] .agentCmd:hover {
+  border-color: rgba(255,180,84,.5);
+  color: #ffd9a0;
+  background: rgba(255,180,84,.10);
+}
+html[data-theme="dark"] .roleChip.active {
+  background: linear-gradient(135deg, #e8a34a, #d97706);
+  border-color: rgba(255,190,100,.6);
+  color: #1a140a;
+  box-shadow: 0 2px 10px rgba(255,170,60,.28);
+}
+html[data-theme="dark"] #agentBar .agentCmd { color: #c7d2de; }
+html[data-theme="dark"] #chatMessages .msg.assistant {
+  background: rgba(255,255,255,.05);
+  border-color: rgba(255,255,255,.10);
+}
+html[data-theme="dark"] #chatMessages .msg.user {
+  background: linear-gradient(135deg, rgba(255,190,100,.55), rgba(217,119,6,.38));
+  color: #fff3dd;
+}
+html[data-theme="dark"] #chatMessages .msg.tool {
+  background: rgba(122,162,247,.12);
+  color: #a8c0f5;
+}
+html[data-theme="dark"] #chatMessages .msg.ref {
+  background: rgba(255,180,84,.10);
+  border-color: rgba(255,180,84,.3);
+  color: #e8c48a;
+}
+html[data-theme="dark"] #chatModel,
+html[data-theme="dark"] #chatDock {
+  color: #a9b6c6;
+  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.06);
+}
+html[data-theme="dark"] #chatModel:hover,
+html[data-theme="dark"] #chatDock:hover {
+  border-color: rgba(255,180,84,.5);
+  background: rgba(255,180,84,.08);
+}
+html[data-theme="dark"] #chatHeader .chRight #newChatBtn {
+  color: #8b98a9;
+  border-color: rgba(255,255,255,.12);
+}
+html[data-theme="dark"] #chatHeader .chRight #newChatBtn:hover {
+  color: #fca5a5;
+  border-color: rgba(248,113,113,.4);
+  background: rgba(248,113,113,.08);
+}
+html[data-theme="dark"] #chatInput {
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.12);
+}
+html[data-theme="dark"] #chatInput:focus {
+  border-color: rgba(255,190,100,.5);
+  box-shadow: 0 0 0 3px rgba(255,180,84,.12);
+}
+html[data-theme="dark"] #chatSend {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: var(--text-strong);
+  border: none;
+  box-shadow: 0 2px 10px rgba(217,119,6,.32);
+}
+html[data-theme="dark"] #chatToolbar:has(> :not([style*="display: none"]):not(.toolSep)) {
+  display: flex;
+}
+html[data-theme="dark"] #chatToolbar:not(:has(> :not([style*="display: none"]):not(.toolSep))) {
+  display: none;
+}
+
+/* ── 深色微调：助手气泡浮层感 / 清空按钮对比 / 胶囊可读性 ── */
+html[data-theme="dark"] #chatMessages .msg.assistant {
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+html[data-theme="dark"] #chatHeader .chRight #newChatBtn {
+  color: #c3d0dd;
+  border-color: rgba(255,255,255,.18);
+  background: rgba(255,255,255,.04);
+}
+html[data-theme="dark"] #roleBar .roleChip {
+  color: #c7d2de;
+}
+html[data-theme="dark"] #roleBar .roleChip.active {
+  color: #1a140a;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   v1.15 浅色生效层：覆盖墨金浅色聊天旧规则（本文件后加载、同/高特异性获胜），
+   使「琥珀用户气泡 + 玻璃助手气泡 + 现代化输入区」在浅色主题同样生效。
+   强调文字仍走 force-black（黑字）——发送按钮/激活胶囊/头部标题黑字可读。
+   ════════════════════════════════════════════════════════════════════ */
+#chatMessages .msg.user {
+  background: linear-gradient(135deg, rgba(245,197,107,.85), rgba(245,158,11,.55));
+  color: #3d2b00;
+  border: 1px solid rgba(180,120,40,.22);
+  border-bottom-right-radius: 6px;
+}
+#chatMessages .msg.assistant {
+  background: #ffffff;
+  border: 1px solid rgba(15,23,42,.09);
+  color: var(--text);
+  border-bottom-left-radius: 6px;
+  box-shadow: 0 2px 6px rgba(15,23,42,.07);
+}
+#chatMessages .msg.ref {
+  background: rgba(245,197,107,.18);
+  border: 1px dashed rgba(180,120,40,.35);
+  color: var(--text-strong);
+}
+#chatHeader {
+  background: linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,255,255,.30));
+  border-bottom-color: rgba(15,23,42,.10);
+}
+#chatSend {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  border: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 2px 8px rgba(180,130,50,.20);
+}
+#chatSend:hover {
+  background: linear-gradient(135deg, #fcd34d, #fbbf24);
+}
+
+/* ── toolSep 分隔线：角色栏 + 指令栏都可见时显示（深浅主题共用） ── */
+#chatToolbar:has(#roleBar:not([style*="display: none"])):has(#agentBar:not([style*="display: none"])) .toolSep {
+  display: block;
+  width: 1px;
+  align-self: stretch;
+  margin: 7px 2px;
+  background: var(--panel-border);
+  border-radius: 1px;
+}
+

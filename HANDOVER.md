@@ -3,6 +3,15 @@
 > 本文件供新对话快速接手。目标：在 novel-canvas 应用内完成 **4 项功能**，全部通过冒烟测试（当前基线 **52 项全绿**，完成后应 60 项左右）。
 > 生成时间：当前会话（布局 v3 确定性精确尺寸流式布局已完成、AI 设置已并入左下角设置弹窗、AI 对话框可停靠/拉伸已完成、52 项冒烟全绿）。
 
+> **💬 v1.15 AI 对话面板重构（完成，2026-09-06 会话）**：接续工作区未提交的 v1.15 聊天面板改动并收尾。交付：
+> - **结构**：`#chatToolbar` 收拢角色栏 + 指令栏，单下边框（原 roleBar `border-bottom` 移除避免双线）；`.toolSep` 分隔线——两栏都可见时显示（纯 CSS `:has`，index.html base + canvas_theme.css 末浅色生效层 + 深色块）。
+> - **修复的关键 bug（初始态）**：HTML `style="display:none"`（冒号后无空格）与 `:has` 里的 `[style*="display: none"]`（有空格）不匹配 → 页面加载时 `#chatToolbar` 误显示、`.toolSep` 误显。已把 index.html 全部 13 处静态 `display:none` 归一化为带空格写法；JS 侧 `el.style.display='none'` 序列化本就带空格，双向一致。
+> - **视觉（深浅两主题统一）**：用户气泡琥珀渐变（浅色 `#3d2b00` 深棕字 / 深色 `#fff3dd` 米白字）、助手气泡白卡/玻璃卡、`#chatSend` 亮琥珀 `#fbbf24→#f59e0b` + 黑字（force-black 保证对比，两主题均 `rgb(0,0,0)`）、`#chatHeader` 深色提亮为 `rgba(255,205,145,.30)→rgba(255,180,90,.10)`（黑字可读）、`.roleChip.active` 亮琥珀 + 黑字（修原白字 on 琥珀对比不足）。
+> - **浅色生效层**：canvas_theme.css 末尾新增 v1.15 浅色块（同/高特异性后加载，覆盖墨金浅色聊天旧规则——此前 index.html 新规则全是死代码）。
+> - **冒烟 +2 项**（smoke-test.js 角色栏检查后）：`chatToolbar 自动显隐+分隔线(纯CSS :has)`、`发送按钮黑字可读(两主题)`。基线 88 → 90。
+> - ⚠️ **本会话未能跑全量冒烟**：环境沙箱阻止 headless Edge CDP 启动（crashpad/mojo `OpenProcess 拒绝访问`，提权被用户取消）。改用共享浏览器实测：CDP 计算样式探针（深浅两主题 toolbar 显隐/toolSep/气泡/发送按钮/胶囊全部符合预期）+ 截图 2 张 + 视觉模型评审通过。**恢复环境后先跑 `npm test`（预期 90 项）再提交**；提交前也可自行删除 CHANGELOG 里的 ⚠️ 行。
+> - **改动文件**：`index.html`（base 层 + 13 处 display 归一化）、`canvas_theme.css`（深色修正 + 浅色生效层 + toolSep）、`scripts/smoke-test.js`（+2 项）、`CHANGELOG.md`（v1.15.0）、`package.json`（1.15.0）。
+
 > **✅ 已完成（2026-08-29 会话）**：四项功能全部落地，冒烟 **60/60 全绿**（52 基线 + 8 新增）。新增代码位置见下，后续新会话无需重做，可直接在其上继续开发：
 > - 功能① 回滚+备份：server.js `backupDir/snapshotFiles/snapshotLayoutThrottled/listBackups/pruneBackups/restoreBackup`（L1105 起，`getApiConfig` 之后）；挂载点 `/api/apply_proposal` 4 分支 + `/api/file/save|delete` + `/api/layout`（节流 60s）；路由 `GET /api/backups`（L1708）、`POST /api/backups/restore`（L1716）；前端设置弹窗第三 tab「历史」`settingsTabHistory/settingsPaneHistory/backupList` + `loadBackupList()`（index.html L4587 起）。
 > - 功能③ 用量统计：`usageFile/loadUsage/saveUsage/recordUsage/summarizeUsage`（L1223 起）；**7 个 LLM 调用点全部挂载**（L788/824/858/959/2176/2241/2285）；`/api/chat` 响应附带 `usage`；路由 `GET /api/usage`（L1727）；前端聊天消息末尾 `addUsageNote()`（L4726）+ AI tab 内 `#aiUsageInfo` 今日/累计行。
