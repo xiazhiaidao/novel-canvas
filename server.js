@@ -1791,8 +1791,8 @@ function summarizeAgentResult(tool, args, result) {
 }
 
 const AGENT_TOOLS = [
-  { type: 'function', function: { name: 'read_node', description: '读取画布中某个节点的完整内容（章节/角色/设定/伏笔等）。查证任何节点内容都应先用它，不要凭上下文里的摘要编造。', parameters: { type: 'object', properties: { id: { type: 'string', description: '节点 id，如 chapter:正文:第一卷:第01章:第1章-xxx 或 role:莫余' } }, required: ['id'] } } },
-  { type: 'function', function: { name: 'read_file', description: '读取项目内任意 Markdown/文本文件的完整内容（相对项目根路径）。', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对路径，如 设定/角色/莫余.md 或 大纲/第一卷大纲.md' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'read_node', description: '读取画布中某个节点的完整内容（章节/角色/设定/伏笔等）。查证任何节点内容都应先用它，不要凭上下文里的摘要编造。id 大小写不敏感且支持按标题尾部匹配，找不到时会返回相近节点 id 供纠正。', parameters: { type: 'object', properties: { id: { type: 'string', description: '节点 id，如 chapter:第三卷·源能回廊:80-D批第一人:80-D批第一人 或 role:莫余；也可以只给末尾标题段（如 80-D批第一人）' } }, required: ['id'] } } },
+  { type: 'function', function: { name: 'read_file', description: '读取项目内任意 Markdown/文本文件的完整内容（相对项目根路径）。路径大小写不敏感；若你猜测了「正文/」等前缀而项目里没有，会自动去掉前缀重试；找不到时返回相近文件路径。', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对路径，如 第三卷·源能回廊/80-D批第一人.md 或 设定.md' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'search', description: '在项目全部节点（标题+内容）和 Markdown 文件中搜索关键词，返回匹配位置与片段。用于查证某角色/伏笔/设定出现在哪里。', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词（一个词或短句）' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'list_nodes', description: '列出项目全部节点清单（按类型分组），含每节点 id、标题、字数。想了解项目全貌时用。type 可选过滤：角色/势力/设定/伏笔/章节/大纲/上下文/未识别（未识别=未被规则覆盖的内容）。', parameters: { type: 'object', properties: { type: { type: 'string', description: '可选过滤：角色/势力/设定/伏笔/章节/大纲/上下文/未识别' } } } } },
   { type: 'function', function: { name: 'get_context', description: '重新获取项目结构化上下文（大纲/角色/设定/伏笔/最近章节等）。当你需要确认项目全局状态时调用。', parameters: { type: 'object', properties: {} } } },
@@ -1822,22 +1822,102 @@ const AGENT_ROLES = {
     persona: '你是严格的审查员，只做分析、不改内容。请发现并列出：设定冲突、时间线矛盾、角色状态不一致、伏笔失控（该回收未回收/相互矛盾）、章节节奏问题。每条给出位置和修改建议，简洁分条。' }
 };
 
+// 宽松查找节点：先精确匹配，再大小写不敏感，再按 id 尾部段匹配。
+// LLM 从正文/记忆推断的 id 常与磁盘真实文件名大小写不一致（如 80-d批第一人 vs 80-D批第一人）
+// 或段数拼错（如把标题段重复/遗漏）——精确匹配会误报 node not found。
+function findNodeLoose(nodes, id) {
+  const raw = String(id || '');
+  if (!raw) return { candidates: [] };
+  // 1) 精确
+  const exact = nodes.find(n => n.id === raw);
+  if (exact) return { node: exact };
+  // 2) 大小写不敏感
+  const lower = raw.toLowerCase();
+  const ci = nodes.find(n => n.id.toLowerCase() === lower);
+  if (ci) return { node: ci };
+  // 3) 尾部段匹配：id 最后一段（文件名/标题）大小写不敏感
+  const tail = raw.split(':').pop().toLowerCase();
+  if (tail) {
+    const byTail = nodes.filter(n => {
+      const segs = n.id.split(':');
+      return segs.length >= 2 && segs[segs.length - 1].toLowerCase() === tail;
+    });
+    if (byTail.length === 1) return { node: byTail[0] };
+    if (byTail.length > 1) return { candidates: byTail };
+  }
+  // 4) 候选：任意段包含查询尾（大小写不敏感），供错误提示引导
+  const fuzzy = nodes.filter(n => n.id.toLowerCase().includes(tail)).slice(0, 5);
+  return { candidates: fuzzy };
+}
+
+// 宽松解析项目内文件路径：先精确，再容忍常见前缀猜测错误（如多了「正文/」），
+// 再按文件名大小写不敏感/包含匹配，返回候选列表供错误提示。
+function resolveFileLoose(root, rel) {
+  const raw = String(rel || '').trim();
+  if (!raw) return { full: null, rel: raw, candidates: [] };
+  const check = (p) => {
+    const full = path.resolve(root, p);
+    return fs.existsSync(full) && fs.statSync(full).isFile() ? { full, rel: p } : null;
+  };
+  const segs = raw.split(/[\\/]/);
+  const base = segs[segs.length - 1];
+  // 1) 精确
+  let hit = check(raw);
+  if (hit) return hit;
+  // 2) 去掉「正文/」等常见卷前缀（AI 常按通用小说结构猜测）
+  if (segs.length > 1) {
+    const stripped = segs.slice(1).join('/');
+    hit = check(stripped);
+    if (hit) return hit;
+    // 3) 再去掉任意一级目录（若 AI 猜了不存在的中间目录），只留文件名
+    hit = check(base);
+    if (hit) return hit;
+  }
+  // 4) 候选：目录下文件名包含（大小写不敏感），供错误提示
+  const candidates = [];
+  const dir = segs.length > 1 ? segs.slice(0, -1).join('/') : '';
+  const wanted = base ? base.toLowerCase() : '';
+  const scanDir = dir && fs.existsSync(path.resolve(root, dir)) ? path.resolve(root, dir) : root;
+  try {
+    for (const f of fs.readdirSync(scanDir)) {
+      if (!/\.(md|txt)$/i.test(f)) continue;
+      if (wanted && f.toLowerCase().includes(wanted)) {
+        const relCand = (dir ? dir + '/' : '') + f;
+        candidates.push(relCand);
+        if (candidates.length >= 5) break;
+      }
+    }
+  } catch (_) {}
+  return { full: null, rel: raw, candidates };
+}
+
 async function runAgentTool(name, args, root) {
   try {
     const id = 'p' + (proposalSeq++);
     if (name === 'read_node') {
       const nodes = buildNodes(root);
-      const node = nodes.find(n => n.id === args.id);
-      if (!node) return { error: 'node not found: ' + args.id + '（可用 list_nodes 查看全部节点 id）' };
+      const found = findNodeLoose(nodes, args.id);
+      const node = found.node;
+      if (!node) {
+        const hint = (found.candidates && found.candidates.length)
+          ? '，相近节点：' + found.candidates.map(c => c.id).join(' / ')
+          : '（可用 list_nodes 查看全部节点 id）';
+        return { error: 'node not found: ' + args.id + hint };
+      }
       return { title: node.title, label: node.label, file: node.file, chars: (node.content || '').length, content: node.content || '' };
     }
     if (name === 'read_file') {
       const rel = String(args.path || '');
       if (!isSafePath(rel, root) || !/\.(md|txt)$/i.test(rel)) return { error: 'unsafe or invalid file path: ' + rel };
-      const full = path.resolve(root, rel);
-      if (!fs.existsSync(full)) return { error: 'file not found: ' + rel };
-      const content = fs.readFileSync(full, 'utf8');
-      return { path: rel, chars: content.length, content: content.slice(0, 20000) };
+      const r = resolveFileLoose(root, rel);
+      if (!r.full) {
+        const hint = (r.candidates && r.candidates.length)
+          ? '，相近文件：' + r.candidates.join(' / ')
+          : '';
+        return { error: 'file not found: ' + rel + hint };
+      }
+      const content = fs.readFileSync(r.full, 'utf8');
+      return { path: r.rel, chars: content.length, content: content.slice(0, 20000) };
     }
     if (name === 'search') {
       const q = String(args.query || '').trim();
@@ -1871,7 +1951,7 @@ async function runAgentTool(name, args, root) {
     }
     if (name === 'edit_node') {
       const nodes = buildNodes(root);
-      const node = nodes.find(n => n.id === args.id);
+      const node = findNodeLoose(nodes, args.id).node;
       if (!node) return { error: 'node not found: ' + args.id };
       const oldContent = node.content || '';
       const newContent = String(args.content || '');
@@ -1888,7 +1968,7 @@ async function runAgentTool(name, args, root) {
     }
     if (name === 'delete_node') {
       const nodes = buildNodes(root);
-      const node = nodes.find(n => n.id === args.id);
+      const node = findNodeLoose(nodes, args.id).node;
       if (!node) return { error: 'node not found: ' + args.id };
       proposalSet({ id, kind: 'delete', file: node.file, title: node.title, oldContent: node.content || '', newContent: '', root, project: projectNameOfRoot(root) });
       return { proposal_id: id, action: 'delete', file: node.file, title: node.title };
@@ -1916,17 +1996,18 @@ async function runAgentTool(name, args, root) {
       const links = Array.isArray(layout.customLinks) ? layout.customLinks : [];
       const nodes = buildNodes(root);
       const a = String(args.a || ''), b = String(args.b || '');
-      if (!nodes.some(n => n.id === a) || !nodes.some(n => n.id === b)) return { error: 'node not found (a/b)' };
+      const na = findNodeLoose(nodes, a).node, nb = findNodeLoose(nodes, b).node;
+      if (!na || !nb) return { error: 'node not found (a/b)' };
       const key = (x, y) => (x < y ? x + '\u0000' + y : y + '\u0000' + x);
       if (name === 'create_link') {
-        if (!links.some(l => Array.isArray(l) && key(l[0], l[1]) === key(a, b))) links.push([a, b]);
+        if (!links.some(l => Array.isArray(l) && key(l[0], l[1]) === key(na.id, nb.id))) links.push([na.id, nb.id]);
       } else {
-        const i = links.findIndex(l => Array.isArray(l) && key(l[0], l[1]) === key(a, b));
+        const i = links.findIndex(l => Array.isArray(l) && key(l[0], l[1]) === key(na.id, nb.id));
         if (i !== -1) links.splice(i, 1);
       }
       layout.customLinks = links;
       saveLayout(layout, root);
-      return { ok: true, a, b };
+      return { ok: true, a: na.id, b: nb.id };
     }
     return { error: 'unknown tool ' + name };
   } catch (e) {
@@ -3026,4 +3107,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles, AGENT_ROLES };
+module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot };

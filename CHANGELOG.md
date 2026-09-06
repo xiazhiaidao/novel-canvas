@@ -2,7 +2,15 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.15.0（当前）
+## 1.15.1（当前）
+
+### 修复（AI 工具节点/文件查找健壮性）
+- **根因**：`runAgentTool` 的 `read_node`/`edit_node`/`delete_node`/`create_link`/`remove_link` 用 JS 字符串精确匹配节点 id（大小写敏感），`read_file` 用精确路径——LLM 从正文/记忆推断的 id 与磁盘真实大小写不一致（如 `80-d批第一人` vs `80-D批第一人`）或段数拼错时反复报 `node not found`；猜带 `正文/` 前缀而项目无该目录时报 `file not found`（「获取项目上下文」时一连串工具失败）。
+- **修复**：新增 `findNodeLoose(nodes, id)`——精确 → 大小写不敏感 → 按 id 尾部段匹配 → 候选提示；`resolveFileLoose(root, rel)`——精确 → 去「正文/」等前缀重试 → 只留文件名重试 → 目录内包含匹配候选。`read_node`/`read_file`/`edit_node`/`delete_node`/`create_link`/`remove_link` 全部改用宽松查找；错误消息附相近 id/路径候选，引导 LLM 下次用对。
+- **工具描述更新**：`read_node`/`read_file` 说明 id/路径大小写不敏感、支持尾部段/去前缀回退。
+- **验证**：临时脚本对「列车求生」真实数据复现日志全部失败场景（小写 id、少一段 id、混合大小写、`正文/` 前缀）→ 全部命中；`node --check` 通过。导出 `findNodeLoose/resolveFileLoose/buildNodes/resolveProjectRoot` 供测试与冒烟复用。
+
+## 1.15.0
 
 ### 优化（AI 对话面板重构 · 完成）
 - **工具区合并**：角色栏 + 指令栏统一收进 `#chatToolbar`，整体一个下边框，消除双线；两栏都可见时显示 1px 竖向分隔线（`.toolSep`，纯 CSS `:has` 控制）。

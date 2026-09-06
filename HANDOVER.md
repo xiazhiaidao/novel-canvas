@@ -3,6 +3,13 @@
 > 本文件供新对话快速接手。目标：在 novel-canvas 应用内完成 **4 项功能**，全部通过冒烟测试（当前基线 **52 项全绿**，完成后应 60 项左右）。
 > 生成时间：当前会话（布局 v3 确定性精确尺寸流式布局已完成、AI 设置已并入左下角设置弹窗、AI 对话框可停靠/拉伸已完成、52 项冒烟全绿）。
 
+> **🔧 v1.15.1 AI 工具查找健壮性（2026-09-06 会话）**：用户贴出「获取项目上下文」工具日志——`read_node` 反复 `node not found: chapter:第三卷·源能回廊:80-d批第一人`（小写 vs 实际 `80-D批第一人`）、`read_file` 报 `file not found: 正文/第三卷·源能回廊/80-D批第一人.md`（项目无 `正文/` 目录）。根因：agent 工具层全部用 JS 字符串精确匹配（大小写敏感）+ 精确路径，LLM 推断的 id/路径与磁盘不一致即失败。修复：
+> - `findNodeLoose(nodes, id)`（精确 → 大小写不敏感 → id 尾部段匹配 → 候选提示）；`resolveFileLoose(root, rel)`（精确 → 去「正文/」等前缀重试 → 只留文件名重试 → 目录内包含匹配候选）。`read_node/read_file/edit_node/delete_node/create_link/remove_link` 全部改用；错误消息附相近 id/路径候选。
+> - 工具描述同步更新（提示大小写不敏感、尾部段、去前缀回退）。
+> - `module.exports` 追加 `findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot`（供测试/冒烟复用，纯函数无害）。
+> - 验证：临时脚本对「列车求生」真实数据复现日志 4 个失败场景全部命中；`node --check` 通过；临时脚本已删。⚠️ 全量冒烟仍受环境限制（headless Edge 无法启动）——恢复环境后 `npm test`（90 项）。
+> - 注意：8787 服务实际由 Electron 主窗口健康检查自动拉起（进程形态为 `electron.exe server.js`，读取磁盘最新代码，功能等同 node 跑 server）。重启服务 = 杀监听进程后立即起 node server.js，或直接杀后等 Electron 3 秒内自动拉起。
+
 > **💬 v1.15 AI 对话面板重构（完成，2026-09-06 会话）**：接续工作区未提交的 v1.15 聊天面板改动并收尾。交付：
 > - **结构**：`#chatToolbar` 收拢角色栏 + 指令栏，单下边框（原 roleBar `border-bottom` 移除避免双线）；`.toolSep` 分隔线——两栏都可见时显示（纯 CSS `:has`，index.html base + canvas_theme.css 末浅色生效层 + 深色块）。
 > - **修复的关键 bug（初始态）**：HTML `style="display:none"`（冒号后无空格）与 `:has` 里的 `[style*="display: none"]`（有空格）不匹配 → 页面加载时 `#chatToolbar` 误显示、`.toolSep` 误显。已把 index.html 全部 13 处静态 `display:none` 归一化为带空格写法；JS 侧 `el.style.display='none'` 序列化本就带空格，双向一致。
