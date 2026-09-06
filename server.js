@@ -1586,31 +1586,66 @@ function recordUsage(model, usage) {
     const prompt = Number(usage.prompt_tokens != null ? usage.prompt_tokens : usage.prompt) || 0;
     const completion = Number(usage.completion_tokens != null ? usage.completion_tokens : usage.completion) || 0;
     const total = Number(usage.total_tokens != null ? usage.total_tokens : usage.total) || (prompt + completion);
+    // 缓存命中（prompt 前缀缓存）：OpenAI 兼容的 prompt_tokens_details.cached_tokens
+    const cached = Number(
+      (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ||
+      (usage.prompt_details && usage.prompt_details.cached_tokens)
+    ) || 0;
     const u = loadUsage();
     const key = usageDayKey(Date.now());
-    const day = u.byDay[key] = u.byDay[key] || { prompt: 0, completion: 0, total: 0, calls: 0 };
-    day.prompt += prompt; day.completion += completion; day.total += total; day.calls++;
+    const day = u.byDay[key] = u.byDay[key] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 };
+    day.prompt += prompt; day.completion += completion; day.total += total; day.calls++; day.cached += cached;
     const mkey = String(model || 'unknown');
-    const m = u.byModel[mkey] = u.byModel[mkey] || { prompt: 0, completion: 0, total: 0, calls: 0 };
-    m.prompt += prompt; m.completion += completion; m.total += total; m.calls++;
-    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total });
-    if (u.byChat.length > 50) u.byChat = u.byChat.slice(-50); // byChat 只留最近 50 条
+    const m = u.byModel[mkey] = u.byModel[mkey] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 };
+    m.prompt += prompt; m.completion += completion; m.total += total; m.calls++; m.cached += cached;
+    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total, cached });
+    if (u.byChat.length > 200) u.byChat = u.byChat.slice(-200); // byChat 只留最近 200 条
     saveUsage(u);
   } catch (_) {}
 }
-function summarizeUsage() {
+// 空聚合结构（含 cached 缓存命中）
+function emptyUsageAgg() { return { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 }; }
+// 按时间段聚合：range = day | 7d | 30d | month | all（day 默认今日）
+function aggregateUsage(range) {
   const u = loadUsage();
-  const today = u.byDay[usageDayKey(Date.now())] || { prompt: 0, completion: 0, total: 0, calls: 0 };
-  const total = { prompt: 0, completion: 0, total: 0, calls: 0 };
-  for (const k of Object.keys(u.byDay)) {
+  const agg = { day: emptyUsageAgg(), total: emptyUsageAgg(), byModel: {}, byDay: [] };
+  const now = new Date();
+  const monthPrefix = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  const todayKey = usageDayKey(now.getTime());
+  // 时间范围边界（含当日）
+  const rangeDays = range === '7d' ? 7 : range === '30d' ? 30 : 0;
+  const minKey = rangeDays ? usageDayKey(now.getTime() - (rangeDays - 1) * 86400000) : '';
+  const isInRange = (key) => {
+    if (range === 'all') return true;
+    if (range === 'month') return key.startsWith(monthPrefix);
+    if (range === 'day') return key === todayKey;
+    return minKey ? key >= minKey && key <= todayKey : true;
+  };
+  const dayKeys = Object.keys(u.byDay).filter(isInRange).sort();
+  for (const k of dayKeys) {
     const d = u.byDay[k];
-    total.prompt += d.prompt || 0; total.completion += d.completion || 0; total.total += d.total || 0; total.calls += d.calls || 0;
+    agg.total.prompt += d.prompt || 0; agg.total.completion += d.completion || 0;
+    agg.total.total += d.total || 0; agg.total.calls += d.calls || 0; agg.total.cached += d.cached || 0;
+    if (range === 'day' && k === todayKey) Object.assign(agg.day, d);
   }
-  const byDay = [];
-  for (let i = 29; i >= 0; i--) {
-    const d = u.byDay[usageDayKey(Date.now() - i * 86400000)] || { prompt: 0, completion: 0, total: 0, calls: 0 };
-    byDay.push({ day: usageDayKey(Date.now() - i * 86400000), ...d });
+  if (range === 'day') Object.assign(agg.day, u.byDay[todayKey] || emptyUsageAgg());
+  // byModel 聚合
+  for (const [mkey, m] of Object.entries(u.byModel)) {
+    agg.byModel[mkey] = { prompt: m.prompt || 0, completion: m.completion || 0, total: m.total || 0, calls: m.calls || 0, cached: m.cached || 0 };
   }
+  // byDay 明细（最多 30 天，倒序）
+  const recentDays = dayKeys.slice(-30).reverse();
+  for (const k of recentDays) {
+    const d = u.byDay[k];
+    agg.byDay.push({ day: k, prompt: d.prompt || 0, completion: d.completion || 0, total: d.total || 0, calls: d.calls || 0, cached: d.cached || 0 });
+  }
+  return agg;
+}
+function summarizeUsage(range) {
+  const u = loadUsage();
+  const agg = aggregateUsage(range || 'day');
+  // 最近调用明细（byChat 已按 ts 升序，倒序=最新在前）
+  const recent = (u.byChat || []).slice().reverse().slice(0, 50);
   // 可选费用估算：ai-config.json 支持 pricePerM { "模型名": { "in": x, "out": y } }（每百万 token 美元）
   let cost = null;
   try {
@@ -1627,7 +1662,7 @@ function summarizeUsage() {
       cost.total = Math.round(cost.total * 10000) / 10000;
     }
   } catch (_) {}
-  return { ok: true, today, total, byModel: u.byModel, byDay, recent: u.byChat.slice(-50).reverse(), cost };
+  return { ok: true, range: range || 'day', today: agg.day, total: agg.total, byModel: agg.byModel, byDay: agg.byDay, recent, cost };
 }
 
 // ── 全书健康度统计 ──
@@ -2122,7 +2157,8 @@ const server = http.createServer(async (req, res) => {
 
   // ── 用量统计 ──
   if (pathname === '/api/usage' && req.method === 'GET') {
-    return sendJson(res, summarizeUsage());
+    const range = url.searchParams.get('range') || 'day';
+    return sendJson(res, summarizeUsage(/^(day|7d|30d|month|all)$/.test(range) ? range : 'day'));
   }
 
   // ── 全书健康度看板 ──

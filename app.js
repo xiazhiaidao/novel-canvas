@@ -4698,16 +4698,95 @@ async function loadAiSettings() {
     aiSettingsStatus('加载失败：' + e.message);
   }
 }
+// ── 用量统计（设置弹窗「用量」tab）：时间段聚合 + 缓存命中 + 调用明细 ──
+const USAGE_RANGES = { day: '今日', '7d': '近7天', '30d': '近30天', month: '本月', all: '全部' };
+function fmtNum(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+async function loadUsageStats(range) {
+  const sum = document.getElementById('usageSummary');
+  const byModel = document.getElementById('usageByModel');
+  const byDay = document.getElementById('usageByDay');
+  const recent = document.getElementById('usageRecent');
+  const setLoading = (el, txt) => { if (el) el.innerHTML = '<div class="usageEmpty">' + txt + '</div>'; };
+  setLoading(sum, '加载中...'); byModel.innerHTML = ''; byDay.innerHTML = ''; recent.innerHTML = '';
+  try {
+    const res = await fetch('/api/usage?range=' + encodeURIComponent(range || 'day'));
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || '加载失败');
+    const agg = d.total;
+    // 汇总卡片：总 tokens / 提示 / 补全 / 缓存命中 / 调用次数 / 费用
+    const costText = (d.cost && d.cost.total != null && d.cost.total > 0) ? '<div class="usageCard"><div class="k">费用估算</div><div class="v">$' + d.cost.total + '</div></div>' : '';
+    sum.innerHTML =
+      '<div class="usageCardGrid">' +
+      '<div class="usageCard"><div class="k">总 tokens</div><div class="v">' + fmtNum(agg.total) + '</div></div>' +
+      '<div class="usageCard"><div class="k">提示（输入）</div><div class="v">' + fmtNum(agg.prompt) + '</div></div>' +
+      '<div class="usageCard"><div class="k">补全（输出）</div><div class="v">' + fmtNum(agg.completion) + '</div></div>' +
+      '<div class="usageCard cached"><div class="k">缓存命中</div><div class="v">' + fmtNum(agg.cached) + '<small> tokens</small></div></div>' +
+      '<div class="usageCard"><div class="k">调用次数</div><div class="v">' + fmtNum(agg.calls) + '<small> 次</small></div></div>' +
+      costText +
+      '</div>';
+    // 按模型
+    const models = Object.entries(d.byModel || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
+    if (models.length) {
+      const rows = models.map(([m, s]) =>
+        '<tr><td>' + escapeHtml(m) + '</td><td>' + fmtNum(s.total) + '</td><td>' + fmtNum(s.prompt) + '</td><td>' + fmtNum(s.completion) + '</td><td>' + fmtNum(s.cached) + '</td><td>' + fmtNum(s.calls) + '</td></tr>'
+      ).join('');
+      byModel.innerHTML =
+        '<div class="usageSection"><h4>按模型</h4>' +
+        '<table class="usageTable"><thead><tr><th>模型</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    // 每日明细（时间范围内）
+    if (d.byDay && d.byDay.length) {
+      const rows = d.byDay.map(x =>
+        '<tr><td>' + escapeHtml(x.day) + '</td><td>' + fmtNum(x.total) + '</td><td>' + fmtNum(x.prompt) + '</td><td>' + fmtNum(x.completion) + '</td><td>' + fmtNum(x.cached) + '</td><td>' + fmtNum(x.calls) + '</td></tr>'
+      ).join('');
+      byDay.innerHTML =
+        '<div class="usageSection"><h4>每日明细</h4>' +
+        '<table class="usageTable"><thead><tr><th>日期</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    // 最近调用
+    const rec = d.recent || [];
+    if (rec.length) {
+      recent.innerHTML =
+        '<div class="usageSection"><h4>最近调用（' + rec.length + ' 条）</h4>' +
+        rec.map(x => {
+          const t = new Date(x.ts);
+          const ts = (t.getMonth() + 1) + '-' + t.getDate() + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+          const cached = x.cached ? ' <span class="cachedMark">⚡' + fmtNum(x.cached) + '</span>' : '';
+          return '<div class="usageRecentRow"><span class="t">' + ts + '</span><span class="m">' + escapeHtml(x.model) + '</span><span class="u">' + fmtNum(x.total) + ' tok' + cached + '</span></div>';
+        }).join('') + '</div>';
+    }
+    if (!models.length && !(d.byDay || []).length && !rec.length) {
+      sum.innerHTML = '<div class="usageEmpty">所选时间段暂无调用记录。</div>';
+    }
+  } catch (e) {
+    setLoading(sum, '加载失败：' + e.message);
+  }
+}
+function initUsageStats() {
+  const wrap = document.getElementById('usageRanges');
+  if (!wrap) return;
+  wrap.addEventListener('click', (e) => {
+    const btn = e.target.closest('.usageRange');
+    if (!btn) return;
+    for (const b of wrap.querySelectorAll('.usageRange')) b.classList.remove('on');
+    btn.classList.add('on');
+    loadUsageStats(btn.dataset.range);
+  });
+}
+
 function switchSettingsTab(tab) {
   document.getElementById('settingsTabTheme').classList.toggle('on', tab === 'theme');
   document.getElementById('settingsTabAi').classList.toggle('on', tab === 'ai');
   document.getElementById('settingsTabHistory').classList.toggle('on', tab === 'history');
+  document.getElementById('settingsTabUsage').classList.toggle('on', tab === 'usage');
   document.getElementById('settingsPaneTheme').style.display = tab === 'theme' ? '' : 'none';
   document.getElementById('settingsPaneAi').style.display = tab === 'ai' ? '' : 'none';
   document.getElementById('settingsPaneHistory').style.display = tab === 'history' ? '' : 'none';
+  document.getElementById('settingsPaneUsage').style.display = tab === 'usage' ? '' : 'none';
   document.getElementById('themeOk').textContent = tab === 'theme' ? '应用' : '保存';
   if (tab === 'ai') loadAiSettings();
   if (tab === 'history') loadBackupList();
+  if (tab === 'usage') loadUsageStats(document.querySelector('#usageRanges .usageRange.on')?.dataset.range || 'day');
 }
 function renderAiModels(models) {
   const wrap = document.getElementById('aiModelListWrap');
@@ -5022,6 +5101,8 @@ document.getElementById('tlTitle').addEventListener('keydown', (e) => { if (e.ke
 document.getElementById('settingsTabTheme').addEventListener('click', () => switchSettingsTab('theme'));
 document.getElementById('settingsTabAi').addEventListener('click', () => switchSettingsTab('ai'));
 document.getElementById('settingsTabHistory').addEventListener('click', () => switchSettingsTab('history'));
+document.getElementById('settingsTabUsage').addEventListener('click', () => switchSettingsTab('usage'));
+initUsageStats();
 document.getElementById('aiTestBtn').addEventListener('click', testAiConnection);
 // 启动时把设置里的模型同步进聊天模型下拉
 fetch('/api/settings').then(r => r.json()).then(d => {

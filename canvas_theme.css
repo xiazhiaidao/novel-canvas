@@ -212,6 +212,11 @@
  html[data-theme="dark"] .settingsClose:hover{ background: rgba(255,255,255,.06); color: var(--text); }
  html[data-theme="dark"] .settingsDrawerFoot .cancel{ background: #2a3342; color: var(--muted); }
  html[data-theme="dark"] .settingsDrawerFoot .primary{ background: linear-gradient(135deg,#b45309,#92400e); }
+ html[data-theme="dark"] .usageCard{ background: rgba(255,255,255,.045); }
+ html[data-theme="dark"] .usageTable th, html[data-theme="dark"] .usageTable td{ border-bottom-color: rgba(255,255,255,.08); }
+ html[data-theme="dark"] .usageRecentRow{ border-bottom-color: rgba(255,255,255,.08); }
+ html[data-theme="dark"] .usageRange:hover{ border-color: rgba(255,180,84,.5); }
+ html[data-theme="dark"] .usageRange.on{ border-color: rgba(245,197,107,.45); }
  html[data-theme="dark"] .edgeToggle{ background: rgba(24,30,40,.92); color: var(--accent); border-color: var(--panel-border); }
  html[data-theme="dark"] #searchCount{ background: rgba(24,30,40,.9); color: var(--accent); }
  html[data-theme="dark"] #edgeDeleteHint{ background: rgba(180,83,9,.95); }

@@ -1418,6 +1418,35 @@
   .settingsDrawerFoot .primary { background: linear-gradient(135deg,#f59e0b,#d97706); color: #fff; }
   #settingsPaneAi .row { margin-top: 12px; }
   #settingsPaneAi .row button { flex: 0 0 auto; padding: 9px 14px; }
+  .usageRanges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .usageRange {
+    padding: 5px 12px; border: 1px solid var(--panel-border); border-radius: 999px;
+    background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .usageRange:hover { color: var(--text); border-color: var(--accent); }
+  .usageRange.on { background: linear-gradient(135deg, rgba(245,197,107,.2), rgba(139,123,255,.12)); color: var(--text); border-color: rgba(245,197,107,.45); font-weight: 600; }
+  .usageCardGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .usageCard {
+    border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 10px;
+    background: rgba(255,255,255,.5); min-width: 0;
+  }
+  .usageCard .k { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .usageCard .v { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .usageCard .v small { font-size: 10px; font-weight: 400; color: var(--muted); }
+  .usageCard.cached .v { color: var(--accent); }
+  .usageSection { margin-top: 12px; }
+  .usageSection h4 { font-size: 12px; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .usageTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .usageTable th, .usageTable td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--panel-border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .usageTable th { color: var(--muted); font-weight: 600; text-align: right; }
+  .usageTable th:first-child, .usageTable td:first-child { text-align: left; }
+  .usageTable td .cachedMark { color: var(--accent); font-size: 10px; }
+  .usageRecentRow { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+  .usageRecentRow .t { color: var(--muted); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  .usageRecentRow .m { color: var(--text); font-weight: 600; flex: none; }
+  .usageRecentRow .u { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .usageEmpty { color: var(--muted); font-size: 12px; padding: 8px 0; }
   .matrixBody { overflow: auto; flex: 1; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(255,255,255,.5); }
   .matrixTip { font-size: 11px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }
   .matrixTable { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
@@ -1916,6 +1945,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
           <span>历史</span>
         </button>
+        <button class="settingsTab" id="settingsTabUsage">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+          <span>用量</span>
+        </button>
       </div>
       <div class="settingsBody">
         <div id="settingsPaneTheme">
@@ -1948,6 +1981,19 @@
         <div id="settingsPaneHistory" style="display: none">
           <div class="hint" style="margin-bottom:8px">AI 修改 / 手动保存 / 删除文件前会自动生成快照，可一键回滚。保留最近 100 份。</div>
           <div id="backupList" style="max-height:280px;overflow-y:auto"></div>
+        </div>
+        <div id="settingsPaneUsage" style="display: none">
+          <div class="usageRanges" id="usageRanges">
+            <button class="usageRange on" data-range="day">今日</button>
+            <button class="usageRange" data-range="7d">近7天</button>
+            <button class="usageRange" data-range="30d">近30天</button>
+            <button class="usageRange" data-range="month">本月</button>
+            <button class="usageRange" data-range="all">全部</button>
+          </div>
+          <div id="usageSummary" style="margin:10px 0 4px"></div>
+          <div id="usageByModel" style="margin-top:10px"></div>
+          <div id="usageByDay" style="margin-top:10px"></div>
+          <div id="usageRecent" style="margin-top:10px"></div>
         </div>
       </div>
       <div class="settingsDrawerFoot">
