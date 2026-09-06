@@ -3334,11 +3334,16 @@ function renderAgentSteps(steps) {
 }
 
 // 聊天模型选择持久化
+const CHAT_MODEL_MIGRATIONS = { 'deepseek-v4-flash-0731': 'deepseek-v4-flash' };
 function initChatModelSelect() {
   const sel = document.getElementById('chatModel');
   if (!sel) return;
   try {
-    const saved = localStorage.getItem('novelCanvasChatModel');
+    let saved = localStorage.getItem('novelCanvasChatModel');
+    if (saved && CHAT_MODEL_MIGRATIONS[saved]) {
+      saved = CHAT_MODEL_MIGRATIONS[saved];
+      localStorage.setItem('novelCanvasChatModel', saved);
+    }
     if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
   } catch (_) {}
   sel.addEventListener('change', () => {

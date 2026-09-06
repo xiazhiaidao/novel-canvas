@@ -3,6 +3,8 @@
 > 本文件供新对话快速接手。目标：在 novel-canvas 应用内完成 **4 项功能**，全部通过冒烟测试（当前基线 **52 项全绿**，完成后应 60 项左右）。
 > 生成时间：当前会话（布局 v3 确定性精确尺寸流式布局已完成、AI 设置已并入左下角设置弹窗、AI 对话框可停靠/拉伸已完成、52 项冒烟全绿）。
 
+> **🤖 v1.15.2 AI 模型名/中转站 base 修复（2026-09-06 会话）**：用户报「中转站密钥连接不了」+ 模型名不支持。根因（双）：① `.data/ai-config.json` 保存旧模型名 `deepseek-v4-flash-0731`（中转站已改为 `deepseek-v4-flash` 等）且 base 缺 `/v1`（`tokenrhythm.studio/chat/completions` 405，实际端点是 `tokenrhythm.studio/v1/chat/completions`，实测 `/v1` 和 `/api` 两路径均 200）；② **配置读取 bug**：`saveAiConfig` 写 `key`、`getApiConfig` 读 `saved.apiKey`，字段名不一致 → 设置面板保存的配置永远不生效，实际一直走 inkpilot 扫描（`列车求生/.obsidian/plugins/inkpilot/data.json`，base=api.deepseek.com 官方）。修复：ai-config.json → `base=https://tokenrhythm.studio/v1`、`model=deepseek-v4-flash`（不入库）；server.js `getApiConfig`/`aiConfigSource` 兼容 `key`/`apiKey` 双字段；index.html 聊天模型下拉 5 项 + 设置页 placeholder；app.js `initChatModelSelect` 加旧名 localStorage 迁移（`CHAT_MODEL_MIGRATIONS`）。验证：`/api/settings` → `source=saved`、model=deepseek-v4-flash、base=/v1；经 `/api/chat` UTF-8 端到端返回「通了」；前端下拉自动选中 flash。⚠️ 中转站 `/models` 返回空列表（端点不支持），模型列表拉取为空属正常。重启服务 = 杀 8787 监听进程（Electron 主窗口 3s 健康检查自动拉起，读最新代码）。
+
 > **🔧 v1.15.1 AI 工具查找健壮性（2026-09-06 会话）**：用户贴出「获取项目上下文」工具日志——`read_node` 反复 `node not found: chapter:第三卷·源能回廊:80-d批第一人`（小写 vs 实际 `80-D批第一人`）、`read_file` 报 `file not found: 正文/第三卷·源能回廊/80-D批第一人.md`（项目无 `正文/` 目录）。根因：agent 工具层全部用 JS 字符串精确匹配（大小写敏感）+ 精确路径，LLM 推断的 id/路径与磁盘不一致即失败。修复：
 > - `findNodeLoose(nodes, id)`（精确 → 大小写不敏感 → id 尾部段匹配 → 候选提示）；`resolveFileLoose(root, rel)`（精确 → 去「正文/」等前缀重试 → 只留文件名重试 → 目录内包含匹配候选）。`read_node/read_file/edit_node/delete_node/create_link/remove_link` 全部改用；错误消息附相近 id/路径候选。
 > - 工具描述同步更新（提示大小写不敏感、尾部段、去前缀回退）。

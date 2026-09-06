@@ -2,7 +2,15 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.15.1（当前）
+## 1.15.2（当前）
+
+### 修复（AI 模型名与中转站 base 更新）
+- **问题**：AI 对话报「模型不存在」，中转站提示仅支持 `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`；且连接失败（405）。
+- **根因（双）**：① `.data/ai-config.json` 保存的模型名为旧版 `deepseek-v4-flash-0731`，中转站已改名；② base 为 `https://tokenrhythm.studio`（不带 `/v1`），`/chat/completions` 得 405——实际端点是 `/v1/chat/completions`（实测 `/v1` 与 `/api` 两路径均 200）；③ **配置读取 bug**：`saveAiConfig` 写 `key` 字段、`getApiConfig` 读 `saved.apiKey`，字段名不一致导致设置面板保存的配置永远不生效，实际一直走 inkpilot 扫描（`列车求生/.obsidian/plugins/inkpilot/data.json`，base 指向 DeepSeek 官方）。
+- **修复**：`.data/ai-config.json` → `base=https://tokenrhythm.studio/v1`、`model=deepseek-v4-flash`（.gitignore 内不入库）；`server.js` `getApiConfig`/`aiConfigSource` 兼容 `key`/`apiKey` 双字段名（设置面板配置真正优先于 inkpilot）；`index.html` 聊天模型下拉 5 项（flash/pro/flash-vision/chat/reasoner）+ 设置页 placeholder；`app.js` `initChatModelSelect` 增加旧模型名 localStorage 迁移（`deepseek-v4-flash-0731 → deepseek-v4-flash`）。
+- **验证**：`/api/settings` 返回 `source=saved`、`base=https://tokenrhythm.studio/v1`、`model=deepseek-v4-flash`；直连 `/v1/chat/completions` 200；经 `/api/chat` UTF-8 端到端返回「通了」（usage 正常累计）；前端下拉自动选中 `deepseek-v4-flash`。中转站 `/models` 返回空列表（端点不支持），不影响对话。
+
+## 1.15.1
 
 ### 修复（AI 工具节点/文件查找健壮性）
 - **根因**：`runAgentTool` 的 `read_node`/`edit_node`/`delete_node`/`create_link`/`remove_link` 用 JS 字符串精确匹配节点 id（大小写敏感），`read_file` 用精确路径——LLM 从正文/记忆推断的 id 与磁盘真实大小写不一致（如 `80-d批第一人` vs `80-D批第一人`）或段数拼错时反复报 `node not found`；猜带 `正文/` 前缀而项目无该目录时报 `file not found`（「获取项目上下文」时一连串工具失败）。

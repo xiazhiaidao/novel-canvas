@@ -1406,7 +1406,7 @@ function maskApiKey(k) {
 }
 function aiConfigSource() {
   const saved = loadAiConfig();
-  if (saved && saved.apiKey && saved.base) return 'saved';
+  if (saved && (saved.apiKey || saved.key) && saved.base) return 'saved';
   if (process.env.DEEPSEEK_API_KEY) return 'env';
   return 'inkpilot';
 }
@@ -1415,8 +1415,10 @@ function getApiConfig() {
   const model = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
   // 优先：设置面板保存的配置（用户可随时在 UI 改）
   const saved = loadAiConfig();
-  if (saved && saved.apiKey && saved.base) {
-    return { apiKey: saved.apiKey, base: saved.base, model: saved.model || model };
+  // 兼容字段名：设置面板保存时写 key（/api/settings POST），早期版本也可能写 apiKey
+  const savedKey = saved && (saved.apiKey || saved.key);
+  if (saved && savedKey && saved.base) {
+    return { apiKey: savedKey, base: saved.base, model: saved.model || model };
   }
   if (process.env.DEEPSEEK_API_KEY) {
     return { apiKey: process.env.DEEPSEEK_API_KEY, base: process.env.DEEPSEEK_API_BASE || 'https://api.deepseek.com/v1', model };
