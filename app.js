@@ -3334,26 +3334,74 @@ function renderAgentSteps(steps) {
 }
 
 // 聊天模型选择持久化
+// 国内外主流 AI 服务商预设（OpenAI 兼容端点）。模型名变化快，以服务商控制台为准。
+const AI_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', base: 'https://api.openai.com/v1', hint: '官方 OpenAI。需海外网络。', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o3-mini', 'o4-mini'] },
+  { id: 'deepseek', name: 'DeepSeek（官方）', base: 'https://api.deepseek.com/v1', hint: 'DeepSeek 官方 API，国内直连。', models: ['deepseek-chat', 'deepseek-reasoner'] },
+  { id: 'gemini', name: 'Google Gemini', base: 'https://generativelanguage.googleapis.com/v1beta/openai', hint: 'Gemini OpenAI 兼容端点，需海外网络。', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'] },
+  { id: 'kimi', name: 'Kimi（月之暗面）', base: 'https://api.moonshot.cn/v1', hint: 'Moonshot 官方，国内直连。', models: ['kimi-k2', 'kimi-k2-thinking', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
+  { id: 'qwen', name: '通义千问（阿里）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', hint: '阿里云百炼 OpenAI 兼容端点。', models: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen3-max', 'qwen3-plus'] },
+  { id: 'zhipu', name: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4', hint: '智谱官方，国内直连。', models: ['glm-4-plus', 'glm-4-flash', 'glm-4-air', 'glm-4-long'] },
+  { id: 'doubao', name: '豆包（字节）', base: 'https://ark.cn-beijing.volces.com/api/v3', hint: '火山方舟。模型 ID 为接入点 ID，以控制台为准。', models: ['doubao-1.5-pro-32k', 'doubao-1.5-lite-32k'] },
+  { id: 'ernie', name: '文心一言（百度）', base: 'https://qianfan.baidubce.com/v2', hint: '百度千帆 OpenAI 兼容端点。', models: ['ernie-4.5-turbo', 'ernie-4.0-8k', 'ernie-3.5-8k'] },
+  { id: 'siliconflow', name: '硅基流动（聚合）', base: 'https://api.siliconflow.cn/v1', hint: '聚合国内外开源模型（Qwen/GLM/DeepSeek/Llama 等）。', models: ['Qwen/Qwen3-235B-A22B', 'Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-V3', 'THUDM/GLM-4-9B-Chat'] },
+  { id: 'openrouter', name: 'OpenRouter（聚合）', base: 'https://openrouter.ai/api/v1', hint: '聚合 Claude/GPT/Gemini/国产等，需海外网络。', models: ['anthropic/claude-sonnet-4', 'openai/gpt-4o', 'google/gemini-2.5-flash', 'deepseek/deepseek-chat'] },
+  { id: 'zai', name: '零一万物 Yi', base: 'https://api.lingyiwanwu.com/v1', hint: '零一万物官方，国内直连。', models: ['yi-lightning', 'yi-large'] },
+  { id: 'stepfun', name: '阶跃星辰 StepFun', base: 'https://api.stepfun.com/v1', hint: '阶跃星辰官方。', models: ['step-2-16k', 'step-1-32k'] },
+  { id: 'hunyuan', name: '腾讯混元', base: 'https://api.hunyuan.cloud.tencent.com/v1', hint: '腾讯云混元 OpenAI 兼容端点。', models: ['hunyuan-turbos', 'hunyuan-lite'] },
+  { id: 'minimax', name: 'MiniMax', base: 'https://api.minimax.chat/v1', hint: 'MiniMax 官方 OpenAI 兼容端点。', models: ['MiniMax-M2', 'abab6.5s-chat'] },
+  { id: 'tokenrhythm', name: '中转站（当前）', base: 'https://tokenrhythm.studio/v1', hint: '当前使用的中转站（DeepSeek v4 系列）。', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  { id: 'custom', name: '自定义', base: '', hint: '任意 OpenAI 兼容 API 地址（中转站 / 自建网关等）。', models: [] }
+];
+function aiProviderById(id) { return AI_PROVIDERS.find(p => p.id === id) || AI_PROVIDERS[AI_PROVIDERS.length - 1]; }
+function aiProviderByBase(base) {
+  const b = String(base || '').replace(/\/+$/, '').toLowerCase();
+  return AI_PROVIDERS.find(p => p.base && p.base.replace(/\/+$/, '').toLowerCase() === b) || null;
+}
 const CHAT_MODEL_MIGRATIONS = {
   'deepseek-v4-flash-0731': 'deepseek-v4-flash',
   'deepseek-chat': 'deepseek-v4-flash',
   'deepseek-reasoner': 'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp': 'deepseek-v4-flash'
 };
+// 聊天面板模型下拉：主流模型合集（国内外服务商），按当前设置匹配服务商后其模型置顶
+function chatModelOptions() {
+  const seen = {};
+  const out = [];
+  const push = (m) => { if (m && !seen[m]) { seen[m] = 1; out.push(m); } };
+  // 当前设置的服务商模型置顶
+  const base = document.getElementById('aiBase') ? document.getElementById('aiBase').value : '';
+  const prov = aiProviderByBase(base);
+  const saved = (() => { try { return localStorage.getItem('novelCanvasChatModel'); } catch (_) { return null; } })();
+  const curModel = (() => { try { return document.getElementById('aiModel') ? document.getElementById('aiModel').value : ''; } catch (_) { return ''; } })();
+  if (prov) (prov.models || []).forEach(push);
+  push(curModel); push(saved);
+  if (!prov || prov.id === 'custom') {
+    // 自定义服务商：展示全量主流模型合集供选
+    for (const p of AI_PROVIDERS) (p.models || []).forEach(push);
+  }
+  // 兜底：保持 flash 系列可用
+  if (!out.length) push('deepseek-v4-flash');
+  return out;
+}
 function initChatModelSelect() {
   const sel = document.getElementById('chatModel');
   if (!sel) return;
-  try {
-    let saved = localStorage.getItem('novelCanvasChatModel');
-    if (saved && CHAT_MODEL_MIGRATIONS[saved]) {
-      saved = CHAT_MODEL_MIGRATIONS[saved];
-      localStorage.setItem('novelCanvasChatModel', saved);
-    }
-    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
-  } catch (_) {}
+  const rebuild = () => {
+    const cur = sel.value;
+    sel.innerHTML = chatModelOptions().map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>').join('');
+    let saved = null;
+    try { saved = localStorage.getItem('novelCanvasChatModel'); } catch (_) {}
+    if (saved && CHAT_MODEL_MIGRATIONS[saved]) { saved = CHAT_MODEL_MIGRATIONS[saved]; try { localStorage.setItem('novelCanvasChatModel', saved); } catch (_) {} }
+    const target = (saved && [...sel.options].some(o => o.value === saved)) ? saved : (cur && [...sel.options].some(o => o.value === cur) ? cur : (sel.options[0] ? sel.options[0].value : ''));
+    if (target) sel.value = target;
+  };
+  rebuild();
   sel.addEventListener('change', () => {
     try { localStorage.setItem('novelCanvasChatModel', sel.value); } catch (_) {}
   });
+  // 设置保存/加载后重建下拉
+  document.addEventListener('chatModelSync', rebuild);
 }
 
 async function loadPendingProposals() {
@@ -4666,6 +4714,20 @@ document.getElementById('themeOk').addEventListener('click', async () => {
 initTheme();
 
 // ── 设置弹窗（外观 / AI 模型）：模型地址 / 密钥 / 模型 ──
+// （AI_PROVIDERS / aiProviderById / aiProviderByBase 定义在文件前部，聊天模型下拉共用）
+function initAiProviderSelect() {
+  const sel = document.getElementById('aiProvider');
+  if (!sel) return;
+  sel.innerHTML = AI_PROVIDERS.map(p => '<option value="' + p.id + '">' + escapeHtml(p.name) + '</option>').join('');
+  sel.addEventListener('change', () => {
+    const p = aiProviderById(sel.value);
+    document.getElementById('aiBase').value = p.base || '';
+    const hint = document.getElementById('aiProviderHint');
+    if (hint) hint.textContent = p.hint || '';
+    // 刷新该服务商常用模型 chips
+    renderAiModels(p.models || []);
+  });
+}
 function aiSettingsStatus(msg) { const el = document.getElementById('aiSettingsStatus'); if (el) el.textContent = msg; }
 async function loadAiSettings() {
   aiSettingsStatus('加载中...');
@@ -4677,17 +4739,29 @@ async function loadAiSettings() {
     document.getElementById('aiBase').value = d.ai.base || '';
     document.getElementById('aiModel').value = d.ai.model || '';
     document.getElementById('aiKey').value = '';
+    // 服务商下拉：按当前 base 匹配预设（匹配不到 = 自定义）
+    const provSel = document.getElementById('aiProvider');
+    if (provSel) {
+      const matched = aiProviderByBase(d.ai.base);
+      provSel.value = matched ? matched.id : 'custom';
+      const hint = document.getElementById('aiProviderHint');
+      if (hint) hint.textContent = (matched ? matched.hint : AI_PROVIDERS[AI_PROVIDERS.length - 1].hint) || '';
+      // 展示该服务商常用模型 chips（当前模型置顶）
+      const presetModels = (matched ? matched.models : []).slice();
+      if (d.ai.model && !presetModels.includes(d.ai.model)) presetModels.unshift(d.ai.model);
+      renderAiModels(presetModels);
+    }
     aiSettingsStatus(d.ai.hasKey
       ? '当前已配置密钥（来源：' + (d.ai.source === 'saved' ? '设置' : d.ai.source === 'env' ? '环境变量' : 'inkpilot') + '，尾号 ' + d.ai.keyHint + '）。密钥留空保存则保持不变。'
       : '当前未配置密钥。');
-    // 用量统计：今日/累计 tokens（可选费用估算）
+    // 用量统计：今日/累计 tokens（费用）
     try {
       const uRes = await fetch('/api/usage');
       const u = await uRes.json();
       const uEl = document.getElementById('aiUsageInfo');
       if (uEl) {
         if (u.ok) {
-          const costText = (u.cost && u.cost.total != null && u.cost.total > 0) ? ' · 费用约 $' + u.cost.total : '';
+          const costText = (u.cost && u.cost.total != null && u.cost.total > 0) ? ' · 费用 ¥' + u.cost.total : '';
           uEl.textContent = '今日 ' + (u.today.total || 0).toLocaleString('zh-CN') + ' tokens（' + (u.today.calls || 0) + ' 次）· 累计 ' + (u.total.total || 0).toLocaleString('zh-CN') + ' tokens' + costText;
         } else {
           uEl.textContent = '';
@@ -4900,14 +4974,10 @@ async function saveAiSettings() {
 // 让聊天框的模型下拉与设置里的模型同步
 function syncChatModelOption(model) {
   const sel = document.getElementById('chatModel');
-  if (!sel || !model) return;
-  if (![...sel.options].some(o => o.value === model)) {
-    const opt = document.createElement('option');
-    opt.value = model;
-    opt.textContent = model;
-    sel.insertBefore(opt, sel.firstChild);
-  }
-  sel.value = model;
+  if (!sel) return;
+  // 触发下拉重建（initChatModelSelect 监听 chatModelSync）
+  document.dispatchEvent(new CustomEvent('chatModelSync'));
+  if (model && [...sel.options].some(o => o.value === model)) sel.value = model;
 }
 
 // ── 历史 / 回滚（设置弹窗第三个 tab） ──
@@ -5156,10 +5226,14 @@ document.getElementById('settingsTabAi').addEventListener('click', () => switchS
 document.getElementById('settingsTabHistory').addEventListener('click', () => switchSettingsTab('history'));
 document.getElementById('settingsTabUsage').addEventListener('click', () => switchSettingsTab('usage'));
 initUsageStats();
+initAiProviderSelect();
 document.getElementById('aiTestBtn').addEventListener('click', testAiConnection);
 // 启动时把设置里的模型同步进聊天模型下拉
 fetch('/api/settings').then(r => r.json()).then(d => {
-  if (d && d.ai && d.ai.model) syncChatModelOption(d.ai.model);
+  if (d && d.ai) {
+    if (d.ai.base && document.getElementById('aiBase')) document.getElementById('aiBase').value = d.ai.base;
+    if (d.ai.model) syncChatModelOption(d.ai.model);
+  }
 }).catch(() => {});
 
 // ── 更换文件夹 ────────────────────────────────────────────

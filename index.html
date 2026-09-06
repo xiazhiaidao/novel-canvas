@@ -1884,7 +1884,7 @@
         <div id="fileEditorBody"></div>
       </div>
       <div id="chatPanel">
-        <div id="chatHeader"><span class="chLeft"><span class="chTitle">AI 对话</span><select id="chatModel" title="选择 AI 模型"><option value="deepseek-v4-flash">flash（推荐·快）</option><option value="deepseek-v4-pro">pro（深度推理）</option></select><select id="chatDock" title="对话框停靠位置"><option value="bottom">底部</option><option value="right">右侧</option><option value="left">左侧</option><option value="float">悬浮</option></select></span><span class="chRight"><button id="newChatBtn" title="清空当前项目对话">清空</button> <button id="chatToggle">＋</button></span></div>
+        <div id="chatHeader"><span class="chLeft"><span class="chTitle">AI 对话</span><select id="chatModel" title="选择 AI 模型"></select><select id="chatDock" title="对话框停靠位置"><option value="bottom">底部</option><option value="right">右侧</option><option value="left">左侧</option><option value="float">悬浮</option></select></span><span class="chRight"><button id="newChatBtn" title="清空当前项目对话">清空</button> <button id="chatToggle">＋</button></span></div>
         <div id="chatResizeHandle" title="拖拽调整大小"></div>
         <div id="chatToolbar">
           <div id="roleBar" style="display: none">
@@ -2001,6 +2001,11 @@
           <div class="hint">主色调会应用到强调文字、按钮高亮、连线等位置。</div>
         </div>
         <div id="settingsPaneAi" style="display: none">
+          <label>服务商</label>
+          <select id="aiProvider">
+            <option value="custom">自定义（任意 OpenAI 兼容地址）</option>
+          </select>
+          <div class="hint" id="aiProviderHint" style="margin:2px 0 0">选择服务商自动填入 API 地址与常用模型，密钥需自行填写。</div>
           <label>API 地址 (Base URL)</label>
           <input type="text" id="aiBase" placeholder="https://api.deepseek.com/v1 或 https://tokenrhythm.studio/v1" spellcheck="false">
           <label>API 密钥</label>
