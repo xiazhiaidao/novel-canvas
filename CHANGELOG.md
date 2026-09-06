@@ -2,7 +2,15 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.15.2（当前）
+## 1.15.3（当前）
+
+### 修复（「模型未返回内容」/推理模型兼容）
+- **问题**：AI 对话/续写/文件修改时出现「模型未返回内容」或「（完成）」空回复。
+- **根因**：中转站实测可用模型仅 `deepseek-v4-flash`（✅）与 `deepseek-v4-pro`（✅，推理模型+支持 tools）；`deepseek-chat`/`deepseek-reasoner`/`deepseek-v4-flash-vision-exp` 均返回 `MODEL_NOT_AVAILABLE`。且 `deepseek-v4-pro` 是推理模型，响应中正式回复在 `reasoning_content` 字段、`content` 为 null——server 所有 LLM 端点只读 `message.content`，导致 pro 模型在 `/api/continue`、`/api/ai/edit`、生成下一章等端点报「模型未返回内容」。
+- **修复**：新增 `aiMessageContent(msg)` 统一提取回复（`content` → `reasoning_content` 兜底），替换全部 7 处 LLM 响应读取点（审查/修正/推进/生成下一章/chat 主循环/continue/ai-edit）；模型下拉收敛为 `deepseek-v4-flash`（推荐）/ `deepseek-v4-pro` 两项，移除中转站不支持的 3 个模型名；`CHAT_MODEL_MIGRATIONS` 补充旧名（deepseek-chat/reasoner/flash-vision-exp → flash）localStorage 迁移。
+- **验证**：`deepseek-v4-pro` 经 `/api/chat` 返回「通了」；`/api/continue` 返回「续写通」；`/api/ai/edit` 返回正常修改内容（生成 proposal，未写盘）；`node --check` 通过；前端下拉 2 项默认 flash。
+
+## 1.15.2
 
 ### 修复（AI 模型名与中转站 base 更新）
 - **问题**：AI 对话报「模型不存在」，中转站提示仅支持 `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`；且连接失败（405）。

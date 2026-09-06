@@ -1125,7 +1125,7 @@ async function auditConsistency(root, project, targetId, content) {
     });
     const data = await r.json();
     recordUsage(api.model, data.usage);
-    const reply = data?.choices?.[0]?.message?.content || '';
+    const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 审查返回格式无法解析：' + String(reply).slice(0, 200));
     return { ok: true, ...parsed, packageStats: pkg.stats, weights: pkg.weights, targetTitle: targetNode ? targetNode.title : '', targetVolume: pkg.targetVolume, targetCore: pkg.targetCore };
@@ -1161,7 +1161,7 @@ async function fixConsistency(root, project, targetId, content, issues, suggesti
     });
     const data = await r.json();
     recordUsage(api.model, data.usage);
-    const reply = data?.choices?.[0]?.message?.content || '';
+    const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     if (!reply.trim()) throw new Error('AI 修正未返回内容');
     return { ok: true, content: reply.trim() };
   } finally {
@@ -1195,7 +1195,7 @@ async function advanceConsistency(root, project, targetId, content) {
     });
     const data = await r.json();
     recordUsage(api.model, data.usage);
-    const reply = data?.choices?.[0]?.message?.content || '';
+    const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 推进结果无法解析：' + String(reply).slice(0, 200));
     const created = [];
@@ -1296,7 +1296,7 @@ async function writeNextChapter(root, project, targetId, content, instruction) {
     });
     const data = await r.json();
     recordUsage(api.model, data.usage);
-    let reply = (data?.choices?.[0]?.message?.content || data?.error?.message || '').trim();
+    let reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
     if (!reply) throw new Error('模型未返回内容');
     const fence = reply.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
     if (fence) reply = fence[1].trim();
@@ -1790,6 +1790,17 @@ function summarizeAgentResult(tool, args, result) {
   if (tool === 'delete_node') return '提案: 删除《' + (result.title || args.id || '') + '》';
   if (tool === 'edit_file') return (result.isNew ? '提案: 新建文件 ' : '提案: 修改文件 ') + (args.path || result.file || '');
   return tool + ' 完成';
+}
+
+// 提取模型回复文本：普通模型用 content；推理模型（deepseek-v4-pro 等）的
+// content 可能为 null（回复在 reasoning_content），此时用 reasoning_content 兜底，
+// 避免误报“模型未返回内容”。content 有值时优先返回正式回复。
+function aiMessageContent(msg) {
+  if (!msg) return '';
+  const c = msg.content;
+  if (typeof c === 'string' && c.trim()) return c;
+  if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()) return msg.reasoning_content;
+  return typeof c === 'string' ? c : '';
 }
 
 const AGENT_TOOLS = [
@@ -2666,7 +2677,7 @@ const api = getApiConfig();
               }
               continue;
             }
-            return sendJson(res, { reply: msg.content || '（完成）', proposals: createdProposals, steps, usage: chatUsage });
+            return sendJson(res, { reply: aiMessageContent(msg) || '（完成）', proposals: createdProposals, steps, usage: chatUsage });
           }
           return sendJson(res, { reply: '（工具调用次数过多，已停止）', proposals: createdProposals, steps, usage: chatUsage });
         } finally {
@@ -2707,7 +2718,7 @@ const api = getApiConfig();
         });
         const data = await r.json();
         recordUsage(api.model, data.usage);
-        const reply = data?.choices?.[0]?.message?.content || data?.error?.message || '（模型未返回内容）';
+        const reply = aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '（模型未返回内容）';
         return sendJson(res, { reply: reply.trim() });
       } finally {
         clearTimeout(timer);
@@ -2751,7 +2762,7 @@ const api = getApiConfig();
         });
         const data = await r.json();
         recordUsage(api.model, data.usage);
-        const reply = (data?.choices?.[0]?.message?.content || data?.error?.message || '').trim();
+        const reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
         if (!reply) return sendJson(res, { error: '模型未返回内容' });
         let newContent = reply;
         const fence = newContent.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
