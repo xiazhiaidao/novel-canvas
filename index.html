@@ -1447,6 +1447,45 @@
   .usageRecentRow .m { color: var(--text); font-weight: 600; flex: none; }
   .usageRecentRow .u { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
   .usageEmpty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+  .usageChartWrap { border: 1px solid var(--panel-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .usageChartWrap + .usageChartWrap { margin-left: 0; }
+  .usageSectionTitle { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+  .usageDonutRow { display: flex; align-items: center; gap: 14px; }
+  .usageDonut {
+    width: 108px; height: 108px; border-radius: 50%; flex: none;
+    background: conic-gradient(#e5e7eb 0 100%);
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .usageDonutCenter {
+    width: 62px; height: 62px; border-radius: 50%;
+    background: var(--panel-bg, #fff);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; line-height: 1.15;
+  }
+  html[data-theme="dark"] .usageDonutCenter { background: #141a24; }
+  .usageDonutCenter .n { font-size: 13px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .usageDonutCenter .l { font-size: 9px; color: var(--muted); }
+  .usageDonutLegend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .usageDonutLegend .lg {
+    display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .usageDonutLegend .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .usageDonutLegend .lg .pct { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; flex: none; padding-left: 6px; }
+  .usageBars { display: flex; align-items: flex-end; gap: 4px; height: 92px; padding-top: 4px; }
+  .usageBar { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .usageBar .col {
+    background: linear-gradient(180deg, rgba(245,197,107,.85), rgba(139,123,255,.55));
+    border-radius: 3px 3px 0 0; min-height: 2px; transition: opacity .15s;
+  }
+  .usageBar:hover .col { opacity: .8; }
+  .usageBar .val { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    font-size: 9px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; display: none; }
+  .usageBar:hover .val { display: block; }
+  .usageBar .day { position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+    font-size: 9px; color: var(--muted); margin-top: 3px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .usageBarsNoData { font-size: 11px; color: var(--muted); padding: 20px 0; }
   .matrixBody { overflow: auto; flex: 1; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(255,255,255,.5); }
   .matrixTip { font-size: 11px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }
   .matrixTable { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
@@ -1991,6 +2030,19 @@
             <button class="usageRange" data-range="all">全部</button>
           </div>
           <div id="usageSummary" style="margin:10px 0 4px"></div>
+          <div id="usageCharts" style="margin-top:10px">
+            <div class="usageChartWrap" id="usageDonutWrap">
+              <div class="usageSectionTitle">按模型占比</div>
+              <div class="usageDonutRow">
+                <div class="usageDonut" id="usageDonut"><div class="usageDonutCenter" id="usageDonutCenter"></div></div>
+                <div class="usageDonutLegend" id="usageDonutLegend"></div>
+              </div>
+            </div>
+            <div class="usageChartWrap" id="usageBarsWrap">
+              <div class="usageSectionTitle">每日 tokens 走势</div>
+              <div class="usageBars" id="usageBars"></div>
+            </div>
+          </div>
           <div id="usageByModel" style="margin-top:10px"></div>
           <div id="usageByDay" style="margin-top:10px"></div>
           <div id="usageRecent" style="margin-top:10px"></div>

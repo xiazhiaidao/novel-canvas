@@ -4724,6 +4724,50 @@ async function loadUsageStats(range) {
       '<div class="usageCard"><div class="k">调用次数</div><div class="v">' + fmtNum(agg.calls) + '<small> 次</small></div></div>' +
       costText +
       '</div>';
+    // 环形图：按模型 tokens 占比（conic-gradient，纯 CSS 无依赖）
+    const donutEl = document.getElementById('usageDonut');
+    const donutCenter = document.getElementById('usageDonutCenter');
+    const donutLegend = document.getElementById('usageDonutLegend');
+    if (donutEl && donutCenter && donutLegend) {
+      const modelsForPie = Object.entries(d.byModel || {}).filter(([, s]) => (s.total || 0) > 0).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
+      const pieTotal = modelsForPie.reduce((s, [, m]) => s + (m.total || 0), 0);
+      if (modelsForPie.length && pieTotal > 0) {
+        const PIE_COLORS = ['#f59e0b', '#8b7bff', '#22c55e', '#ef4444', '#06b6d4', '#ec4899', '#84cc16', '#f97316'];
+        let acc = 0;
+        const segs = modelsForPie.map(([m, s]) => {
+          const from = (acc / pieTotal) * 100;
+          acc += (s.total || 0);
+          const to = (acc / pieTotal) * 100;
+          return (from < 100 ? from + '% ' + to + '%' : '');
+        }).filter(Boolean);
+        donutEl.style.background = 'conic-gradient(' + segs.map((s, i) => PIE_COLORS[i % PIE_COLORS.length] + ' ' + s).join(', ') + ')';
+        donutCenter.innerHTML = '<div class="n">' + fmtNum(pieTotal) + '</div><div class="l">tokens</div>';
+        donutLegend.innerHTML = modelsForPie.slice(0, 8).map(([m, s], i) => {
+          const pct = pieTotal ? Math.round(((s.total || 0) / pieTotal) * 1000) / 10 : 0;
+          return '<div class="lg" title="' + escapeHtml(m) + '"><span class="sw" style="background:' + PIE_COLORS[i % PIE_COLORS.length] + '"></span><span class="nm">' + escapeHtml(m) + '</span><span class="pct">' + pct + '%</span></div>';
+        }).join('');
+        if (modelsForPie.length > 8) donutLegend.insertAdjacentHTML('beforeend', '<div class="lg"><span class="pct">…等 ' + modelsForPie.length + ' 个模型</span></div>');
+      } else {
+        donutEl.style.background = 'conic-gradient(#e5e7eb 0 100%)';
+        donutCenter.innerHTML = '<div class="n">0</div><div class="l">tokens</div>';
+        donutLegend.innerHTML = '<div class="lg"><span class="pct" style="margin-left:0">暂无数据</span></div>';
+      }
+    }
+    // 条形图：每日 tokens 走势（近 30 天，正序）
+    const barsEl = document.getElementById('usageBars');
+    if (barsEl) {
+      const days = (d.byDay || []).slice().sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)).slice(-30);
+      if (days.length) {
+        const max = Math.max.apply(null, days.map(x => x.total || 0)) || 1;
+        barsEl.innerHTML = days.map(x => {
+          const h = Math.max(2, Math.round(((x.total || 0) / max) * 100));
+          const label = x.day.slice(5); // MM-DD
+          return '<div class="usageBar" title="' + escapeHtml(x.day) + ' · ' + fmtNum(x.total) + ' tokens"><div class="col" style="height:' + h + '%"></div><div class="val">' + fmtNum(x.total) + '</div><div class="day">' + label + '</div></div>';
+        }).join('');
+      } else {
+        barsEl.innerHTML = '<div class="usageBarsNoData">所选时间段暂无每日数据</div>';
+      }
+    }
     // 按模型
     const models = Object.entries(d.byModel || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
     if (models.length) {
