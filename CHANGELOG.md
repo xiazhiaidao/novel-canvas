@@ -2,7 +2,16 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.16.0（当前）
+## 1.16.1（当前）
+
+### 新增（按项目统计：用量/费用/图表）
+- **问题**：用量是全局的，`recordUsage` 不记项目，多项目用户看不到「列车求生」等各项目花了多少 token/钱。
+- **后端**：`recordUsage(model, usage, respData, project)` 第 4 参 project；7 个调用点全部传入（4 个一致性功能用 `project` 参数，/api/chat 循环、/api/continue、/api/ai/edit 用 `body.project`）。新增 `byProject` 聚合（总/提示/补全/缓存/次数/费用），byChat 每条记 `project` 字段。`aggregateUsage`/`summarizeUsage` 返回 `byProject`（全量，同 byModel 不按时间过滤）。
+- **前端**：用量 tab 新增「按项目（全量）」区块——项目占比环形图（conic-gradient，中心全项目总 tokens，右侧图例色块+项目名+百分比）+ 表格（项目/总 tokens/提示/补全/缓存/次数/费用）；最近调用行显示 📁项目名。
+- **修复 bug**：`loadUsage()` 返回时丢 `byProject` 字段（`return {byDay, byModel, byChat}` 漏了），导致 byProject 每次只留最近一条——已补。
+- **验证**：真实调用后 byProject「列车求生 = 13,136 tokens / ¥0.0039」、环形图紫色 100%（单项目）、表格 7 列、最近调用行 📁 标签；深浅主题探针通过。
+
+## 1.16.0
 
 ### 新增（AI 多服务商接入：国内外主流模型）
 - **问题**：此前只能接中转站 2 个模型（deepseek-v4-flash/pro），接入面太窄。

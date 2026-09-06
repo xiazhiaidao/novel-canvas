@@ -4848,6 +4848,37 @@ async function loadUsageStats(range) {
         barsEl.innerHTML = '<div class="usageBarsNoData">所选时间段暂无每日数据</div>';
       }
     }
+    // 按项目（全量占比环形图 + 表格）
+    const byProjectEl = document.getElementById('usageByProject');
+    if (byProjectEl) {
+      const projects = Object.entries(d.byProject || {}).filter(([, s]) => (s.total || 0) > 0).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
+      if (projects.length) {
+        const pjTotal = projects.reduce((s, [, p]) => s + (p.total || 0), 0);
+        const PIE_COLORS2 = ['#8b7bff', '#f59e0b', '#22c55e', '#06b6d4', '#ec4899', '#ef4444', '#84cc16', '#f97316'];
+        let pacc = 0;
+        const psegs = projects.map(([, s]) => {
+          const from = (pacc / pjTotal) * 100;
+          pacc += (s.total || 0);
+          const to = (pacc / pjTotal) * 100;
+          return (from < 100 ? from + '% ' + to + '%' : '');
+        }).filter(Boolean);
+        const pDonut = '<div class="usageDonutRow" style="margin-bottom:10px">' +
+          '<div class="usageDonut" style="background:conic-gradient(' + psegs.map((s, i) => PIE_COLORS2[i % PIE_COLORS2.length] + ' ' + s).join(', ') + ')"><div class="usageDonutCenter"><div class="n">' + fmtNum(pjTotal) + '</div><div class="l">tokens</div></div></div>' +
+          '<div class="usageDonutLegend">' + projects.slice(0, 8).map(([m, s], i) => {
+            const pct = pjTotal ? Math.round(((s.total || 0) / pjTotal) * 1000) / 10 : 0;
+            return '<div class="lg" title="' + escapeHtml(m) + '"><span class="sw" style="background:' + PIE_COLORS2[i % PIE_COLORS2.length] + '"></span><span class="nm">' + escapeHtml(m) + '</span><span class="pct">' + pct + '%</span></div>';
+          }).join('') + '</div></div>';
+        const fmtCost2 = (v) => (v ? '¥' + (Number(v) > 0.01 ? Number(v).toFixed(4) : Number(v).toFixed(6)) : '—');
+        const prow = projects.map(([m, s]) =>
+          '<tr><td>' + escapeHtml(m) + '</td><td>' + fmtNum(s.total) + '</td><td>' + fmtNum(s.prompt) + '</td><td>' + fmtNum(s.completion) + '</td><td>' + fmtNum(s.cached) + '</td><td>' + fmtNum(s.calls) + '</td><td>' + fmtCost2(s.cost) + '</td></tr>'
+        ).join('');
+        byProjectEl.innerHTML =
+          '<div class="usageSection"><h4>按项目（全量）</h4>' + pDonut +
+          '<table class="usageTable"><thead><tr><th>项目</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th><th>费用</th></tr></thead><tbody>' + prow + '</tbody></table></div>';
+      } else {
+        byProjectEl.innerHTML = '';
+      }
+    }
     // 按模型
     const models = Object.entries(d.byModel || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
     if (models.length) {
@@ -4879,7 +4910,8 @@ async function loadUsageStats(range) {
           const ts = (t.getMonth() + 1) + '-' + t.getDate() + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
           const cached = x.cached ? ' <span class="cachedMark">⚡' + fmtNum(x.cached) + '</span>' : '';
           const costTxt = x.cost ? ' · <span class="cachedMark">¥' + (x.cost > 0.01 ? x.cost.toFixed(4) : x.cost.toFixed(6)) + '</span>' : '';
-          return '<div class="usageRecentRow"><span class="t">' + ts + '</span><span class="m">' + escapeHtml(x.model) + '</span><span class="u">' + fmtNum(x.total) + ' tok' + cached + costTxt + '</span></div>';
+          const pjTxt = x.project && x.project !== '未指定项目' ? ' <span class="cachedMark" title="项目">📁' + escapeHtml(x.project) + '</span>' : '';
+          return '<div class="usageRecentRow"><span class="t">' + ts + '</span><span class="m">' + escapeHtml(x.model) + pjTxt + '</span><span class="u">' + fmtNum(x.total) + ' tok' + cached + costTxt + '</span></div>';
         }).join('') + '</div>';
     }
     if (!models.length && !(d.byDay || []).length && !rec.length) {

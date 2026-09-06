@@ -1124,7 +1124,7 @@ async function auditConsistency(root, project, targetId, content) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage, data);
+    recordUsage(api.model, data.usage, data, project);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 审查返回格式无法解析：' + String(reply).slice(0, 200));
@@ -1160,7 +1160,7 @@ async function fixConsistency(root, project, targetId, content, issues, suggesti
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage, data);
+    recordUsage(api.model, data.usage, data, project);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     if (!reply.trim()) throw new Error('AI 修正未返回内容');
     return { ok: true, content: reply.trim() };
@@ -1194,7 +1194,7 @@ async function advanceConsistency(root, project, targetId, content) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage, data);
+    recordUsage(api.model, data.usage, data, project);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 推进结果无法解析：' + String(reply).slice(0, 200));
@@ -1295,7 +1295,7 @@ async function writeNextChapter(root, project, targetId, content, instruction) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage, data);
+    recordUsage(api.model, data.usage, data, project);
     let reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
     if (!reply) throw new Error('模型未返回内容');
     const fence = reply.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
@@ -1565,9 +1565,9 @@ function usageFile() { return path.join(ROOT, '.data', 'usage.json'); }
 function loadUsage() {
   try {
     const u = JSON.parse(fs.readFileSync(usageFile(), 'utf8'));
-    return { byDay: u.byDay || {}, byModel: u.byModel || {}, byChat: Array.isArray(u.byChat) ? u.byChat : [] };
+    return { byDay: u.byDay || {}, byModel: u.byModel || {}, byProject: u.byProject || {}, byChat: Array.isArray(u.byChat) ? u.byChat : [] };
   } catch (_) {
-    return { byDay: {}, byModel: {}, byChat: [] };
+    return { byDay: {}, byModel: {}, byProject: {}, byChat: [] };
   }
 }
 function saveUsage(u) {
@@ -1588,7 +1588,7 @@ function usageCostOf(data) {
   const usd = Number(data.cost_usd != null ? data.cost_usd : (data.cost && data.cost.usd));
   return usd ? Math.round(usd * 10000) / 10000 : 0;
 }
-function recordUsage(model, usage, respData) {
+function recordUsage(model, usage, respData, project) {
   try {
     if (!usage) return;
     const prompt = Number(usage.prompt_tokens != null ? usage.prompt_tokens : usage.prompt) || 0;
@@ -1600,6 +1600,7 @@ function recordUsage(model, usage, respData) {
       (usage.prompt_details && usage.prompt_details.cached_tokens)
     ) || 0;
     const cost = usageCostOf(respData);
+    const projKey = String(project || '').trim() || '未指定项目';
     const u = loadUsage();
     const key = usageDayKey(Date.now());
     // 兼容旧结构：历史 byDay/byModel 无 cached/cost 字段，直接 += 会得 NaN，统一 (x||0)+
@@ -1610,7 +1611,12 @@ function recordUsage(model, usage, respData) {
     const m = u.byModel[mkey] = u.byModel[mkey] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0, cost: 0 };
     m.prompt += prompt; m.completion += completion; m.total += total; m.calls++;
     m.cached = (m.cached || 0) + cached; m.cost = (m.cost || 0) + cost;
-    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total, cached, cost });
+    // 按项目聚合
+    u.byProject = u.byProject || {};
+    const pj = u.byProject[projKey] = u.byProject[projKey] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0, cost: 0 };
+    pj.prompt += prompt; pj.completion += completion; pj.total += total; pj.calls++;
+    pj.cached = (pj.cached || 0) + cached; pj.cost = (pj.cost || 0) + cost;
+    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total, cached, cost, project: projKey });
     if (u.byChat.length > 200) u.byChat = u.byChat.slice(-200); // byChat 只留最近 200 条
     saveUsage(u);
   } catch (_) {}
@@ -1620,7 +1626,7 @@ function emptyUsageAgg() { return { prompt: 0, completion: 0, total: 0, calls: 0
 // 按时间段聚合：range = day | 7d | 30d | month | all（day 默认今日）
 function aggregateUsage(range) {
   const u = loadUsage();
-  const agg = { day: emptyUsageAgg(), total: emptyUsageAgg(), byModel: {}, byDay: [] };
+  const agg = { day: emptyUsageAgg(), total: emptyUsageAgg(), byModel: {}, byDay: [], byProject: {} };
   const now = new Date();
   const monthPrefix = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
   const todayKey = usageDayKey(now.getTime());
@@ -1650,6 +1656,10 @@ function aggregateUsage(range) {
   for (const k of recentDays) {
     const d = u.byDay[k];
     agg.byDay.push({ day: k, prompt: d.prompt || 0, completion: d.completion || 0, total: d.total || 0, calls: d.calls || 0, cached: d.cached || 0, cost: d.cost || 0 });
+  }
+  // byProject 聚合（全量，同 byModel 不按时间过滤）
+  for (const [pkey, p] of Object.entries(u.byProject || {})) {
+    agg.byProject[pkey] = { prompt: p.prompt || 0, completion: p.completion || 0, total: p.total || 0, calls: p.calls || 0, cached: p.cached || 0, cost: p.cost || 0 };
   }
   return agg;
 }
@@ -1684,7 +1694,7 @@ function summarizeUsage(range) {
       if (!est.total) est = null;
     }
   } catch (_) {}
-  return { ok: true, range: range || 'day', today: agg.day, total: agg.total, byModel: agg.byModel, byDay: agg.byDay, recent, cost, est };
+  return { ok: true, range: range || 'day', today: agg.day, total: agg.total, byModel: agg.byModel, byDay: agg.byDay, byProject: agg.byProject || {}, recent, cost, est };
 }
 
 // ── 全书健康度统计 ──
@@ -2710,7 +2720,7 @@ const api = getApiConfig();
               signal: controller.signal
             });
             const data = await r.json();
-            recordUsage(model, data.usage, data);
+            recordUsage(model, data.usage, data, body.project);
             if (data.usage) {
               const u = data.usage;
               chatUsage.prompt += Number(u.prompt_tokens != null ? u.prompt_tokens : u.prompt) || 0;
@@ -2775,7 +2785,7 @@ const api = getApiConfig();
           signal: controller.signal
         });
         const data = await r.json();
-        recordUsage(api.model, data.usage, data);
+        recordUsage(api.model, data.usage, data, body.project);
         const reply = aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '（模型未返回内容）';
         return sendJson(res, { reply: reply.trim() });
       } finally {
@@ -2819,7 +2829,7 @@ const api = getApiConfig();
           signal: controller.signal
         });
         const data = await r.json();
-        recordUsage(api.model, data.usage, data);
+        recordUsage(api.model, data.usage, data, body.project);
         const reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
         if (!reply) return sendJson(res, { error: '模型未返回内容' });
         let newContent = reply;
