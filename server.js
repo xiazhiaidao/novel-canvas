@@ -1124,7 +1124,7 @@ async function auditConsistency(root, project, targetId, content) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage);
+    recordUsage(api.model, data.usage, data);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 审查返回格式无法解析：' + String(reply).slice(0, 200));
@@ -1160,7 +1160,7 @@ async function fixConsistency(root, project, targetId, content, issues, suggesti
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage);
+    recordUsage(api.model, data.usage, data);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     if (!reply.trim()) throw new Error('AI 修正未返回内容');
     return { ok: true, content: reply.trim() };
@@ -1194,7 +1194,7 @@ async function advanceConsistency(root, project, targetId, content) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage);
+    recordUsage(api.model, data.usage, data);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
     if (!parsed) throw new Error('AI 推进结果无法解析：' + String(reply).slice(0, 200));
@@ -1295,7 +1295,7 @@ async function writeNextChapter(root, project, targetId, content, instruction) {
       signal: controller.signal
     });
     const data = await r.json();
-    recordUsage(api.model, data.usage);
+    recordUsage(api.model, data.usage, data);
     let reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
     if (!reply) throw new Error('模型未返回内容');
     const fence = reply.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
@@ -1580,7 +1580,15 @@ function usageDayKey(ts) {
   const d = new Date(ts || Date.now());
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
-function recordUsage(model, usage) {
+// 提取中转站返回的费用（元）。优先顶层 cost_cny，兼容 cost_usd / usage.cost。
+function usageCostOf(data) {
+  if (!data) return 0;
+  const cny = Number(data.cost_cny != null ? data.cost_cny : (data.cost && data.cost.cny));
+  if (cny) return Math.round(cny * 10000) / 10000;
+  const usd = Number(data.cost_usd != null ? data.cost_usd : (data.cost && data.cost.usd));
+  return usd ? Math.round(usd * 10000) / 10000 : 0;
+}
+function recordUsage(model, usage, respData) {
   try {
     if (!usage) return;
     const prompt = Number(usage.prompt_tokens != null ? usage.prompt_tokens : usage.prompt) || 0;
@@ -1591,20 +1599,24 @@ function recordUsage(model, usage) {
       (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ||
       (usage.prompt_details && usage.prompt_details.cached_tokens)
     ) || 0;
+    const cost = usageCostOf(respData);
     const u = loadUsage();
     const key = usageDayKey(Date.now());
-    const day = u.byDay[key] = u.byDay[key] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 };
-    day.prompt += prompt; day.completion += completion; day.total += total; day.calls++; day.cached += cached;
+    // 兼容旧结构：历史 byDay/byModel 无 cached/cost 字段，直接 += 会得 NaN，统一 (x||0)+
+    const day = u.byDay[key] = u.byDay[key] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0, cost: 0 };
+    day.prompt += prompt; day.completion += completion; day.total += total; day.calls++;
+    day.cached = (day.cached || 0) + cached; day.cost = (day.cost || 0) + cost;
     const mkey = String(model || 'unknown');
-    const m = u.byModel[mkey] = u.byModel[mkey] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 };
-    m.prompt += prompt; m.completion += completion; m.total += total; m.calls++; m.cached += cached;
-    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total, cached });
+    const m = u.byModel[mkey] = u.byModel[mkey] || { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0, cost: 0 };
+    m.prompt += prompt; m.completion += completion; m.total += total; m.calls++;
+    m.cached = (m.cached || 0) + cached; m.cost = (m.cost || 0) + cost;
+    u.byChat.push({ ts: Date.now(), model: mkey, prompt, completion, total, cached, cost });
     if (u.byChat.length > 200) u.byChat = u.byChat.slice(-200); // byChat 只留最近 200 条
     saveUsage(u);
   } catch (_) {}
 }
-// 空聚合结构（含 cached 缓存命中）
-function emptyUsageAgg() { return { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0 }; }
+// 空聚合结构（含 cached 缓存命中、cost 费用）
+function emptyUsageAgg() { return { prompt: 0, completion: 0, total: 0, calls: 0, cached: 0, cost: 0 }; }
 // 按时间段聚合：range = day | 7d | 30d | month | all（day 默认今日）
 function aggregateUsage(range) {
   const u = loadUsage();
@@ -1625,19 +1637,19 @@ function aggregateUsage(range) {
   for (const k of dayKeys) {
     const d = u.byDay[k];
     agg.total.prompt += d.prompt || 0; agg.total.completion += d.completion || 0;
-    agg.total.total += d.total || 0; agg.total.calls += d.calls || 0; agg.total.cached += d.cached || 0;
+    agg.total.total += d.total || 0; agg.total.calls += d.calls || 0; agg.total.cached += d.cached || 0; agg.total.cost += d.cost || 0;
     if (range === 'day' && k === todayKey) Object.assign(agg.day, d);
   }
   if (range === 'day') Object.assign(agg.day, u.byDay[todayKey] || emptyUsageAgg());
   // byModel 聚合
   for (const [mkey, m] of Object.entries(u.byModel)) {
-    agg.byModel[mkey] = { prompt: m.prompt || 0, completion: m.completion || 0, total: m.total || 0, calls: m.calls || 0, cached: m.cached || 0 };
+    agg.byModel[mkey] = { prompt: m.prompt || 0, completion: m.completion || 0, total: m.total || 0, calls: m.calls || 0, cached: m.cached || 0, cost: m.cost || 0 };
   }
   // byDay 明细（最多 30 天，倒序）
   const recentDays = dayKeys.slice(-30).reverse();
   for (const k of recentDays) {
     const d = u.byDay[k];
-    agg.byDay.push({ day: k, prompt: d.prompt || 0, completion: d.completion || 0, total: d.total || 0, calls: d.calls || 0, cached: d.cached || 0 });
+    agg.byDay.push({ day: k, prompt: d.prompt || 0, completion: d.completion || 0, total: d.total || 0, calls: d.calls || 0, cached: d.cached || 0, cost: d.cost || 0 });
   }
   return agg;
 }
@@ -1646,23 +1658,33 @@ function summarizeUsage(range) {
   const agg = aggregateUsage(range || 'day');
   // 最近调用明细（byChat 已按 ts 升序，倒序=最新在前）
   const recent = (u.byChat || []).slice().reverse().slice(0, 50);
-  // 可选费用估算：ai-config.json 支持 pricePerM { "模型名": { "in": x, "out": y } }（每百万 token 美元）
-  let cost = null;
+  // 实际费用（中转站响应 cost_cny，人民币）为主；pricePerM 估算（美元）为补充
+  const cost = {
+    total: Math.round((agg.total.cost || 0) * 10000) / 10000,
+    byModel: {},
+    currency: 'cny'
+  };
+  for (const [mkey, m] of Object.entries(agg.byModel)) {
+    if (m.cost) cost.byModel[mkey] = Math.round((m.cost || 0) * 10000) / 10000;
+  }
+  // pricePerM 估算补充（仅当该模型无实际费用记录时展示估算，标记 est）
+  let est = null;
   try {
     const cfg = loadAiConfig();
     if (cfg && cfg.pricePerM && typeof cfg.pricePerM === 'object') {
-      cost = { total: 0, byModel: {} };
+      est = { total: 0, byModel: {} };
       for (const [model, price] of Object.entries(cfg.pricePerM)) {
         const m = u.byModel[model];
         if (!m) continue;
         const c = (Number(price.in) || 0) * (m.prompt || 0) / 1e6 + (Number(price.out) || 0) * (m.completion || 0) / 1e6;
-        cost.byModel[model] = Math.round(c * 10000) / 10000;
-        cost.total += c;
+        est.byModel[model] = Math.round(c * 10000) / 10000;
+        est.total += c;
       }
-      cost.total = Math.round(cost.total * 10000) / 10000;
+      est.total = Math.round(est.total * 10000) / 10000;
+      if (!est.total) est = null;
     }
   } catch (_) {}
-  return { ok: true, range: range || 'day', today: agg.day, total: agg.total, byModel: agg.byModel, byDay: agg.byDay, recent, cost };
+  return { ok: true, range: range || 'day', today: agg.day, total: agg.total, byModel: agg.byModel, byDay: agg.byDay, recent, cost, est };
 }
 
 // ── 全书健康度统计 ──
@@ -2688,7 +2710,7 @@ const api = getApiConfig();
               signal: controller.signal
             });
             const data = await r.json();
-            recordUsage(model, data.usage);
+            recordUsage(model, data.usage, data);
             if (data.usage) {
               const u = data.usage;
               chatUsage.prompt += Number(u.prompt_tokens != null ? u.prompt_tokens : u.prompt) || 0;
@@ -2753,7 +2775,7 @@ const api = getApiConfig();
           signal: controller.signal
         });
         const data = await r.json();
-        recordUsage(api.model, data.usage);
+        recordUsage(api.model, data.usage, data);
         const reply = aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '（模型未返回内容）';
         return sendJson(res, { reply: reply.trim() });
       } finally {
@@ -2797,7 +2819,7 @@ const api = getApiConfig();
           signal: controller.signal
         });
         const data = await r.json();
-        recordUsage(api.model, data.usage);
+        recordUsage(api.model, data.usage, data);
         const reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
         if (!reply) return sendJson(res, { error: '模型未返回内容' });
         let newContent = reply;

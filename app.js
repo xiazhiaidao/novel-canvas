@@ -4714,7 +4714,13 @@ async function loadUsageStats(range) {
     if (!d.ok) throw new Error(d.error || '加载失败');
     const agg = d.total;
     // 汇总卡片：总 tokens / 提示 / 补全 / 缓存命中 / 调用次数 / 费用
-    const costText = (d.cost && d.cost.total != null && d.cost.total > 0) ? '<div class="usageCard"><div class="k">费用估算</div><div class="v">$' + d.cost.total + '</div></div>' : '';
+    const costTotal = d.cost && d.cost.total != null ? d.cost.total : 0;
+    let costText = '';
+    if (costTotal > 0) {
+      costText = '<div class="usageCard"><div class="k">费用（¥）</div><div class="v">¥' + costTotal.toFixed(4) + '</div></div>';
+    } else if (d.est && d.est.total != null && d.est.total > 0) {
+      costText = '<div class="usageCard"><div class="k">费用估算（$）</div><div class="v">$' + d.est.total + '</div></div>';
+    }
     sum.innerHTML =
       '<div class="usageCardGrid">' +
       '<div class="usageCard"><div class="k">总 tokens</div><div class="v">' + fmtNum(agg.total) + '</div></div>' +
@@ -4771,21 +4777,23 @@ async function loadUsageStats(range) {
     // 按模型
     const models = Object.entries(d.byModel || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
     if (models.length) {
+      const fmtCost = (v) => (v ? '¥' + (Number(v) > 0.01 ? Number(v).toFixed(4) : Number(v).toFixed(6)) : '—');
       const rows = models.map(([m, s]) =>
-        '<tr><td>' + escapeHtml(m) + '</td><td>' + fmtNum(s.total) + '</td><td>' + fmtNum(s.prompt) + '</td><td>' + fmtNum(s.completion) + '</td><td>' + fmtNum(s.cached) + '</td><td>' + fmtNum(s.calls) + '</td></tr>'
+        '<tr><td>' + escapeHtml(m) + '</td><td>' + fmtNum(s.total) + '</td><td>' + fmtNum(s.prompt) + '</td><td>' + fmtNum(s.completion) + '</td><td>' + fmtNum(s.cached) + '</td><td>' + fmtNum(s.calls) + '</td><td>' + fmtCost(s.cost) + '</td></tr>'
       ).join('');
       byModel.innerHTML =
         '<div class="usageSection"><h4>按模型</h4>' +
-        '<table class="usageTable"><thead><tr><th>模型</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+        '<table class="usageTable"><thead><tr><th>模型</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th><th>费用</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
     // 每日明细（时间范围内）
     if (d.byDay && d.byDay.length) {
+      const fmtCost = (v) => (v ? '¥' + (Number(v) > 0.01 ? Number(v).toFixed(4) : Number(v).toFixed(6)) : '—');
       const rows = d.byDay.map(x =>
-        '<tr><td>' + escapeHtml(x.day) + '</td><td>' + fmtNum(x.total) + '</td><td>' + fmtNum(x.prompt) + '</td><td>' + fmtNum(x.completion) + '</td><td>' + fmtNum(x.cached) + '</td><td>' + fmtNum(x.calls) + '</td></tr>'
+        '<tr><td>' + escapeHtml(x.day) + '</td><td>' + fmtNum(x.total) + '</td><td>' + fmtNum(x.prompt) + '</td><td>' + fmtNum(x.completion) + '</td><td>' + fmtNum(x.cached) + '</td><td>' + fmtNum(x.calls) + '</td><td>' + fmtCost(x.cost) + '</td></tr>'
       ).join('');
       byDay.innerHTML =
         '<div class="usageSection"><h4>每日明细</h4>' +
-        '<table class="usageTable"><thead><tr><th>日期</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+        '<table class="usageTable"><thead><tr><th>日期</th><th>总 tokens</th><th>提示</th><th>补全</th><th>缓存命中</th><th>次数</th><th>费用</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
     // 最近调用
     const rec = d.recent || [];
@@ -4796,7 +4804,8 @@ async function loadUsageStats(range) {
           const t = new Date(x.ts);
           const ts = (t.getMonth() + 1) + '-' + t.getDate() + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
           const cached = x.cached ? ' <span class="cachedMark">⚡' + fmtNum(x.cached) + '</span>' : '';
-          return '<div class="usageRecentRow"><span class="t">' + ts + '</span><span class="m">' + escapeHtml(x.model) + '</span><span class="u">' + fmtNum(x.total) + ' tok' + cached + '</span></div>';
+          const costTxt = x.cost ? ' · <span class="cachedMark">¥' + (x.cost > 0.01 ? x.cost.toFixed(4) : x.cost.toFixed(6)) + '</span>' : '';
+          return '<div class="usageRecentRow"><span class="t">' + ts + '</span><span class="m">' + escapeHtml(x.model) + '</span><span class="u">' + fmtNum(x.total) + ' tok' + cached + costTxt + '</span></div>';
         }).join('') + '</div>';
     }
     if (!models.length && !(d.byDay || []).length && !rec.length) {

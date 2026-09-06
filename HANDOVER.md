@@ -3,6 +3,8 @@
 > 本文件供新对话快速接手。目标：在 novel-canvas 应用内完成 **4 项功能**，全部通过冒烟测试（当前基线 **52 项全绿**，完成后应 60 项左右）。
 > 生成时间：当前会话（布局 v3 确定性精确尺寸流式布局已完成、AI 设置已并入左下角设置弹窗、AI 对话框可停靠/拉伸已完成、52 项冒烟全绿）。
 
+> **💰 v1.15.6 费用统计：接入中转站 cost_cny（2026-09-06 会话）**：中转站每次响应自带 `cost_cny`（人民币，实测 flash 单次 ¥0.0039），但 recordUsage 只记 token 没记费用。修复：`recordUsage(model, usage, respData)` 第三参收响应对象，`usageCostOf()` 提取 `cost_cny`（兼容 cost_usd/cost.cny/cost.usd）→ byDay/byModel/byChat `cost` 字段；7 个 LLM 调用点全传 `data`。`aggregateUsage`/`emptyUsageAgg` 加 cost；`summarizeUsage` 返回 `cost`（¥，currency=cny）+ `est`（pricePerM 美元估算兜底）。前端：汇总卡片「费用（¥）」、按模型/每日明细表加「费用」列（无记录显示 —）、最近调用行显示 ¥。⚠️ 修复历史数据 NaN bug：旧 byDay/byModel 无 cost/cached 字段时 `+=` 得 NaN→null→聚合 0，统一改 `(x||0)+`。验证：调用后 cost.total/byModel/byDay/recent 全部 =0.0039 一致；本次实测缓存命中 12,288 tokens（⚡）。注意：`cost` 从「接入时点」起累计，历史调用无费用（显示 —/不参与 total）。
+
 > **📈 v1.15.5 用量图表：环形图 + 条形图（2026-09-06 会话）**：「用量」tab 新增两张图——①环形图（按模型 tokens 占比,纯 CSS `conic-gradient`,中心区间总数 + 右侧图例色块/模型名/百分比,最多 8 色超折叠）;②条形图（每日 tokens 走势,最近 30 天,柱高按 max 缩放,hover 显示数值,MM-DD 标签）。均随时间段切换联动。⚠️ 踩坑:conic-gradient 段内误插模型名 → 整段 background 声明无效被浏览器忽略(显示默认灰环),已修。验证:7d 环形图 4 色分段 79.1/14.4/5.5/1%,条形图 4 柱高 20/2/2/100%;双主题探针+视觉评审通过。byModel 为全量数据(不随 range 过滤),环形图展示的是全量占比——如需按时间段过滤模型占比需后端扩展。
 
 > **📊 v1.15.4 Token 用量统计界面（2026-09-06 会话）**：设置弹窗新增第 4 个「用量」tab——汇总卡片（总 tokens/提示/补全/**缓存命中**/次数/费用）+ 按模型表 + 每日明细 + 最近 50 条调用。时间段切换：今日/近7天/近30天/本月/全部（`/api/usage?range=` 后端按日聚合，`aggregateUsage`）。`recordUsage` 新增缓存命中记录（`prompt_tokens_details.cached_tokens` → byDay/byModel/byChat 的 `cached` 字段），`byChat` 上限 50→200。前端 `loadUsageStats(range)` + `initUsageStats()`（range 按钮事件委托），tab 挂接 `switchSettingsTab('usage')`。深浅两主题计算样式探针通过。⚠️ 历史 usage.json 无 cached 字段（显示 0 属正常，新调用起累积）；费用估算需 ai-config.json 配 `pricePerM`（当前未配则不显示）。

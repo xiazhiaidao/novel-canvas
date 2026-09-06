@@ -2,7 +2,17 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.15.5（当前）
+## 1.15.6（当前）
+
+### 新增（费用统计：接入中转站 cost_cny）
+- **根因**：中转站每次响应自带 `cost_cny`（人民币费用，实测 flash ¥0.0039/次），但 server 未记录；界面「费用估算」只能靠 ai-config.json 手配 `pricePerM`（未配则不显示）。
+- **修复**：`recordUsage` 新增第三参 `respData`，`usageCostOf()` 提取 `cost_cny`（兼容 `cost_usd`/`cost.cny`/`cost.usd`）记录到 byDay/byModel/byChat 的 `cost` 字段；全部 7 个 LLM 调用点传入响应对象。
+- **聚合**：`emptyUsageAgg`/`aggregateUsage` 增加 `cost` 累计；`summarizeUsage` 返回 `cost`（实际 ¥,currency=cny）+ `est`（pricePerM 美元估算,仅无实际费用记录时展示）。
+- **前端**：汇总卡片显示「费用（¥）」（无实际费用时回退 $ 估算）；按模型表/每日明细表新增「费用」列（`—` 表示无记录）；最近调用行显示 ¥ 费用。
+- **修复潜在 bug**：历史 byDay/byModel 无 `cost`/`cached` 字段时 `day.cost += cost` 得 NaN（JSON 序列化变 null → 聚合 0）——统一改 `(x || 0) +`。
+- **验证**：真实调用后 `cost.total=0.0039`、byModel.flash.cost=0.0039、byDay.cost=0.0039、recent[0].cost=0.0039 全部一致；前端卡片/表格/最近调用费用显示正常；本次调用还实测到缓存命中 12,288 tokens（⚡ 标记）。
+
+## 1.15.5
 
 ### 新增（用量统计图表：环形图 + 条形图）
 - **环形图（扇形）**：「按模型占比」——纯 CSS `conic-gradient` 无依赖，按模型 tokens 占比分段（最多 8 色，超 8 个折叠提示），中心显示区间总 tokens，右侧图例（色块 + 模型名 + 百分比，hover 显示完整名）。
