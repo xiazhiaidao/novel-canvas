@@ -2,7 +2,17 @@
 
 本项目的版本号与功能里程碑对齐。所有变更记录在此文件，按时间倒序排列。
 
-## 1.16.1（当前）
+## 1.17.0（当前）
+
+### 新增（流式输出+停止生成 / 上下文压缩省钱 / 导出+预算预警）
+- **流式输出 + 停止生成**：聊天与「剧情军师/去AI味/伏笔审计/一致性检查」四按钮消息均改为 SSE 流式（`POST /api/chat` 支持 `body.stream === true` → `text/event-stream`，事件 `delta`/`tool`/`done`/`error`），回复逐字上屏、工具调用步骤实时可见；生成中「发送」按钮切换为红色「停止」按钮，点击即中断——server 端收到客户端断开后 destroy 上游 LLM 请求并回 `error: 已停止生成`。
+  - **关键修复**：Node 24 的 undici `fetch` 在本场景下 `r.body` 的 reader 卡死（`reader.read()`/`for await` 均不返回数据），但 `r.text()` 与原生 `http/https.request` 正常——流式读取改用 Node 原生 `http.request`/`https.request` + `data` 事件逐块解析 SSE（含 `reasoning_content` 思考过程、`delta.content` 正文、`delta.tool_calls` 按 index 累积、末块 `usage`+`cost_cny`），彻底绕开问题。
+  - 非流式路径（默认 `stream:false`）完全保留，冒烟测试与既有调用不受影响；流式调用照常累计 token 与费用（cost 取自流式末块 `usage.cost_cny`）。
+- **上下文压缩省钱**：`compactToolResult()` 把工具返回压到单轮 4000 字符（保留 proposal_id/kind/file/isNew 等关键字段；read_node/read_file 保留标题路径+内容截断；列表类保留计数/标题）→ 多轮工具调用不再把大段内容反复塞回上下文；`buildAgentContext` 上限 30000 → 16000 字符；最近消息预算 12000 字符（从最新往前取，最多 20 条）——单次聊天上下文从实测 107K tokens 量级显著下降。
+- **导出 CSV + 预算预警**：用量 tab「导出 CSV」按钮（⬇ 导出 CSV）——BOM + 汇总/每日明细/按模型/按项目/最近调用 5 段，文件名 `novel-canvas-usage-<range>-<日期>.csv`；设置页「每月预算上限（¥）」输入框 + 用量 tab 顶部预算横幅「本月预算：¥已用 / ¥预算（百分比%）」，超预算时横幅红色警示（⚠️ 已超预算）。
+- **验证**：curl SSE 收到 `delta` 逐字 + `done`（「流式通」）；工具调用链（get_context→list_nodes→search→read_node→read_file→delta→done，288 事件）端到端正常；浏览器中停止按钮生成中显示、点击后消息区显示「（已停止生成）」；非流式路径返回正常 JSON；预算保存/回读=5、横幅显示 ¥0.0221/¥5（0.4%）；CSV 下载成功且含按项目段；16 服务商下拉、AI 设置加载正常。
+
+## 1.16.1
 
 ### 新增（按项目统计：用量/费用/图表）
 - **问题**：用量是全局的，`recordUsage` 不记项目，多项目用户看不到「列车求生」等各项目花了多少 token/钱。

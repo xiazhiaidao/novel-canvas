@@ -3421,6 +3421,88 @@ async function loadPendingProposals() {
   } catch (_) {}
 }
 
+let chatAbort = null; // 当前流式请求的 AbortController（供停止按钮使用）
+function setChatBusy(busy) {
+  const sendBtn = document.getElementById('chatSend');
+  const stopBtn = document.getElementById('chatStop');
+  if (sendBtn) sendBtn.style.display = busy ? 'none' : '';
+  if (stopBtn) stopBtn.style.display = busy ? '' : 'none';
+}
+function initChatStop() {
+  const stopBtn = document.getElementById('chatStop');
+  if (!stopBtn) return;
+  stopBtn.addEventListener('click', () => {
+    if (chatAbort) { try { chatAbort.abort(); } catch (_) {} }
+    const last = chatMessages.lastElementChild;
+    if (last && last.classList.contains('assistant') && !last.dataset.done) {
+      if (last.textContent.trim() === '' || last.textContent === '思考中...') last.textContent = '（已停止生成）';
+      else last.textContent += '\n\n（已停止生成）';
+      last.dataset.done = '1';
+    }
+    setChatBusy(false);
+    chatAbort = null;
+  });
+}
+// 流式请求公共入口：POST /api/chat {stream:true}，返回 {reply, steps, usage, proposals}；abort 可中途停止
+async function chatFetchStream(payload, onDelta) {
+  chatAbort = new AbortController();
+  setChatBusy(true);
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ stream: true }, payload)),
+      signal: chatAbort.signal
+    });
+    if (!res.ok || !res.headers.get('content-type')?.includes('text/event-stream')) {
+      // 服务端降级为 JSON（非流式错误）
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || d.reply || ('HTTP ' + res.status));
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder('utf-8');
+    let buf = '';
+    const result = { reply: '', steps: [], usage: null, proposals: [], error: null };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let event = 'message';
+        const datas = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) datas.push(line.slice(5).trim());
+        }
+        if (!datas.length) continue;
+        let obj;
+        try { obj = JSON.parse(datas.join('')); } catch (_) { continue; }
+        if (event === 'delta') { result.reply += obj.text || ''; }
+        else if (event === 'tool') { result.steps.push({ tool: obj.name, summary: obj.summary }); }
+        else if (event === 'done') {
+          if (obj.reply) result.reply = obj.reply;
+          if (Array.isArray(obj.proposals)) result.proposals = obj.proposals;
+          if (Array.isArray(obj.steps) && obj.steps.length) result.steps = obj.steps;
+          result.usage = obj.usage || result.usage;
+        } else if (event === 'error') { result.error = obj.message; }
+      }
+      // 增量渲染回调
+      if (typeof onDelta === 'function' && result.reply) onDelta(result.reply);
+    }
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (e) {
+    if (e.name === 'AbortError') { const err = new Error('stopped'); err.stopped = true; throw err; }
+    throw e;
+  } finally {
+    chatAbort = null;
+    setChatBusy(false);
+  }
+}
+
 async function sendChat() {
   const text = chatInput.value.trim();
   if (!text) return;
@@ -3432,30 +3514,42 @@ async function sendChat() {
   clearPendingRefs();
   chatHistory.push({ role: 'user', content: text });
   addMsg('user', text);
-  addMsg('assistant', '思考中...');
+  // 流式 live 消息元素
+  const liveMsg = document.createElement('div');
+  liveMsg.className = 'msg assistant';
+  liveMsg.textContent = '';
+  liveMsg.dataset.done = '0';
+  chatMessages.appendChild(liveMsg);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  let finished = false;
+  const finish = (txt) => {
+    if (finished) return;
+    finished = true;
+    liveMsg.textContent = txt || liveMsg.textContent;
+    if (!liveMsg.textContent.trim()) liveMsg.textContent = '（无回复）';
+    liveMsg.dataset.done = '1';
+  };
   try {
     const modelSel = document.getElementById('chatModel');
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), role: currentRole(), model: modelSel ? modelSel.value : '' })
+    const result = await chatFetchStream({
+      messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), role: currentRole(), model: modelSel ? modelSel.value : ''
+    }, (deltaText) => {
+      liveMsg.textContent = deltaText;
+      chatMessages.scrollTop = chatMessages.scrollHeight;
     });
-    const data = await res.json();
-    if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
-      chatMessages.lastElementChild.remove();
-    }
-    renderAgentSteps(data.steps);
-    const reply = data.reply || data.error || '（无回复）';
+    finish(result.reply);
+    renderAgentSteps(result.steps);
+    const reply = result.reply || '（无回复）';
     chatHistory.push({ role: 'assistant', content: reply });
     localStorage.setItem(chatStorageKey(), JSON.stringify(chatHistory));
-    addMsg('assistant', reply);
-    addUsageNote(data.usage);
-    renderProposals(data.proposals);
+    addUsageNote(result.usage);
+    renderProposals(result.proposals);
   } catch (e) {
-    if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
-      chatMessages.lastElementChild.remove();
+    if (e.stopped) {
+      finish('（已停止生成）');
+    } else {
+      finish(liveMsg.textContent ? liveMsg.textContent + '\n\n（请求中断：' + e.message + '）' : '请求失败: ' + e.message);
     }
-    addMsg('assistant', '请求失败: ' + e.message);
   }
 }
 
@@ -3492,33 +3586,44 @@ async function runAgent(mode) {
   chatInput.value = '';
   chatHistory.push({ role: 'user', content: '【' + label + '】' + text });
   addMsg('user', '【' + label + '】' + text.slice(0, 300));
-  addMsg('assistant', '思考中...');
+  const liveMsg = document.createElement('div');
+  liveMsg.className = 'msg assistant';
+  liveMsg.textContent = '';
+  liveMsg.dataset.done = '0';
+  chatMessages.appendChild(liveMsg);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  let finished = false;
+  const finish = (txt) => {
+    if (finished) return;
+    finished = true;
+    liveMsg.textContent = txt || liveMsg.textContent;
+    if (!liveMsg.textContent.trim()) liveMsg.textContent = '（无回复）';
+    liveMsg.dataset.done = '1';
+  };
   try {
     const modelSel = document.getElementById('chatModel');
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), agentMode: mode, role: currentRole(), model: modelSel ? modelSel.value : '' })
+    const result = await chatFetchStream({
+      messages: chatPayloadMessages(), project: currentProject, skills: selectedSkills(), agentMode: mode, role: currentRole(), model: modelSel ? modelSel.value : ''
+    }, (deltaText) => {
+      liveMsg.textContent = deltaText;
+      chatMessages.scrollTop = chatMessages.scrollHeight;
     });
-    const data = await res.json();
-    if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
-      chatMessages.lastElementChild.remove();
-    }
-    renderAgentSteps(data.steps);
-    const reply = data.reply || data.error || '（无回复）';
+    finish(result.reply);
+    renderAgentSteps(result.steps);
+    const reply = result.reply || '（无回复）';
     chatHistory.push({ role: 'assistant', content: reply });
     localStorage.setItem(chatStorageKey(), JSON.stringify(chatHistory));
-    addMsg('assistant', reply);
-    addUsageNote(data.usage);
-    renderProposals(data.proposals);
+    addUsageNote(result.usage);
+    renderProposals(result.proposals);
     if (mode === 'deslop' && deslopNode && reply && reply.trim()) {
       openDiffModal(deslopNode, reply);
     }
   } catch (e) {
-    if (chatMessages.lastElementChild && chatMessages.lastElementChild.textContent === '思考中...') {
-      chatMessages.lastElementChild.remove();
+    if (e.stopped) {
+      finish('（已停止生成）');
+    } else {
+      finish(liveMsg.textContent ? liveMsg.textContent + '\n\n（请求中断：' + e.message + '）' : '请求失败: ' + e.message);
     }
-    addMsg('assistant', '请求失败: ' + e.message);
   }
 }
 
@@ -4739,6 +4844,21 @@ async function loadAiSettings() {
     document.getElementById('aiBase').value = d.ai.base || '';
     document.getElementById('aiModel').value = d.ai.model || '';
     document.getElementById('aiKey').value = '';
+    const budgetEl = document.getElementById('aiBudget');
+    if (budgetEl) budgetEl.value = (d.ai.budgetPerMonth || 0) ? d.ai.budgetPerMonth : '';
+    // 预算状态：本月费用 vs 预算
+    const usageInfoEl = document.getElementById('aiUsageInfo');
+    const monthCost = Number(d.ai.monthCost) || 0;
+    const budget = Number(d.ai.budgetPerMonth) || 0;
+    if (usageInfoEl && budget > 0) {
+      const pct = Math.round((monthCost / budget) * 1000) / 10;
+      const over = monthCost >= budget;
+      usageInfoEl.style.color = over ? '#ef4444' : '';
+      usageInfoEl.textContent = '本月已用 ¥' + monthCost.toFixed(4) + ' / 预算 ¥' + budget + '（' + pct + '%）' + (over ? ' ⚠️ 已超预算！' : '');
+    } else if (usageInfoEl && budget === 0 && monthCost > 0) {
+      usageInfoEl.style.color = '';
+      usageInfoEl.textContent = '本月已用 ¥' + monthCost.toFixed(4) + '（未设置预算上限）';
+    }
     // 服务商下拉：按当前 base 匹配预设（匹配不到 = 自定义）
     const provSel = document.getElementById('aiProvider');
     if (provSel) {
@@ -4787,6 +4907,25 @@ async function loadUsageStats(range) {
     const d = await res.json();
     if (!d.ok) throw new Error(d.error || '加载失败');
     const agg = d.total;
+    // 预算横幅：本月费用 vs 预算（来自 /api/settings 的 budgetPerMonth 与本月 cost）
+    const budgetBannerEl = document.getElementById('usageBudgetBanner');
+    if (budgetBannerEl) {
+      try {
+        const sRes = await fetch('/api/settings');
+        const s = await sRes.json();
+        const budget = Number(s.ai && s.ai.budgetPerMonth) || 0;
+        const monthCost = Number(s.ai && s.ai.monthCost) || 0;
+        if (budget > 0) {
+          const pct = Math.round((monthCost / budget) * 1000) / 10;
+          const over = monthCost >= budget;
+          budgetBannerEl.style.display = '';
+          budgetBannerEl.style.color = over ? '#ef4444' : 'var(--muted)';
+          budgetBannerEl.textContent = '本月预算：¥' + monthCost.toFixed(4) + ' / ¥' + budget + '（' + pct + '%）' + (over ? ' ⚠️ 已超预算，建议切换便宜模型或暂停高成本操作' : '');
+        } else {
+          budgetBannerEl.style.display = 'none';
+        }
+      } catch (_) { budgetBannerEl.style.display = 'none'; }
+    }
     // 汇总卡片：总 tokens / 提示 / 补全 / 缓存命中 / 调用次数 / 费用
     const costTotal = d.cost && d.cost.total != null ? d.cost.total : 0;
     let costText = '';
@@ -4927,10 +5066,60 @@ function initUsageStats() {
   wrap.addEventListener('click', (e) => {
     const btn = e.target.closest('.usageRange');
     if (!btn) return;
+    if (btn.id === 'usageExportBtn') { exportUsageCsv(); return; }
     for (const b of wrap.querySelectorAll('.usageRange')) b.classList.remove('on');
     btn.classList.add('on');
     loadUsageStats(btn.dataset.range);
   });
+}
+// 导出当前时间段用量为 CSV（含 BOM，Excel 可直接打开中文不乱码）
+async function exportUsageCsv() {
+  const btn = document.getElementById('usageExportBtn');
+  const range = (document.querySelector('#usageRanges .usageRange.on') || {}).dataset?.range || 'day';
+  const orig = btn.textContent;
+  btn.textContent = '导出中...';
+  try {
+    const res = await fetch('/api/usage?range=' + encodeURIComponent(range));
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || '获取失败');
+    const lines = [];
+    const csv = (row) => lines.push(row.map(v => {
+      const s = String(v == null ? '' : v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(','));
+    csv(['novel-canvas 用量导出', '时间段: ' + ({ day: '今日', '7d': '近7天', '30d': '近30天', month: '本月', all: '全部' }[range] || range), '导出时间: ' + new Date().toLocaleString('zh-CN')]);
+    csv([]);
+    csv(['汇总', '总 tokens', '提示', '补全', '缓存命中', '次数', '费用(¥)']);
+    csv([range, d.total.total, d.total.prompt, d.total.completion, d.total.cached, d.total.calls, d.cost ? d.cost.total : 0]);
+    csv([]);
+    csv(['每日明细', '提示', '补全', '缓存命中', '次数', '费用(¥)']);
+    for (const x of (d.byDay || []).slice().sort((a, b) => a.day < b.day ? -1 : 1)) csv([x.day, x.total, x.prompt, x.completion, x.cached, x.calls, x.cost]);
+    csv([]);
+    csv(['按模型', '总 tokens', '提示', '补全', '缓存命中', '次数', '费用(¥)']);
+    for (const [m, s] of Object.entries(d.byModel || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0))) csv([m, s.total, s.prompt, s.completion, s.cached, s.calls, s.cost]);
+    csv([]);
+    csv(['按项目', '总 tokens', '提示', '补全', '缓存命中', '次数', '费用(¥)']);
+    for (const [p, s] of Object.entries(d.byProject || {}).sort((a, b) => (b[1].total || 0) - (a[1].total || 0))) csv([p, s.total, s.prompt, s.completion, s.cached, s.calls, s.cost]);
+    csv([]);
+    csv(['最近调用', '时间', '模型', '项目', '总 tokens', '缓存命中', '费用(¥)']);
+    for (const x of (d.recent || [])) {
+      const t = new Date(x.ts);
+      csv([new Date(x.ts).toLocaleString('zh-CN'), x.model, x.project || '', x.total, x.cached || 0, x.cost || 0]);
+    }
+    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'novel-canvas-usage-' + range + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    btn.textContent = '已导出 ✓';
+    setTimeout(() => { btn.textContent = orig; }, 1800);
+  } catch (e) {
+    btn.textContent = '导出失败';
+    setTimeout(() => { btn.textContent = orig; }, 1800);
+    alert('导出失败：' + e.message);
+  }
 }
 
 function switchSettingsTab(tab) {
@@ -4985,13 +5174,15 @@ async function saveAiSettings() {
   const base = document.getElementById('aiBase').value.trim();
   const key = document.getElementById('aiKey').value.trim();
   const model = document.getElementById('aiModel').value.trim();
+  const budgetEl = document.getElementById('aiBudget');
+  const budgetPerMonth = budgetEl ? Number(budgetEl.value) || 0 : 0;
   if (!base) { aiSettingsStatus('API 地址不能为空。'); return false; }
   aiSettingsStatus('保存中...');
   try {
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base, key, model })
+      body: JSON.stringify({ base, key, model, budgetPerMonth })
     });
     const d = await res.json();
     if (d.error) throw new Error(d.error);
@@ -5259,6 +5450,7 @@ document.getElementById('settingsTabHistory').addEventListener('click', () => sw
 document.getElementById('settingsTabUsage').addEventListener('click', () => switchSettingsTab('usage'));
 initUsageStats();
 initAiProviderSelect();
+initChatStop();
 document.getElementById('aiTestBtn').addEventListener('click', testAiConnection);
 // 启动时把设置里的模型同步进聊天模型下拉
 fetch('/api/settings').then(r => r.json()).then(d => {

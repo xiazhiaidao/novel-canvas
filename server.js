@@ -4,6 +4,7 @@
 //   NOVEL_PROJECTS_ROOT=D:\小说 PORT=8788 node server.js
 //   DEFAULT_PROJECT=从0开始的天灾生活 node server.js
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -1837,7 +1838,9 @@ function buildAgentContext(root) {
   }
 
   let text = parts.join('\n\n');
-  if (text.length > 30000) text = text.slice(0, 30000) + '\n\n（上下文过长，已截断。需要完整内容请用 read_node / read_file 工具读取。）';
+  // 上下文预算：项目资料单轮上限 16000 字符（太长则截断，agent 可再调 read_node/read_file 取完整内容）
+  const CONTEXT_MAX = 16000;
+  if (text.length > CONTEXT_MAX) text = text.slice(0, CONTEXT_MAX) + '\n\n（上下文过长，已截断。需要完整内容请用 read_node / read_file 工具读取。）';
   return text;
 }
 
@@ -1857,6 +1860,39 @@ function summarizeAgentResult(tool, args, result) {
   if (tool === 'delete_node') return '提案: 删除《' + (result.title || args.id || '') + '》';
   if (tool === 'edit_file') return (result.isNew ? '提案: 新建文件 ' : '提案: 修改文件 ') + (args.path || result.file || '');
   return tool + ' 完成';
+}
+
+// 压缩工具结果回填给模型的文本：截断长正文，保留提案关键字段（用于多轮继续推理）
+const TOOL_RESULT_MAX = 4000;
+function compactToolResult(tool, result) {
+  try {
+    if (!result) return '{}';
+    const out = {};
+    if (result.proposal_id) out.proposal_id = result.proposal_id;
+    if (result.kind) out.kind = result.kind;
+    if (result.file) out.file = result.file;
+    if (result.isNew != null) out.isNew = result.isNew;
+    if (tool === 'read_node' || tool === 'read_file') {
+      if (result.id) out.id = result.id;
+      if (result.title) out.title = result.title;
+      if (result.path) out.path = result.path;
+      if (result.type) out.type = result.type;
+      if (result.label) out.label = result.label;
+      out.content = String(result.content || '').slice(0, TOOL_RESULT_MAX) + (result.content && String(result.content).length > TOOL_RESULT_MAX ? '\n…（内容过长已截断，如需完整内容请用 read_file 指定行号读取）' : '');
+      out.chars = result.chars;
+      return JSON.stringify(out);
+    }
+    const s = JSON.stringify(result);
+    if (s && s.length <= TOOL_RESULT_MAX) return s;
+    // 通用截断：保留枚举类字段（count/list 首条），丢弃超长正文
+    for (const k of ['count', 'total', 'found', 'matches', 'nodes', 'volumes', 'chapters', 'ok', 'title']) {
+      if (result[k] != null) out[k] = result[k];
+    }
+    const t = JSON.stringify(out);
+    return t.length > TOOL_RESULT_MAX ? t.slice(0, TOOL_RESULT_MAX) + '…（已截断）' : t;
+  } catch (_) {
+    return String(result).slice(0, TOOL_RESULT_MAX);
+  }
 }
 
 // 提取模型回复文本：普通模型用 content；推理模型（deepseek-v4-pro 等）的
@@ -2108,6 +2144,10 @@ const server = http.createServer(async (req, res) => {
     const saved = loadAiConfig();
     const api = getApiConfig();
     const source = api ? aiConfigSource() : 'none';
+    const budget = Number(saved && saved.budgetPerMonth) || 0;
+    // 本月已用费用（cost_cny 累计）
+    let monthCost = 0;
+    try { monthCost = (summarizeUsage('month').cost || {}).total || 0; } catch (_) {}
     return sendJson(res, {
       ok: true,
       ai: {
@@ -2115,7 +2155,9 @@ const server = http.createServer(async (req, res) => {
         model: api ? api.model : (saved && saved.model) || '',
         hasKey: !!(api && api.apiKey),
         keyHint: api && api.apiKey ? maskApiKey(api.apiKey) : '',
-        source
+        source,
+        budgetPerMonth: budget,
+        monthCost
       }
     });
   }
@@ -2127,15 +2169,18 @@ const server = http.createServer(async (req, res) => {
       const saved = loadAiConfig() || {};
       const key = String(body.key || '').trim();
       const model = String(body.model || '').trim();
+      const budgetRaw = Number(body.budgetPerMonth);
+      const budgetPerMonth = (!isNaN(budgetRaw) && budgetRaw > 0) ? Math.round(budgetRaw * 100) / 100 : 0;
       saveAiConfig({
         base,
         key: key || saved.key || '',
-        model: model || saved.model || 'deepseek-chat'
+        model: model || saved.model || 'deepseek-chat',
+        budgetPerMonth
       });
       const effectiveKey = key || saved.key || '';
       return sendJson(res, {
         ok: true,
-        ai: { base, model: model || saved.model || 'deepseek-chat', hasKey: !!effectiveKey, keyHint: maskApiKey(effectiveKey), source: 'saved' }
+        ai: { base, model: model || saved.model || 'deepseek-chat', hasKey: !!effectiveKey, keyHint: maskApiKey(effectiveKey), source: 'saved', budgetPerMonth }
       });
     } catch (e) {
       return sendJson(res, { error: e.message });
@@ -2663,11 +2708,21 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (pathname === '/api/chat' && req.method === 'POST') {
+    let isStream = false; // SSE 流式模式（try 外声明，catch 也需访问）
     try {
       const body = await readBody(req);
       const messages = Array.isArray(body.messages) ? body.messages : [];
         // 滑动窗口：服务端强制只保留最近 20 条消息，避免历史无限累积
-        const recentMessages = messages.slice(-20);
+        let recentMessages = messages.slice(-20);
+        // 历史消息字符预算：累计超 12000 字符时从最旧开始丢弃（工具结果已各自截断）
+        {
+          let budget = 12000;
+          for (let i = recentMessages.length - 1; i >= 0; i--) {
+            const len = String(recentMessages[i].content || recentMessages[i].text || '').length;
+            if (len > budget) { recentMessages = recentMessages.slice(i + 1); break; }
+            budget -= len;
+          }
+        }
       const root = resolveProjectRoot(body.project || defaultProjectName());
         const contextText = buildAgentContext(root);
           const requestedSkills = Array.isArray(body.skills) ? body.skills : null;
@@ -2705,29 +2760,167 @@ const api = getApiConfig();
         const useTools = model !== 'deepseek-reasoner';
         // 角色工具范围：按角色预设过滤可用工具
         const roleTools = role.tools ? AGENT_TOOLS.filter(t => role.tools.includes(t.function.name)) : AGENT_TOOLS;
+        isStream = body.stream === true; // SSE 流式模式
+        console.log('[chat] stream=' + isStream + ' model=' + model + ' msgs=' + messages.length);
+        let upstreamReq = null; // 当前上游请求（停止生成时 destroy）
+        const sseWrite = (event, obj) => {
+          if (!isStream) return;
+          try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(obj) + '\n\n'); } catch (_) {}
+        };
+        if (isStream) {
+          // SSE 响应头（流式必须在任何写入前设置）
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+          });
+          // 客户端断开 → 中止上游 LLM 请求（停止生成）
+          res.on('close', () => { if (upstreamReq) { try { upstreamReq.destroy(); } catch (_) {} } });
+          res.on('error', () => { if (upstreamReq) { try { upstreamReq.destroy(); } catch (_) {} } });
+        }
         let currentMessages = payloadMessages;
         const createdProposals = [];
         const steps = [];
         const chatUsage = { prompt: 0, completion: 0, total: 0 };
+        const addUsage = (u) => {
+          if (!u) return;
+          chatUsage.prompt += Number(u.prompt_tokens != null ? u.prompt_tokens : u.prompt) || 0;
+          chatUsage.completion += Number(u.completion_tokens != null ? u.completion_tokens : u.completion) || 0;
+          chatUsage.total += Number(u.total_tokens != null ? u.total_tokens : u.total) || 0;
+        };
+        // 流式读取一轮 LLM 响应：累积文本/tool_calls，文本增量回传；返回 {replyText, toolCalls, usage, finishReason}
+        // 用 Node 原生 http/https.request（data 事件逐块），绕开 undici body reader 的流式问题
+        function streamOneRound(roundPayload) {
+          return new Promise((resolve, reject) => {
+            const url = new URL(api.base + '/chat/completions');
+            const mod = url.protocol === 'https:' ? https : http;
+            const bodyStr = JSON.stringify(roundPayload);
+            const req = mod.request(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + api.apiKey,
+                'Content-Length': Buffer.byteLength(bodyStr)
+              }
+            }, (upRes) => {              if (upRes.statusCode !== 200) {
+                let errText = '';
+                upRes.on('data', d => errText += d);
+                upRes.on('end', () => {
+                  let msg = errText;
+                  try { msg = JSON.parse(errText).error?.message || errText; } catch (_) {}
+                  resolve({ error: msg });
+                });
+                return;
+              }
+              const dec = new TextDecoder('utf-8');
+              let buf = '';
+              let replyText = '';
+              let usage = null;
+              let finishReason = '';
+              const toolAcc = {}; // index -> {id, name, args}
+              const flushDelta = (text) => { if (text) sseWrite('delta', { text }); };
+              let chunkCount = 0;
+              upRes.on('data', (value) => {
+                chunkCount++;
+                const piece = dec.decode(value, { stream: true });
+                buf += piece;
+                let idx;
+                while ((idx = buf.indexOf('\n')) >= 0) {
+                  const line = buf.slice(0, idx).replace(/\r$/, '');
+                  buf = buf.slice(idx + 1);
+                  if (!line.startsWith('data:')) continue;
+                  const data = line.slice(5).trim();
+                  if (data === '[DONE]') continue;
+                  let chunk;
+                  try { chunk = JSON.parse(data); } catch (_) { continue; }
+                  const choice = chunk.choices && chunk.choices[0];
+                  if (!choice) continue;
+                  if (chunk.usage) usage = chunk.usage;
+                  if (choice.finish_reason) finishReason = choice.finish_reason;
+                  const delta = choice.delta || {};
+                  if (typeof delta.content === 'string' && delta.content) {
+                    replyText += delta.content;
+                    flushDelta(delta.content);
+                  }
+                  if (delta.tool_calls) {
+                    for (const tc of delta.tool_calls) {
+                      const i = tc.index != null ? tc.index : 0;
+                      toolAcc[i] = toolAcc[i] || { id: '', name: '', args: '' };
+                      if (tc.id) toolAcc[i].id = tc.id;
+                      if (tc.function && tc.function.name) toolAcc[i].name = tc.function.name;
+                      if (tc.function && typeof tc.function.arguments === 'string') toolAcc[i].args += tc.function.arguments;
+                    }
+                  }
+                }
+              });
+              upRes.on('end', () => {
+                const toolCalls = Object.keys(toolAcc).sort((a, b) => a - b).map(k => ({
+                  id: toolAcc[k].id,
+                  type: 'function',
+                  function: { name: toolAcc[k].name, arguments: toolAcc[k].args }
+                })).filter(tc => tc.function.name);
+                resolve({ replyText, toolCalls, usage, finishReason, chunkCount });
+              });
+              upRes.on('error', (e) => {
+                const stopped = /destroy|aborted|socket hang up|ECONNRESET/i.test(String(e && e.message));
+                try { req.destroy(); } catch (_) {}
+                reject(stopped ? new Error('stopped') : e);
+              });
+            });
+            req.on('error', (e) => {
+              // 客户端断开导致的上游 destroy：视为主动停止
+              const stopped = /destroy|aborted|socket hang up|ECONNRESET/i.test(String(e && e.message));
+              reject(stopped ? new Error('stopped') : e);
+            });
+            req.setTimeout(120000, () => { req.destroy(new Error('LLM 请求超时')); });
+            upstreamReq = req;
+            req.end(bodyStr);
+          });
+        }
         try {
           for (let round = 0; round < 10; round++) {
-            const payload = { model, messages: currentMessages, stream: false };
+            const payload = { model, messages: currentMessages, stream: isStream };
             if (useTools && roleTools.length) { payload.tools = roleTools; payload.tool_choice = 'auto'; }
-            const r = await fetch(api.base + '/chat/completions', {
+            const roundRes = isStream ? await streamOneRound(payload) : null;
+            if (isStream && roundRes.error) {
+              sseWrite('error', { message: roundRes.error });
+              return res.end();
+            }
+            let data, msg;
+            if (isStream) {
+              addUsage(roundRes.usage);
+              recordUsage(model, roundRes.usage, null, body.project);
+              if (useTools && roundRes.toolCalls && roundRes.toolCalls.length) {
+                currentMessages.push({ role: 'assistant', content: roundRes.replyText || null, tool_calls: roundRes.toolCalls });
+                for (const tc of roundRes.toolCalls) {
+                  let args = {};
+                  try { args = JSON.parse(tc.function.arguments || '{}'); } catch (_) {}
+                  const result = await runAgentTool(tc.function.name, args, root);
+                  steps.push({ tool: tc.function.name, args, summary: summarizeAgentResult(tc.function.name, args, result) });
+                  sseWrite('tool', { name: tc.function.name, summary: summarizeAgentResult(tc.function.name, args, result) });
+                  if (result && result.proposal_id && proposals.has(result.proposal_id)) {
+                    createdProposals.push(proposals.get(result.proposal_id));
+                  }
+                  currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: compactToolResult(tc.function.name, result) });
+                }
+                continue;
+              }
+              // 最终文本回复
+              const reply = roundRes.replyText || '';
+              sseWrite('done', { reply, proposals: createdProposals, steps, usage: chatUsage });
+              return res.end();
+            }
+            // ── 非流式路径（原逻辑） ──
+            data = await (await fetch(api.base + '/chat/completions', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api.apiKey },
               body: JSON.stringify(payload),
               signal: controller.signal
-            });
-            const data = await r.json();
+            })).json();
             recordUsage(model, data.usage, data, body.project);
-            if (data.usage) {
-              const u = data.usage;
-              chatUsage.prompt += Number(u.prompt_tokens != null ? u.prompt_tokens : u.prompt) || 0;
-              chatUsage.completion += Number(u.completion_tokens != null ? u.completion_tokens : u.completion) || 0;
-              chatUsage.total += Number(u.total_tokens != null ? u.total_tokens : u.total) || 0;
-            }
-            const msg = data?.choices?.[0]?.message;
+            addUsage(data.usage);
+            msg = data?.choices?.[0]?.message;
             if (!msg) {
               return sendJson(res, { reply: data?.error?.message || '（模型未返回内容）', usage: chatUsage });
             }
@@ -2741,17 +2934,27 @@ const api = getApiConfig();
                   if (result && result.proposal_id && proposals.has(result.proposal_id)) {
                     createdProposals.push(proposals.get(result.proposal_id));
                   }
-                currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
+                currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: compactToolResult(tc.function.name, result) });
               }
               continue;
             }
             return sendJson(res, { reply: aiMessageContent(msg) || '（完成）', proposals: createdProposals, steps, usage: chatUsage });
+          }
+          if (isStream) {
+            sseWrite('done', { reply: '（工具调用次数过多，已停止）', proposals: createdProposals, steps, usage: chatUsage });
+            return res.end();
           }
           return sendJson(res, { reply: '（工具调用次数过多，已停止）', proposals: createdProposals, steps, usage: chatUsage });
         } finally {
           clearTimeout(timer);
         }
     } catch (e) {
+      if (isStream) {
+        try {
+          sseWrite('error', { message: e.message === 'stopped' ? '已停止生成' : e.message });
+          return res.end();
+        } catch (_) { return; }
+      }
       return sendJson(res, { error: e.message });
     }
   }
