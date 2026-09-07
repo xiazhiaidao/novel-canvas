@@ -31,3 +31,7 @@ CLAUDE.md
 .claude/
 .story-deployed
 .obsidian/
+
+# AI 协作内部文件（不入库）
+AGENTS.md
+HANDOVER.md

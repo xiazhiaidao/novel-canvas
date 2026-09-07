@@ -121,7 +121,6 @@ novel-canvas/
 ├── canvas_theme.css     # 主题样式（深色/浅色）
 ├── electron-builder.yml # electron-builder 打包配置
 ├── CHANGELOG.md         # 版本变更记录
-├── AGENTS.md            # 开发者/AI 协作规范
 ├── scripts/
 │   ├── dev.js           # 开发模式编排（server 热重载 + Electron）
 │   ├── smoke-test.js    # headless Edge CDP 冒烟测试
@@ -153,7 +152,6 @@ npm run build:portable  # 仅把源码同步到已有便携目录（发布前的
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 文档](docs/API.md)
 - [开发指南](docs/DEVELOPMENT.md)
-- [项目协作规范](AGENTS.md)
 
 ## 许可证
 
