@@ -539,12 +539,13 @@ function renderNodes() {
           const co = childOrig[i];
           positions[c.id] = { x: co.x + (nx - orig.x), y: co.y + (ny - orig.y) };
         });
-        redrawEdges();
+        scheduleRedrawEdges();
       }
       function up() {
         boardEl.classList.remove('dragging');
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
+        flushRedrawEdges();
         saveLayout();
       }
       window.addEventListener('mousemove', move);
@@ -585,12 +586,13 @@ function renderNodes() {
           const bpos = positions[g.board.id] || { x: bp.x, y: bp.y };
           childEl.style.left = (nx - bpos.x) + 'px';
           childEl.style.top = (ny - bpos.y) + 'px';
-          redrawEdges();
+          scheduleRedrawEdges();
         }
         function up() {
           childEl.classList.remove('dragging');
           window.removeEventListener('mousemove', move);
           window.removeEventListener('mouseup', up);
+          flushRedrawEdges();
           saveLayout();
         }
         window.addEventListener('mousemove', move);
@@ -641,12 +643,13 @@ function renderNodes() {
         };
         el.style.left = positions[n.id].x + 'px';
         el.style.top = positions[n.id].y + 'px';
-        redrawEdges();
+        scheduleRedrawEdges();
       }
       function up() {
         el.classList.remove('dragging');
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
+        flushRedrawEdges();
         saveLayout();
       }
       window.addEventListener('mousemove', move);
@@ -1059,8 +1062,28 @@ function addCustomLink(a, b) {
   saveLayout();
   redrawEdges();
 }
+// ── 重绘帧同步 ──
+// 拖拽时 mousemove 的派发频率可能高于渲染帧率，原实现每次事件都同步全量重绘连线，
+// 高节点量下会阻塞输入、拖手可见掉帧。这里把重绘合并到下一帧：一帧内无论触发多少次，最多重绘一次。
+let pendingRedrawRaf = 0;
+function scheduleRedrawEdges() {
+  if (pendingRedrawRaf) return;
+  pendingRedrawRaf = requestAnimationFrame(() => {
+    pendingRedrawRaf = 0;
+    redrawEdges();
+  });
+}
+// 拖拽结束：丢弃待执行帧并立即重绘，保证落点精确
+function flushRedrawEdges() {
+  if (pendingRedrawRaf) { cancelAnimationFrame(pendingRedrawRaf); pendingRedrawRaf = 0; }
+  redrawEdges();
+}
+
 function redrawEdges() {
   let svg = '<path d="M0 0" style="display:none"/>';
+  // 节点元素缓存：原先每条边做 2 次属性选择器查询（复杂度 O(2E·n)），改为一次遍历建表（O(n)）后 O(1) 命中
+  const elCache = new Map();
+  world.querySelectorAll('.node[data-id]').forEach(el => { elCache.set(el.dataset.id, el); });
   const isHidden = (el) => el && (el.style.display === 'none' || el.closest('.nodeBoard.collapsed'));
   if (autoLinkEnabled && egoNodeId) {
     for (const [a, b] of links) {
@@ -1069,8 +1092,8 @@ function redrawEdges() {
       if (!na || !nb) continue;
       const pa = positions[na.id] || { x: 0, y: 0 };
       const pb = positions[nb.id] || { x: 0, y: 0 };
-      const elA = world.querySelector(`.node[data-id="${a}"]`);
-      const elB = world.querySelector(`.node[data-id="${b}"]`);
+      const elA = elCache.get(a);
+      const elB = elCache.get(b);
       if (isHidden(elA) || isHidden(elB)) continue;
       const left = pa.x <= pb.x ? [pa, pb] : [pb, pa];
       const d = edgeD(left[0].x + 190, left[0].y + 32, left[1].x, left[1].y + 32);

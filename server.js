@@ -880,11 +880,70 @@ function sendJson(res, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// ── 本地来源校验（防 DNS rebinding）──
+// 攻击手法：攻击者控制的域名先解析到自己的服务器、再重解析到 127.0.0.1，借浏览器绕过同源策略调用本地端口。
+// 此时浏览器发出的 Host 头仍是攻击者域名，因此校验 Host 即可拦截；Origin 作为第二道防线。
+const ALLOWED_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+function hostnameAllowed(hostHeader) {
+  if (!hostHeader) return true; // 非浏览器客户端（HTTP/1.0、curl 等）不带 Host，不构成 rebinding 风险
+  const h = String(hostHeader).trim().toLowerCase();
+  let name = h;
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    name = end >= 0 ? h.slice(0, end + 1) : h;
+  } else {
+    const colon = h.lastIndexOf(':');
+    if (colon >= 0) name = h.slice(0, colon);
+  }
+  return ALLOWED_HOSTNAMES.has(name);
+}
+
+function sendForbidden(res, msg) {
+  res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: msg }));
+}
+
+function assertLocalRequest(req, res) {
+  if (!hostnameAllowed(req.headers.host)) {
+    sendForbidden(res, '拒绝访问：非本地来源（Host 校验失败）');
+    return false;
+  }
+  const origin = req.headers.origin;
+  // file:// 页面（Electron 打包场景）的 Origin 为字面量 'null'，需放行
+  if (origin && origin !== 'null') {
+    let ok = false;
+    try { ok = ALLOWED_HOSTNAMES.has(new URL(origin).hostname.toLowerCase()); } catch (_) { ok = false; }
+    if (!ok) {
+      sendForbidden(res, '拒绝访问：非本地来源（Origin 校验失败）');
+      return false;
+    }
+  }
+  return true;
+}
+
+// 单次请求体上限：正文/设定封包可能较大，给足余量，同时挡住异常体积撑爆内存
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', c => data += c);
-    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch (e) { reject(e); } });
+    let size = 0;
+    let aborted = false;
+    req.on('data', c => {
+      if (aborted) return;
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        aborted = true;
+        reject(new Error('请求体过大（上限 ' + (MAX_BODY_BYTES / 1024 / 1024) + 'MB）'));
+        return;
+      }
+      data += c;
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      try { resolve(JSON.parse(data || '{}')); } catch (e) { reject(e); }
+    });
     req.on('error', reject);
   });
 }
@@ -2132,6 +2191,9 @@ async function runAgentTool(name, args, root) {
 }
 
 const server = http.createServer(async (req, res) => {
+  // 本地来源校验：处理任何路由前拦截，防止外部网页借 DNS rebinding 访问本地数据
+  if (!assertLocalRequest(req, res)) return;
+
   const url = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(url.pathname);
 
