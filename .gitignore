@@ -36,3 +36,6 @@ CLAUDE.md
 AGENTS.md
 HANDOVER.md
 SESSION_RESUME.md
+
+# 构建工具缓存
+.dsh-build-cache/
