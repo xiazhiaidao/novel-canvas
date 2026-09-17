@@ -1781,6 +1781,232 @@ async function main() {
     return 'OK(' + ms + 'ms, junction 跳过, 深度受限)';
   });
 
+  // ── v1.19：全项目搜索（跨文件全文检索）──────────────────────────
+  // 关键词不写死：不同项目内容不同，先用服务端探一个真实命中的词，避免测试依赖具体小说内容
+  let ftTerm = '';
+  {
+    for (const c of ['的', '设定', '主角', '章', '人物', 'a']) {
+      const d = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + encodeURIComponent(c));
+      if (d && !d.error && d.total > 0) { ftTerm = c; break; }
+    }
+    if (!ftTerm) ftTerm = 'a';
+    console.log('   ↳ 全文搜索测试关键词: ' + JSON.stringify(ftTerm));
+  }
+
+  await check('/api/search 检索结构与命中偏移精确', async () => {
+    const d = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + encodeURIComponent(ftTerm));
+    if (!d || d.error) return 'error: ' + JSON.stringify(d).slice(0, 140);
+    if (!Array.isArray(d.files)) return 'files 非数组';
+    if (!(d.total > 0) && ftTerm !== 'a') return 'total=0';
+    if (!(d.scannedFiles > 0)) return 'scannedFiles=0';
+    // 逐条验证 hits[].offset 在 text 中精确指向关键词——这是高亮正确性的根
+    let checked = 0;
+    for (const g of d.files) {
+      for (const m of g.matches) {
+        for (const h of m.hits) {
+          const got = m.text.slice(h.offset, h.offset + ftTerm.length);
+          if (got.toLowerCase() !== ftTerm.toLowerCase()) {
+            return 'offset 错位 line=' + m.line + ' got=' + JSON.stringify(got) + ' text=' + JSON.stringify(m.text).slice(0, 80);
+          }
+          checked++;
+        }
+      }
+    }
+    if (!checked) return '未校验到任何 offset';
+    return 'OK(' + d.total + ' 处/' + d.matchedFiles + ' 文件, 偏移校验 ' + checked + ' 条)';
+  });
+
+  await check('/api/search 区分大小写开关生效', async () => {
+    const upper = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=A&case=1');
+    const lower = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=a&case=1');
+    const noCase1 = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=A&case=0');
+    const noCase2 = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=a&case=0');
+    if (upper.error || lower.error || noCase1.error || noCase2.error) return 'error 返回';
+    // 不区分大小写时 A/a 结果必须完全一致；区分时两者允许不同
+    if (noCase1.total !== noCase2.total) return '不区分大小写时 A(' + noCase1.total + ') != a(' + noCase2.total + ')';
+    return 'OK(case=1: A=' + upper.total + ' a=' + lower.total + ' | case=0 一致=' + noCase1.total + ')';
+  });
+
+  await check('/api/search 边界：空/无命中/超长/limit 截断', async () => {
+    const empty = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=');
+    if (!empty.ok || empty.total !== 0 || (empty.files || []).length) return '空关键词未短路: ' + JSON.stringify(empty).slice(0, 100);
+    const none = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + encodeURIComponent('__NC_绝不存在的词__'));
+    if (none.error || none.total !== 0) return '无命中分支异常: ' + JSON.stringify(none).slice(0, 100);
+    const tooLong = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + 'x'.repeat(201));
+    if (!tooLong.error) return '超长关键词未被拒绝';
+    const lim = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + encodeURIComponent(ftTerm) + '&limit=5');
+    if (lim.error) return 'limit 请求失败';
+    if (lim.total > 5) return 'limit=5 却返回 ' + lim.total;
+    const badLim = await getJson('http://127.0.0.1:' + PORT + '/api/search?q=' + encodeURIComponent(ftTerm) + '&limit=abc');
+    if (badLim.error || !(badLim.total > 0)) return 'limit 非数字未回落默认: ' + JSON.stringify(badLim).slice(0, 100);
+    return 'OK(空/无命中/超长拒绝/limit=' + lim.total + '/非法 limit 回落)';
+  });
+
+  await check('/api/search 拒绝越界项目名', async () => {
+    const d = await getJson('http://127.0.0.1:' + PORT + '/api/search?project=' + encodeURIComponent('../../../etc') + '&q=a');
+    return d && d.error ? 'OK(' + d.error + ')' : '未拦截: ' + JSON.stringify(d).slice(0, 120);
+  });
+
+  await check('全项目搜索 弹窗元素与跳转链路齐全', async () => {
+    const v = await evalExpr(`(() => {
+      const ids = ['ftSearchModal','ftInput','ftResults','ftMeta','ftCase','ftScope','ftClose','statusSearchBtn'];
+      const missing = ids.filter(i => !document.getElementById(i));
+      return JSON.stringify({
+        missing,
+        openFn: typeof window.openFullTextSearch === 'function',
+        jumpFn: typeof openFileAtLine === 'function',
+        lineFn: typeof jumpTextareaToLine === 'function'
+      });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (!o.missing.length && o.openFn && o.jumpFn && o.lineFn) ? 'OK' : v;
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 Ctrl+Shift+G 唤出 / Esc 关闭', async () => {
+    const v = await evalExpr(`(() => {
+      const m = document.getElementById('ftSearchModal');
+      m.classList.remove('show');
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'G', ctrlKey: true, shiftKey: true, bubbles: true }));
+      const opened = m.classList.contains('show');
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const closed = !m.classList.contains('show');
+      return JSON.stringify({ opened, closed });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.opened && o.closed) ? 'OK' : v;
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 渲染结果且高亮精确命中关键词', async () => {
+    const v = await evalExpr(`(async () => {
+      window.openFullTextSearch();
+      const inp = document.getElementById('ftInput');
+      inp.value = ${JSON.stringify(ftTerm)};
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 1100)); // 等防抖 220ms + 请求
+      const hits = document.querySelectorAll('#ftResults .ftHit');
+      const marks = document.querySelectorAll('#ftResults .ftHitText mark');
+      const groups = document.querySelectorAll('#ftResults .ftFileGroup');
+      // 每处 <mark> 的内容必须正好等于关键词，多一个字符都说明偏移错了
+      const bad = [];
+      document.querySelectorAll('#ftResults mark').forEach(m => {
+        if (m.textContent.toLowerCase() !== ${JSON.stringify(ftTerm)}.toLowerCase()) bad.push(m.textContent);
+      });
+      return JSON.stringify({
+        hits: hits.length, marks: marks.length, groups: groups.length,
+        bad: bad.slice(0, 3),
+        meta: document.getElementById('ftMeta').textContent || ''
+      });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      if (o.bad.length) return '高亮错位: ' + JSON.stringify(o.bad);
+      if (!o.hits || !o.marks) return '无渲染结果: ' + v;
+      if (!o.marks || o.marks < o.hits) return 'mark 数少于命中行数: ' + v;
+      return 'OK(' + o.groups + ' 文件/' + o.hits + ' 行/' + o.marks + ' 处高亮)';
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 渲染<mark>数量与弹窗仍在最上层', async () => {
+    const v = await evalExpr(`(() => {
+      const m = document.getElementById('ftSearchModal');
+      const zIndex = getComputedStyle(m).zIndex;
+      const display = getComputedStyle(m).display;
+      return JSON.stringify({ shown: m.classList.contains('show'), zIndex, display });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.shown && o.display === 'flex' && Number(o.zIndex) >= 200) ? 'OK(z=' + o.zIndex + ')' : v;
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 输入防抖：连续敲字只发一次请求', async () => {
+    const v = await evalExpr(`(async () => {
+      const orig = window.fetch;
+      let calls = 0;
+      window.fetch = function () {
+        if (String(arguments[0]).indexOf('/api/search') === 0) calls++;
+        return orig.apply(this, arguments);
+      };
+      const inp = document.getElementById('ftInput');
+      for (const t of ['设', '设定', '设定文', '设定文件']) {
+        inp.value = t;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 40)); // 40ms 远小于 220ms 防抖窗口
+      }
+      await new Promise(r => setTimeout(r, 1000));
+      window.fetch = orig;
+      return JSON.stringify({ calls });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.calls === 1 ? 'OK(4 次输入 → 1 次请求)' : '防抖失效，发出 ' + o.calls + ' 次请求';
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 竞态防护：慢请求不覆盖新结果', async () => {
+    const v = await evalExpr(`(async () => {
+      const inp = document.getElementById('ftInput');
+      inp.value = ${JSON.stringify(ftTerm)};
+      const slow = ftRun();                                  // 先发：命中很多
+      inp.value = '__NC_绝不存在的词__';
+      const fast = ftRun();                                  // 后发：0 命中
+      await Promise.all([slow, fast]);
+      await new Promise(r => setTimeout(r, 60));
+      const hits = document.querySelectorAll('#ftResults .ftHit').length;
+      const marks = document.querySelectorAll('#ftResults mark').length;
+      const meta = document.getElementById('ftMeta').textContent || '';
+      return JSON.stringify({ hits, marks, meta });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      // 最终界面必须是「后发请求」的结果（0 命中），而不是慢请求的 500 条
+      if (o.hits !== 0 || o.marks !== 0) return '过期响应覆盖了新结果: ' + v;
+      return 'OK(过期响应已丢弃)';
+    } catch (_) { return v; }
+  });
+
+  await check('全项目搜索 点击结果打开文件并选中对应行', async () => {
+    const v = await evalExpr(`(async () => {
+      window.openFullTextSearch();
+      const inp = document.getElementById('ftInput');
+      inp.value = ${JSON.stringify(ftTerm)};
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 1100));
+      const first = document.querySelector('#ftResults .ftHit');
+      if (!first) return 'no-hit';
+      const lineNo = parseInt(first.querySelector('.ftHitLine').textContent, 10);
+      first.click();
+      await new Promise(r => setTimeout(r, 1500));
+      const modalClosed = !document.getElementById('ftSearchModal').classList.contains('show');
+      const ta = document.getElementById('fileContent');
+      if (!ta) return JSON.stringify({ modalClosed, ta: false });
+      const lines = ta.value.split('\\n');
+      const expected = lines[lineNo - 1] || '';
+      const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+      return JSON.stringify({
+        modalClosed,
+        kind: typeof activeEditorKind !== 'undefined' ? activeEditorKind : '?',
+        lineNo, totalLines: lines.length,
+        matched: sel === expected,
+        selHead: sel.slice(0, 40), expHead: expected.slice(0, 40)
+      });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      if (o.ta === false) return '文件编辑器未渲染: ' + v;
+      if (!o.modalClosed) return '跳转后弹窗未关闭';
+      if (o.kind !== 'file') return '未切到文件编辑器: ' + o.kind;
+      if (!o.matched) return '选中行与命中行不符: ' + v;
+      return 'OK(第 ' + o.lineNo + '/' + o.totalLines + ' 行, 已选中)';
+    } catch (_) { return v; }
+  });
+
+  await check('无 JS 异常(第三轮)', () => exceptions.length === 0 ? true : exceptions.join(' | '));
+
   ws.close();
 
   const failed = results.filter(r => !r.ok);

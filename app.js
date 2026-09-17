@@ -4778,6 +4778,208 @@ document.addEventListener('keydown', (e) => {
   else openShortcutModal();
 });
 
+/* ---------- 全项目搜索（跨 .md 文件全文检索） ---------- */
+// 画布自带的「搜索节点」(#search → applyFilters) 只匹配**已加载到画布的节点标题**，
+// 回答不了「这个角色名 / 伏笔 / 设定词到底出现在哪些文件的第几行」。这里走 /api/search
+// 由服务端扫描项目内全部 .md（含画布没展示的文件），结果可点击跳转到对应行。
+//
+// 几个必须注意的点：
+//  1) 输入必须防抖：不防抖时每敲一个字都会触发一次全项目读盘扫描；
+//  2) 并发响应必须用序号丢弃：慢请求后到会覆盖掉新词的结果（经典竞态）；
+//  3) 高亮必须按「分段转义再拼接」做，不能先 escapeHtml 再按 offset 插标签——
+//     转义会把 < & " 变成多字符实体，offset 立刻全部错位。
+const ftModalEl = document.getElementById('ftSearchModal');
+const ftInputEl = document.getElementById('ftInput');
+const ftResultsEl = document.getElementById('ftResults');
+const ftMetaEl = document.getElementById('ftMeta');
+const ftCaseBtn = document.getElementById('ftCase');
+const ftScopeEl = document.getElementById('ftScope');
+
+const FT_DEBOUNCE_MS = 220;
+let ftTimer = null;
+let ftCaseSensitive = false;
+let ftSeq = 0;   // 请求序号，用于丢弃过期响应
+let ftHits = []; // 扁平化的命中列表 [{path, line}]，供 ↑↓ 导航与点击跳转
+let ftActive = -1;
+
+function ftIsOpen() { return !!ftModalEl && ftModalEl.classList.contains('show'); }
+
+function ftEmptyHtml(text) {
+  if (ftResultsEl) ftResultsEl.innerHTML = '<div class="ftEmpty">' + text + '</div>';
+}
+
+function ftOpen() {
+  if (!ftModalEl) return;
+  ftModalEl.classList.add('show');
+  // 把画布里的节点搜索词「升级」成全文搜索（仅当全文框还是空的时候）
+  const seed = (search && search.value ? search.value : '').trim();
+  if (seed && !ftInputEl.value.trim()) ftInputEl.value = seed;
+  setTimeout(() => { ftInputEl.focus(); ftInputEl.select(); }, 0);
+  ftRun();
+}
+
+function ftClose() {
+  if (!ftModalEl) return;
+  ftModalEl.classList.remove('show');
+  if (ftTimer) { clearTimeout(ftTimer); ftTimer = null; }
+  ftActive = -1;
+}
+
+function ftSetActive(idx, scroll) {
+  if (!ftHits.length) return;
+  ftActive = Math.max(0, Math.min(idx, ftHits.length - 1));
+  ftResultsEl.querySelectorAll('.ftHit.active').forEach(el => el.classList.remove('active'));
+  const el = ftResultsEl.querySelector('.ftHit[data-idx="' + ftActive + '"]');
+  if (el) {
+    el.classList.add('active');
+    if (scroll !== false) el.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// 把窗口文本按命中偏移切片，逐段转义后拼 <mark>。
+// 分段转义是关键：先整段转义再按 offset 插标签会让 < & " 之后的 offset 全部错位。
+function ftHighlightWindow(text, offsets, qlen) {
+  const ordered = (offsets || []).slice().sort((a, b) => a - b);
+  let out = '';
+  let cursor = 0;
+  for (const off of ordered) {
+    const s = off, e = off + qlen;
+    if (s < cursor || e > text.length) continue; // 越界或与前一处重叠（如 "aa" 匹配 "aaa"），跳过避免嵌套标签
+    out += escapeHtml(text.slice(cursor, s)) + '<mark>' + escapeHtml(text.slice(s, e)) + '</mark>';
+    cursor = e;
+  }
+  return out + escapeHtml(text.slice(cursor));
+}
+
+async function ftRun() {
+  if (!ftInputEl || !ftResultsEl) return;
+  if (ftTimer) { clearTimeout(ftTimer); ftTimer = null; }
+  const q = ftInputEl.value.trim();
+  if (!q) {
+    ftHits = []; ftActive = -1;
+    if (ftMetaEl) ftMetaEl.textContent = '';
+    if (ftScopeEl) ftScopeEl.textContent = '';
+    ftEmptyHtml('输入关键词即可搜索项目内的全部 .md 文件<br><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> 随时唤出');
+    return;
+  }
+  const seq = ++ftSeq;
+  if (ftMetaEl) ftMetaEl.textContent = '搜索中…';
+  let data;
+  try {
+    const res = await fetch('/api/search?project=' + encodeURIComponent(currentProject)
+      + '&q=' + encodeURIComponent(q) + (ftCaseSensitive ? '&case=1' : ''));
+    data = await res.json();
+  } catch (e) {
+    if (seq !== ftSeq) return;
+    if (ftMetaEl) ftMetaEl.textContent = '';
+    ftEmptyHtml('搜索失败：' + escapeHtml(e.message || '请求出错'));
+    return;
+  }
+  if (seq !== ftSeq) return; // 已经有更新的请求，本次结果作废
+  if (data.error) {
+    if (ftMetaEl) ftMetaEl.textContent = '';
+    ftEmptyHtml('搜索失败：' + escapeHtml(data.error));
+    return;
+  }
+  ftRender(data);
+}
+
+function ftRender(data) {
+  ftHits = [];
+  ftActive = -1;
+  const q = data.query || '';
+  const qlen = q.length;
+  const groups = data.files || [];
+
+  if (!groups.length) {
+    if (ftMetaEl) ftMetaEl.textContent = '未找到匹配';
+    if (ftScopeEl) ftScopeEl.textContent = '扫描 ' + (data.scannedFiles || 0) + ' / ' + (data.totalFiles || 0) + ' 个文件';
+    ftEmptyHtml('没有任何文件包含 <b>' + escapeHtml(q) + '</b><br>试试更短的关键词' + (ftCaseSensitive ? '，或关闭「Aa 区分大小写」' : ''));
+    return;
+  }
+
+  let html = '';
+  for (const g of groups) {
+    html += '<div class="ftFileGroup">'
+      + '<div class="ftFileHead">'
+      +   '<span class="ftFileName">' + escapeHtml(g.name) + '</span>'
+      +   '<span class="ftFileCount">' + g.count + ' 处</span>'
+      +   '<span class="ftFilePath" title="' + escapeHtml(g.path) + '">' + escapeHtml(g.path) + '</span>'
+      + '</div>';
+    for (const m of g.matches || []) {
+      const idx = ftHits.length;
+      ftHits.push({ path: g.path, line: m.line });
+      html += '<div class="ftHit" data-idx="' + idx + '" title="打开 ' + escapeHtml(g.path) + ':' + m.line + '">'
+        +   '<span class="ftHitLine">' + m.line + '</span>'
+        +   '<span class="ftHitText">' + ftHighlightWindow(m.text, (m.hits || []).map(h => h.offset), qlen) + '</span>'
+        + '</div>';
+    }
+    html += '</div>';
+  }
+  ftResultsEl.innerHTML = html;
+  ftResultsEl.querySelectorAll('.ftHit').forEach(el => {
+    el.addEventListener('click', () => ftJump(parseInt(el.dataset.idx, 10)));
+  });
+
+  if (ftMetaEl) {
+    ftMetaEl.innerHTML = '命中 <b>' + data.total + '</b> 处，涉及 <b>' + data.matchedFiles + '</b> 个文件'
+      + (data.truncated ? ' <span class="ftWarn">· 结果已达上限，已截断</span>' : '');
+  }
+  if (ftScopeEl) {
+    ftScopeEl.textContent = '扫描 ' + data.scannedFiles + ' / ' + data.totalFiles + ' 个文件'
+      + (data.skipped ? '（跳过 ' + data.skipped + ' 个）' : '');
+  }
+  if (ftHits.length) ftSetActive(0, false);
+}
+
+async function ftJump(idx) {
+  const hit = ftHits[idx];
+  if (!hit) return;
+  ftClose();
+  if (typeof openFileAtLine === 'function') {
+    await openFileAtLine(hit.path, hit.line);
+  } else if (typeof openFile === 'function') {
+    await openFile(hit.path);
+  }
+}
+
+if (ftModalEl) {
+  const ftCloseBtn = document.getElementById('ftClose');
+  if (ftCloseBtn) ftCloseBtn.addEventListener('click', ftClose);
+  ftModalEl.addEventListener('click', (e) => { if (e.target === ftModalEl) ftClose(); });
+}
+if (ftInputEl) {
+  ftInputEl.addEventListener('input', () => {
+    if (ftTimer) clearTimeout(ftTimer);
+    ftTimer = setTimeout(ftRun, FT_DEBOUNCE_MS);
+  });
+  ftInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); ftSetActive(ftActive + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); ftSetActive(ftActive - 1); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (ftActive >= 0) ftJump(ftActive); else ftRun(); }
+    else if (e.key === 'Escape') { e.preventDefault(); ftClose(); }
+  });
+}
+if (ftCaseBtn) {
+  ftCaseBtn.addEventListener('click', () => {
+    ftCaseSensitive = !ftCaseSensitive;
+    ftCaseBtn.classList.toggle('on', ftCaseSensitive);
+    ftCaseBtn.title = ftCaseSensitive ? '区分大小写（已开启）' : '区分大小写';
+    if (ftInputEl && ftInputEl.value.trim()) ftRun();
+  });
+}
+const statusSearchBtn = document.getElementById('statusSearchBtn');
+if (statusSearchBtn) statusSearchBtn.addEventListener('click', ftOpen);
+window.openFullTextSearch = ftOpen;
+
+document.addEventListener('keydown', (e) => {
+  if (ftIsOpen() && e.key === 'Escape') { ftClose(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'G' || e.key === 'g')) {
+    e.preventDefault();
+    if (ftIsOpen()) ftClose(); else ftOpen();
+  }
+});
+
 /* ---------- 全局反馈：toast + 应用内确认（全项目统一，替代 alert/confirm） ---------- */
 function showToast(text, type = 'info') {
   const wrap = document.getElementById('toastWrap');

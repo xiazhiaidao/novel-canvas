@@ -11,6 +11,10 @@ let currentFileProposal = null;
 let dragTabPath = null;
 let autosaveTimer = null;
 const FILE_AUTOSAVE_DELAY = 3000; // 停止输入 3 秒后自动保存
+// 由「全项目搜索」写入、renderFileEditor 消费：打开文件后需要滚动/选中到第几行。
+// 用模块级变量而不是函数参数，是因为 openFile 可能命中「已在标签里打开」的分支，
+// 那条路径不会重新走 openFile 的参数，只有 renderFileEditor 是两条路径的公共出口。
+let pendingFileJumpLine = 0;
 
 function initFileEditor() {
   document.getElementById('activityCanvas').addEventListener('click', () => switchSidebarMode('canvas'));
@@ -227,6 +231,36 @@ async function openFile(path) {
   renderFileEditor();
   refreshFileTreeActive();
   activateEditorTab('file');
+}
+
+// 从「全项目搜索」结果跳转：打开文件并定位到指定行。
+// 需要同时把侧栏切到文件模式，否则用户只看到编辑区打开、左侧文件树却没出现，
+// 容易误以为跳转失败。
+async function openFileAtLine(path, line) {
+  pendingFileJumpLine = Math.max(1, parseInt(line, 10) || 1);
+  if (typeof switchSidebarMode === 'function' && typeof fileMode !== 'undefined' && !fileMode) {
+    switchSidebarMode('files');
+  }
+  await openFile(path);
+}
+
+// 把 textarea 滚动到目标行并选中整行。
+// textarea 没有「滚动到第 N 行」的 API，只能用行高估算：scrollHeight / 总行数 得到
+// 平均行高，再乘行号。文件里长行换行会让估算偏移，所以只减 1/3 视口高度做余量，
+// 保证目标行一定落在可视区域内（宁可偏上，不要偏下）。选中整行才是精准的定位信号。
+function jumpTextareaToLine(ta, lineNo) {
+  if (!ta) return;
+  const lines = ta.value.split('\n');
+  const idx = Math.min(Math.max(lineNo, 1), Math.max(lines.length, 1)) - 1;
+  let start = 0;
+  for (let i = 0; i < idx; i++) start += lines[i].length + 1;
+  const end = start + lines[idx].length;
+  try { ta.focus(); ta.setSelectionRange(start, end); } catch (_) { /* 忽略选区异常 */ }
+  const avgLineHeight = ta.scrollHeight / Math.max(lines.length, 1);
+  const top = Math.max(0, idx * avgLineHeight - ta.clientHeight / 3);
+  ta.scrollTop = top;
+  // 浏览器可能因聚焦/选区再次调整滚动位置，下一帧再校正一次
+  requestAnimationFrame(() => { ta.scrollTop = top; });
 }
 
 function renderFileTabs() {
@@ -519,6 +553,15 @@ function renderFileEditor() {
   });
   document.getElementById('fileSaveBtn').addEventListener('click', saveActiveFile);
   initFileFindReplace(ta, f);
+  if (pendingFileJumpLine > 0) {
+    const targetLine = pendingFileJumpLine;
+    pendingFileJumpLine = 0;
+    // 放到下一帧再定位：openFile 里 renderFileEditor 之后还会调 activateEditorTab（会折叠右栏），
+    // 那一步触发重排并可能清掉刚设好的滚动位置，所以等布局稳定后再滚。
+    requestAnimationFrame(() => {
+      if (document.body.contains(ta)) jumpTextareaToLine(ta, targetLine);
+    });
+  }
   document.getElementById('filePreviewBtn').addEventListener('click', toggleFilePreview);
   document.getElementById('fileEditAiBtn').addEventListener('click', (e) => {
     // 「AI 修改」合并了 续写/改写 两个动作：点击弹出菜单

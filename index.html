@@ -1270,6 +1270,59 @@
   html[data-theme="dark"] .shortcutKeys kbd { background: rgba(255,255,255,.08); }
   #statusShortcutBtn { cursor: pointer; opacity: .7; }
   #statusShortcutBtn:hover { opacity: 1; color: var(--accent); }
+  #statusSearchBtn { cursor: pointer; opacity: .7; }
+  #statusSearchBtn:hover { opacity: 1; color: var(--accent); }
+  /* 全项目全文搜索 */
+  .ftModal { width: 700px; max-width: 94vw; }
+  .ftHeadRow { display: flex; align-items: stretch; gap: 8px; }
+  #ftInput {
+    flex: 1; min-width: 0; padding: 9px 12px; font-size: 13px;
+    border: 1px solid var(--panel-border); border-radius: 10px;
+    background: rgba(15,23,42,.04); color: var(--text); outline: none;
+  }
+  #ftInput:focus { border-color: var(--accent); background: rgba(255,255,255,.9); }
+  .ftToggle {
+    flex: none; cursor: pointer; padding: 0 11px; font-size: 11px; font-family: var(--font-mono);
+    border: 1px solid var(--panel-border); border-radius: 10px;
+    background: linear-gradient(180deg,#ffffff,#f5f4ef); color: var(--muted);
+  }
+  .ftToggle.on { color: #000; border-color: rgba(180,120,40,.5); background: var(--accent-soft); }
+  .ftMeta { font-size: 11px; color: var(--muted); margin: 9px 0 7px; min-height: 15px; }
+  .ftMeta .ftWarn { color: #b45309; }
+  .ftResults { max-height: 50vh; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+  .ftFileGroup { margin-bottom: 9px; }
+  .ftFileHead {
+    display: flex; align-items: baseline; gap: 7px; padding: 5px 7px;
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .ftFileName { font-size: 12px; font-weight: 700; color: #000; }
+  .ftFileCount {
+    font-size: 10px; color: var(--muted); flex: none;
+    border: 1px solid var(--panel-border); border-radius: 9px; padding: 0 6px;
+  }
+  .ftFilePath {
+    font-size: 10px; color: var(--muted); font-family: var(--font-mono);
+    margin-left: auto; flex: none; max-width: 46%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;
+  }
+  .ftHit { display: flex; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 12px; line-height: 1.6; }
+  .ftHit:hover { background: rgba(15,23,42,.05); }
+  .ftHit.active { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .ftHitLine { flex: none; min-width: 30px; text-align: right; color: var(--muted); font-size: 10px; font-family: var(--font-mono); padding-top: 2px; }
+  .ftHitText { flex: 1; min-width: 0; color: #000; word-break: break-word; overflow-wrap: anywhere; }
+  .ftHitText mark { background: rgba(245,180,90,.55); color: #000; border-radius: 2px; padding: 0 1px; }
+  .ftEmpty { padding: 26px 8px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.8; }
+  .ftEmpty kbd {
+    font-family: var(--font-mono); font-size: 10px; padding: 2px 5px; border-radius: 4px;
+    border: 1px solid var(--panel-border); border-bottom-width: 2px; background: rgba(15,23,42,.05);
+  }
+  .ftFoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel-border); font-size: 11px; color: var(--muted); }
+  html[data-theme="dark"] #ftInput { background: rgba(255,255,255,.07); }
+  html[data-theme="dark"] #ftInput:focus { background: rgba(255,255,255,.11); }
+  html[data-theme="dark"] .ftToggle { background: rgba(255,255,255,.07); }
+  html[data-theme="dark"] .ftHit:hover { background: rgba(255,255,255,.07); }
   .modal {
     width: 460px; max-width: 94vw; background: var(--surface); border: 1px solid var(--panel-border);
     border-radius: 20px; padding: 20px 22px;
@@ -1970,6 +2023,7 @@
     <span class="statusSpacer"></span>
     <span id="statusFile"></span>
     <span id="statusDirty"></span>
+    <span id="statusSearchBtn" title="全项目搜索（Ctrl+Shift+G）">全文搜索</span>
     <span id="statusShortcutBtn" title="快捷键速查（?）">? 快捷键</span>
   </div>
 </div>
@@ -2371,9 +2425,33 @@
         </div>
         <div class="shortcutGroup">
           <div class="shortcutGroupTitle">全局</div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>G</kbd></span><span class="shortcutDesc">全项目搜索（跨全部 .md 文件）</span></div>
           <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>F</kbd></span><span class="shortcutDesc">专注模式（隐藏两侧栏）</span></div>
           <div class="shortcutRow"><span class="shortcutKeys"><kbd>Esc</kbd></span><span class="shortcutDesc">关闭弹窗 / 取消连线 / 清除选择</span></div>
           <div class="shortcutRow"><span class="shortcutKeys"><kbd>?</kbd></span><span class="shortcutDesc">打开本速查表</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="ftSearchModal" class="modal-mask">
+    <div class="modal ftModal">
+      <div class="modalHead">
+        <div class="modalTitle">
+          <div class="modalTitleMain">全项目搜索</div>
+          <div class="modalTitleSub">SEARCH IN FILES</div>
+        </div>
+        <button class="modalClose" id="ftClose" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="modalBody">
+        <div class="ftHeadRow">
+          <input type="text" id="ftInput" placeholder="搜索全部 .md 文件内容：角色名 / 伏笔 / 设定词…" spellcheck="false" autocomplete="off">
+          <button id="ftCase" class="ftToggle" title="区分大小写">Aa</button>
+        </div>
+        <div class="ftMeta" id="ftMeta"></div>
+        <div class="ftResults" id="ftResults"></div>
+        <div class="ftFoot">
+          <span>↑↓ 选择 · Enter 打开并定位 · Esc 关闭</span>
+          <span id="ftScope"></span>
         </div>
       </div>
     </div>

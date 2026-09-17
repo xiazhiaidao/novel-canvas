@@ -1001,6 +1001,124 @@ function readFileText(root, relPath) {
   return fs.readFileSync(full, 'utf8');
 }
 
+// ── 跨文件全文搜索 ────────────────────────────────────────────
+// 前端「搜索节点」（applyFilters）只匹配**已经加载到画布的节点标题**，无法回答
+// 「某个角色名 / 伏笔 / 设定词到底出现在哪些文件的第几行」。这里补上项目级全文检索。
+//
+// 性能与安全护栏（全是必要项，不是保守估计）：
+//  - 文件数上限：超大项目（几千个 .md）全量读盘会长时间占住事件循环，请求直接超时；
+//  - 单文件体积上限：个别文件可能是几百 MB 的语料导出，readFileSync 会瞬间吃满内存；
+//  - 命中数上限：前端要渲染高亮 DOM，无上限时一个「的」字能命中几十万处把页面卡死；
+//  - isSafePath 复校验：listMdFiles 已跳过符号链接，这里再挡一道路径穿越。
+const FT_SEARCH_MAX_FILES = 800;
+const FT_SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const FT_SEARCH_MAX_HITS = 500;
+const FT_SEARCH_MAX_HITS_PER_FILE = 50;
+const FT_SEARCH_MAX_HITS_PER_LINE = 8;
+const FT_SEARCH_WINDOW_LEAD = 40;   // 窗口在首个命中前保留的字符数
+const FT_SEARCH_WINDOW_TAIL = 60;   // 窗口在最后一个命中后保留的字符数
+const FT_SEARCH_WINDOW_MAX = 320;   // 窗口总长上限（防止一行被拉成几千字）
+
+function flattenMdFiles(tree) {
+  const out = [];
+  (function walk(list) {
+    for (const n of list || []) {
+      if (n.type === 'dir') walk(n.children);
+      else if (n.type === 'file') out.push(n.path);
+    }
+  })(tree);
+  return out;
+}
+
+// 找出 needle 在 hay 中的全部位置。必须保证指针前进，否则空 needle 会死循环。
+function ftMatchPositions(hay, needle) {
+  const out = [];
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, from);
+    if (at < 0) break;
+    out.push(at);
+    from = at + needle.length;
+  }
+  return out;
+}
+
+// 把一行压成「以首个命中为中心的窗口」：
+//  - 前端拿到 text + hits[].offset 后，只需按 offset 切片即可精确高亮，
+//    不必再关心原始行有多长、命中有几处；
+//  - 窗口两端的截断用 '…' 标出，所以 offset 需要加上前置省略号占的 1 个字符位。
+function ftBuildLineWindow(raw, hay, needle) {
+  const positions = ftMatchPositions(hay, needle);
+  if (!positions.length) return null;
+
+  const first = positions[0];
+  const shown = positions.slice(0, FT_SEARCH_MAX_HITS_PER_LINE);
+  const last = shown[shown.length - 1];
+  const winStart = Math.max(0, first - FT_SEARCH_WINDOW_LEAD);
+  let winEnd = Math.min(raw.length, last + needle.length + FT_SEARCH_WINDOW_TAIL);
+  winEnd = Math.min(winEnd, winStart + FT_SEARCH_WINDOW_MAX);
+
+  const lead = winStart > 0 ? 1 : 0;
+  const text = (lead ? '…' : '') + raw.slice(winStart, winEnd) + (winEnd < raw.length ? '…' : '');
+  const hits = [];
+  for (const p of shown) {
+    if (p < winStart || p + needle.length > winEnd) continue;
+    hits.push({ offset: p - winStart + lead });
+  }
+  if (!hits.length) hits.push({ offset: Math.max(0, first - winStart + lead) });
+  return { text, hits, count: positions.length };
+}
+
+function searchProjectFiles(root, query, opts) {
+  const caseSensitive = !!(opts && opts.caseSensitive);
+  const reqLimit = parseInt((opts && opts.limit) || FT_SEARCH_MAX_HITS, 10);
+  const limit = Math.min(Math.max(Number.isFinite(reqLimit) ? reqLimit : FT_SEARCH_MAX_HITS, 1), FT_SEARCH_MAX_HITS);
+  const needle = caseSensitive ? query : query.toLowerCase();
+
+  const all = flattenMdFiles(listMdFiles(root));
+  const files = all.slice(0, FT_SEARCH_MAX_FILES);
+  const groups = [];
+  let total = 0;
+  let truncated = all.length > files.length;
+  let scanned = 0;
+  let skipped = 0;
+
+  for (const rel of files) {
+    if (total >= limit) { truncated = true; break; }
+    if (!isSafePath(rel, root) || !isMdPath(rel)) { skipped++; continue; }
+    const full = path.resolve(root, rel);
+    let st;
+    try { st = fs.statSync(full); } catch (_) { skipped++; continue; }
+    if (!st.isFile() || st.size > FT_SEARCH_MAX_FILE_BYTES) { skipped++; continue; }
+    let text;
+    try { text = fs.readFileSync(full, 'utf8'); } catch (_) { skipped++; continue; }
+    scanned++;
+
+    const lines = text.split(/\r?\n/);
+    const matches = [];
+    let fileHits = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (!raw) continue;
+      const hay = caseSensitive ? raw : raw.toLowerCase();
+      if (hay.indexOf(needle) < 0) continue;
+      const win = ftBuildLineWindow(raw, hay, needle);
+      if (!win) continue;
+      matches.push({ line: i + 1, text: win.text, hits: win.hits });
+      fileHits += win.count;
+      total += win.count;
+      if (matches.length >= FT_SEARCH_MAX_HITS_PER_FILE || total >= limit) break;
+    }
+    if (matches.length) {
+      groups.push({ path: rel, name: rel.split('/').pop(), count: fileHits, matches });
+    }
+  }
+
+  if (total > limit) { total = limit; truncated = true; }
+  groups.sort((a, b) => (b.count - a.count) || a.path.localeCompare(b.path, 'zh-CN'));
+  return { files: groups, total, truncated, scanned, skipped, matchedFiles: groups.length, scannedFiles: files.length, totalFiles: all.length };
+}
+
 // ── 一致性防漂移引擎（人物卡封包 + 多维审查）────────────────
 const CONSISTENCY_DIMENSIONS = [
   '人物性格一致', '时间线一致', '伏笔状态一致', '设定事实一致', '称谓一致',
@@ -3332,6 +3450,23 @@ const api = getApiConfig();
     }
   }
 
+
+  if (pathname === '/api/search' && req.method === 'GET') {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const root = resolveProjectRoot(url.searchParams.get('project') || defaultProjectName());
+      const q = (url.searchParams.get('q') || '').trim();
+      if (!q) return sendJson(res, { ok: true, query: '', total: 0, files: [], truncated: false });
+      if (q.length > 200) return sendJson(res, { error: '关键词过长（最多 200 字）' });
+      const result = searchProjectFiles(root, q, {
+        caseSensitive: url.searchParams.get('case') === '1',
+        limit: url.searchParams.get('limit')
+      });
+      return sendJson(res, Object.assign({ ok: true, query: q }, result));
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
 
   if (pathname === '/api/files' && req.method === 'GET') {
     try {
