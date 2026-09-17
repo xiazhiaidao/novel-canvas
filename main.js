@@ -4,6 +4,19 @@ const path = require('path');
 const { spawn } = require('child_process');
 const net = require('net');
 
+// 若环境里存在 ELECTRON_RUN_AS_NODE，electron.exe 会退化成普通 Node 运行，此时 require('electron')
+// 不返回 Electron API，app 为 undefined，随后会在任意一个 app.xxx 调用处抛出难以理解的
+// "Cannot read properties of undefined" 而直接退出。这里提前给出人话提示。
+// 正常入口（npm start / npm run dev）已各自清掉该变量，只有直接调 electron.exe 才会踩到。
+if (!app || typeof app.whenReady !== 'function') {
+  console.error('[novel-canvas] 启动失败：Electron 未以桌面模式运行。');
+  if (process.env.ELECTRON_RUN_AS_NODE) {
+    console.error('检测到环境变量 ELECTRON_RUN_AS_NODE 已设置，它会让 electron 退化为纯 Node 进程。');
+    console.error('请清除该变量后重试，或改用入口命令：npm run dev（无 GPU 环境加 NC_FORCE_SOFTWARE_RENDER=1）');
+  }
+  process.exit(1);
+}
+
 const PORT = Number(process.env.PORT || 8787);
 const URL = `http://127.0.0.1:${PORT}/`;
 
