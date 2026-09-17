@@ -297,6 +297,174 @@ function renderFileTabs() {
   if (typeof updateStatusBar === 'function') updateStatusBar();
 }
 
+// ── 查找 / 替换（Ctrl+F 查找，Ctrl+H 替换）────────────────────
+// 说明：编辑器是纯 textarea，高亮用原生选区实现（选中并滚动到匹配处），
+// 不引入叠加层，保持零依赖与滚动性能。
+const fileFindState = { open: false, caseSensitive: false };
+let fileFindGlobalKey = null;
+
+// 返回所有非重叠匹配区间；非正则、纯字面量查找
+function fileFindMatches(text, query, caseSensitive) {
+  const out = [];
+  if (!query) return out;
+  const hay = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, from);
+    if (at < 0) break;
+    out.push({ start: at, end: at + needle.length });
+    from = at + needle.length; // 保证前进，杜绝空匹配死循环
+  }
+  return out;
+}
+
+function initFileFindReplace(ta, f) {
+  const bar = document.getElementById('fileFindBar');
+  const findInput = document.getElementById('fileFindInput');
+  const replaceInput = document.getElementById('fileReplaceInput');
+  const countEl = document.getElementById('fileFindCount');
+  const replaceRow = document.getElementById('fileReplaceRow');
+  if (!bar || !findInput || !replaceInput || !countEl || !replaceRow) return;
+
+  let matches = [];
+  let index = 0;
+  let navigated = false; // 是否已跳到过匹配（决定首次回车是「跳第一处」还是「跳下一处」）
+
+  // 程序化改写后同步 f.content / dirty / 字数 / 自动保存（复用 textarea 自身的 input 逻辑）
+  function commit() {
+    f.content = ta.value;
+    f.dirty = f.content !== f.savedContent;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function renderCount() {
+    const q = findInput.value;
+    if (!q) { countEl.textContent = '0/0'; countEl.title = ''; findInput.classList.remove('noMatch'); return; }
+    if (!matches.length) {
+      countEl.textContent = '无结果';
+      countEl.title = '未找到匹配项';
+      findInput.classList.add('noMatch');
+      return;
+    }
+    countEl.textContent = (index + 1) + '/' + matches.length;
+    countEl.title = '共 ' + matches.length + ' 处匹配';
+    findInput.classList.remove('noMatch');
+  }
+
+  function recompute(reset) {
+    matches = fileFindMatches(ta.value, findInput.value, fileFindState.caseSensitive);
+    if (reset) { index = 0; navigated = false; }
+    if (index >= matches.length) index = Math.max(0, matches.length - 1);
+    renderCount();
+  }
+
+  // 选中并滚动到当前匹配
+  function focusMatch() {
+    if (!matches.length) return;
+    const m = matches[index];
+    ta.focus();
+    ta.setSelectionRange(m.start, m.end);
+    const line = ta.value.slice(0, m.start).split('\n').length - 1;
+    const lineHeight = 22; // 与 #fileContent 的 13px × 1.7 行高一致
+    ta.scrollTop = Math.max(0, line * lineHeight - ta.clientHeight / 2);
+  }
+
+  function step(delta) {
+    if (!matches.length) return;
+    if (!navigated) { navigated = true; }
+    else { index = (index + delta + matches.length) % matches.length; }
+    renderCount();
+    focusMatch();
+  }
+
+  function open(withReplace) {
+    fileFindState.open = true;
+    bar.classList.add('show');
+    replaceRow.style.display = withReplace ? 'flex' : 'none';
+    // 选中了单行文本则带入查找框（编辑器通用习惯）
+    const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+    if (sel && !sel.includes('\n') && sel.length <= 100) findInput.value = sel;
+    recompute(true);
+    if (withReplace) replaceInput.focus(); else findInput.focus();
+    findInput.select();
+  }
+
+  function close() {
+    fileFindState.open = false;
+    bar.classList.remove('show');
+    ta.focus();
+  }
+
+  function replaceOne() {
+    if (!matches.length) return;
+    const m = matches[index];
+    ta.value = ta.value.slice(0, m.start) + replaceInput.value + ta.value.slice(m.end);
+    commit();
+    recompute(false);
+    renderCount();
+    if (matches.length) focusMatch();
+  }
+
+  function replaceAll() {
+    if (!matches.length) return;
+    const rep = replaceInput.value;
+    let out = '', last = 0;
+    for (const m of matches) { out += ta.value.slice(last, m.start) + rep; last = m.end; }
+    out += ta.value.slice(last);
+    const n = matches.length;
+    ta.value = out;
+    commit();
+    recompute(true);
+    renderCount();
+    if (typeof showToast === 'function') showToast('已替换 ' + n + ' 处', 'success');
+  }
+
+  findInput.addEventListener('input', () => recompute(true));
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (matches.length) step(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  replaceInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); replaceOne(); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  document.getElementById('fileFindNext').addEventListener('click', () => step(1));
+  document.getElementById('fileFindPrev').addEventListener('click', () => step(-1));
+  document.getElementById('fileFindClose').addEventListener('click', close);
+  document.getElementById('fileReplaceOne').addEventListener('click', replaceOne);
+  document.getElementById('fileReplaceAll').addEventListener('click', replaceAll);
+  const caseBtn = document.getElementById('fileFindCase');
+  caseBtn.classList.toggle('on', fileFindState.caseSensitive);
+  caseBtn.addEventListener('click', () => {
+    fileFindState.caseSensitive = !fileFindState.caseSensitive;
+    caseBtn.classList.toggle('on', fileFindState.caseSensitive);
+    recompute(true);
+  });
+
+  // 全局快捷键：仅文件编辑器处于激活状态时响应（重复 render 时先摘掉旧监听，避免泄漏）
+  if (fileFindGlobalKey) document.removeEventListener('keydown', fileFindGlobalKey);
+  fileFindGlobalKey = (e) => {
+    if (activeEditorKind !== 'file') return;
+    if (!document.getElementById('fileContent')) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); open(false); }
+    else if (mod && !e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); open(true); }
+    else if (mod && !e.shiftKey && e.key.toLowerCase() === 's') {
+      // Ctrl+S 保存当前标签文件（原本只有节点编辑器正文区支持，文件编辑器按下去会触发浏览器「保存网页」）
+      e.preventDefault();
+      const f = openFiles.find(x => x.path === activeFilePath);
+      if (f) {
+        const taSync = document.getElementById('fileContent');
+        if (taSync) f.content = taSync.value; // 以编辑器实际内容为准，避免 f.content 滞后
+        saveFile(f);
+      }
+    }
+    else if (e.key === 'Escape' && fileFindState.open) { e.preventDefault(); close(); }
+  };
+  document.addEventListener('keydown', fileFindGlobalKey);
+}
+
 function renderFileEditor() {
   const body = document.getElementById('fileEditorBody');
   if (!body) return;
@@ -318,6 +486,21 @@ function renderFileEditor() {
       '</div>' +
     '</div>' +
     '<div id="filePreviewBox" style="display:none"></div>' +
+    '<div class="fileFindBar" id="fileFindBar">' +
+      '<div class="fileFindRow">' +
+        '<input type="text" id="fileFindInput" placeholder="查找…" spellcheck="false">' +
+        '<span class="fileFindCount" id="fileFindCount">0/0</span>' +
+        '<button id="fileFindPrev" title="上一个 (Shift+Enter)">↑</button>' +
+        '<button id="fileFindNext" title="下一个 (Enter)">↓</button>' +
+        '<button id="fileFindCase" class="fileFindToggle" title="区分大小写">Aa</button>' +
+        '<button id="fileFindClose" title="关闭 (Esc)">✕</button>' +
+      '</div>' +
+      '<div class="fileFindRow" id="fileReplaceRow" style="display:none">' +
+        '<input type="text" id="fileReplaceInput" placeholder="替换为…" spellcheck="false">' +
+        '<button id="fileReplaceOne" title="替换当前匹配">替换</button>' +
+        '<button id="fileReplaceAll" title="替换全部匹配">全部替换</button>' +
+      '</div>' +
+    '</div>' +
     '<textarea id="fileContent" spellcheck="false">' + escapeHtml(f.content) + '</textarea>' +
     '<div class="fileStatus" id="fileStatus">' + (f.dirty ? '未保存' : '已保存') + ' · ' + f.content.replace(/\s/g, '').length + ' 字</div>' +
     '<div id="fileProposalBox"></div>';
@@ -335,6 +518,7 @@ function renderFileEditor() {
     renderFileTabs();
   });
   document.getElementById('fileSaveBtn').addEventListener('click', saveActiveFile);
+  initFileFindReplace(ta, f);
   document.getElementById('filePreviewBtn').addEventListener('click', toggleFilePreview);
   document.getElementById('fileEditAiBtn').addEventListener('click', (e) => {
     // 「AI 修改」合并了 续写/改写 两个动作：点击弹出菜单

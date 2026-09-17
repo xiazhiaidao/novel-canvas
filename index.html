@@ -1252,6 +1252,24 @@
     align-items: center; justify-content: center; z-index: 200;
   }
   .modal-mask.show { display: flex; }
+  /* 快捷键速查表 */
+  .shortcutModal { width: 560px; }
+  .shortcutGroup { margin-bottom: 14px; }
+  .shortcutGroup:last-child { margin-bottom: 0; }
+  .shortcutGroupTitle { font-size: 11px; font-weight: 700; letter-spacing: .8px; color: var(--accent); margin-bottom: 7px; }
+  .shortcutRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px dashed var(--panel-border); }
+  .shortcutRow:last-child { border-bottom: none; }
+  .shortcutKeys { display: flex; align-items: center; gap: 4px; flex: none; }
+  .shortcutKeys kbd {
+    display: inline-block; padding: 3px 7px; font-size: 11px; font-family: var(--font-mono);
+    color: var(--text); background: rgba(15,23,42,.07);
+    border: 1px solid var(--panel-border); border-bottom-width: 2px; border-radius: 5px; white-space: nowrap;
+  }
+  .shortcutKeys .plus { font-size: 10px; color: var(--muted); }
+  .shortcutDesc { font-size: 12px; color: var(--muted); text-align: right; }
+  html[data-theme="dark"] .shortcutKeys kbd { background: rgba(255,255,255,.08); }
+  #statusShortcutBtn { cursor: pointer; opacity: .7; }
+  #statusShortcutBtn:hover { opacity: 1; color: var(--accent); }
   .modal {
     width: 460px; max-width: 94vw; background: var(--surface); border: 1px solid var(--panel-border);
     border-radius: 20px; padding: 20px 22px;
@@ -1759,6 +1777,17 @@
   #filePreviewBox { padding: 12px; background: rgba(255,255,255,.6); border: 1px solid var(--panel-border); border-radius: 10px; font-size: 13px; line-height: 1.8; word-break: break-word; }
   .fileStatus { font-size: 12px; color: var(--muted); min-height: 16px; }
   .fileEditorEmpty { margin-top: 60px; text-align: center; color: var(--muted); font-size: 14px; line-height: 2; }
+  /* 查找/替换栏：默认隐藏，Ctrl+F / Ctrl+H 唤出 */
+  .fileFindBar { display: none; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--surface); }
+  .fileFindBar.show { display: flex; }
+  .fileFindRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .fileFindRow input[type="text"] { flex: 1; min-width: 140px; padding: 6px 9px; font-size: 12px; border: 1px solid var(--panel-border); border-radius: 7px; background: rgba(255,255,255,.75); color: var(--text); outline: none; font-family: inherit; }
+  .fileFindRow input[type="text"]:focus { border-color: var(--accent); }
+  .fileFindRow input[type="text"].noMatch { border-color: #dc2626; }
+  #fileEditorBody .fileFindRow button { padding: 5px 9px; font-size: 11px; }
+  .fileFindCount { font-size: 11px; color: var(--muted); min-width: 74px; text-align: center; font-variant-numeric: tabular-nums; }
+  .fileFindToggle { padding: 4px 8px !important; font-size: 11px !important; opacity: .6; }
+  .fileFindToggle.on { opacity: 1; box-shadow: inset 0 0 0 2px var(--accent); }
   .fileDiffBox { border: 1px solid var(--panel-border); border-radius: 12px; padding: 12px; background: #fff; }
   .fileDiffBox h4 { margin: 0 0 8px; color: var(--accent); font-size: 14px; }
   .fileDiffCols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -1941,6 +1970,7 @@
     <span class="statusSpacer"></span>
     <span id="statusFile"></span>
     <span id="statusDirty"></span>
+    <span id="statusShortcutBtn" title="快捷键速查（?）">? 快捷键</span>
   </div>
 </div>
 <button id="sidebarShow" class="edgeToggle" title="展开左侧">▶</button>
@@ -2306,6 +2336,45 @@
       <div class="modalFoot">
         <button class="cancel" id="axisYCancelBtn">取消</button>
         <button class="primary" id="axisYOkBtn">确定</button>
+      </div>
+    </div>
+  </div>
+  <div id="shortcutModal" class="modal-mask">
+    <div class="modal shortcutModal">
+      <div class="modalHead">
+        <div class="modalTitle">
+          <div class="modalTitleMain">快捷键</div>
+          <div class="modalTitleSub">SHORTCUTS</div>
+        </div>
+        <button class="modalClose" id="shortcutClose" title="关闭">✕</button>
+      </div>
+      <div class="modalBody">
+        <div class="shortcutGroup">
+          <div class="shortcutGroupTitle">编辑器</div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>S</kbd></span><span class="shortcutDesc">保存当前编辑器内容</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>F</kbd></span><span class="shortcutDesc">查找</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>H</kbd></span><span class="shortcutDesc">查找并替换</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Z</kbd></span><span class="shortcutDesc">撤销</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>Z</kbd></span><span class="shortcutDesc">重做（也可用 Ctrl+Y）</span></div>
+        </div>
+        <div class="shortcutGroup">
+          <div class="shortcutGroupTitle">AI 对话</div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Enter</kbd></span><span class="shortcutDesc">发送</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Shift</kbd><span class="plus">+</span><kbd>Enter</kbd></span><span class="shortcutDesc">换行</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>A</kbd></span><span class="shortcutDesc">全选输入内容</span></div>
+        </div>
+        <div class="shortcutGroup">
+          <div class="shortcutGroupTitle">画布</div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>↓</kbd><span class="plus">/</span><kbd>↑</kbd></span><span class="shortcutDesc">在搜索命中之间切换</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Delete</kbd></span><span class="shortcutDesc">删除选中节点（会写回项目文件）</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Enter</kbd></span><span class="shortcutDesc">跳转到指定章节</span></div>
+        </div>
+        <div class="shortcutGroup">
+          <div class="shortcutGroupTitle">全局</div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>F</kbd></span><span class="shortcutDesc">专注模式（隐藏两侧栏）</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>Esc</kbd></span><span class="shortcutDesc">关闭弹窗 / 取消连线 / 清除选择</span></div>
+          <div class="shortcutRow"><span class="shortcutKeys"><kbd>?</kbd></span><span class="shortcutDesc">打开本速查表</span></div>
+        </div>
       </div>
     </div>
   </div>

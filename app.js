@@ -4748,6 +4748,36 @@ document.addEventListener('keydown', (e) => {
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   }
 });
+/* ---------- 快捷键速查表 ---------- */
+const shortcutModalEl = document.getElementById('shortcutModal');
+function openShortcutModal() {
+  if (shortcutModalEl) shortcutModalEl.classList.add('show');
+}
+function closeShortcutModal() {
+  if (shortcutModalEl) shortcutModalEl.classList.remove('show');
+}
+if (shortcutModalEl) {
+  const closeBtn = document.getElementById('shortcutClose');
+  if (closeBtn) closeBtn.addEventListener('click', closeShortcutModal);
+  // 点遮罩空白处关闭
+  shortcutModalEl.addEventListener('click', (e) => { if (e.target === shortcutModalEl) closeShortcutModal(); });
+}
+const statusShortcutBtn = document.getElementById('statusShortcutBtn');
+if (statusShortcutBtn) statusShortcutBtn.addEventListener('click', openShortcutModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && shortcutModalEl && shortcutModalEl.classList.contains('show')) {
+    closeShortcutModal();
+    return;
+  }
+  // ? 键唤出速查表。仅在非输入态生效，避免打扰正文/对话输入
+  if (e.key !== '?' || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.closest('input') || t.closest('textarea') || t.closest('select') || t.isContentEditable)) return;
+  e.preventDefault();
+  if (shortcutModalEl && shortcutModalEl.classList.contains('show')) closeShortcutModal();
+  else openShortcutModal();
+});
+
 /* ---------- 全局反馈：toast + 应用内确认（全项目统一，替代 alert/confirm） ---------- */
 function showToast(text, type = 'info') {
   const wrap = document.getElementById('toastWrap');
