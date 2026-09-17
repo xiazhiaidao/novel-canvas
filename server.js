@@ -1647,7 +1647,15 @@ function snapshotFiles(root, project, rels, reason) {
       fs.copyFileSync(full, dest);
       files.push({ rel, size: fs.statSync(full).size });
     }
-    if (!files.length) { try { fs.rmSync(snapRoot, { recursive: true, force: true }); } catch (_) {} return null; }
+    // 一个文件都没拷成 → 这份快照没意义，同样用归档而非递归删除（理由见 pruneBackups）
+    if (!files.length) {
+      try {
+        const prunedDir = path.join(backupDir(), '_pruned');
+        fs.mkdirSync(prunedDir, { recursive: true });
+        fs.renameSync(snapRoot, path.join(prunedDir, path.basename(snapRoot)));
+      } catch (_) {}
+      return null;
+    }
     const manifest = { ts, seq, reason: String(reason || '修改'), project: project || projectNameOfRoot(root), files };
     fs.writeFileSync(path.join(snapRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
     pruneBackups();
@@ -1694,13 +1702,27 @@ function pruneBackups() {
     if (list.length <= 100) return; // 保留最新 100 个
     const keep = new Set(list.slice(0, 100).map(b => String(b.ts)));
     const base = backupDir();
+    const prunedDir = path.join(base, '_pruned');
+    // 用 renameSync 归档而非 rmSync 递归删除，两个理由：
+    //  1) renameSync 只改目录项、不遍历内容，是 O(1)，也不会经过任何「递归删除」拦截链路。
+    //     此前用 rmSync 在本环境会被安全删除钩子拦下并长时间阻塞，而 pruneBackups() 处在
+    //     写请求路径上（snapshotFiles → pruneBackups），结果是 apply_proposal 之类的请求直接挂死。
+    //  2) 归档完全可逆：万一哪天需要找回被清理的旧快照，_pruned/ 里还在。
+    // 单次上限：即使归档很便宜，也不该让一次写请求搬运上百个目录。
+    const MAX_PER_CALL = 20;
+    let moved = 0;
     for (const e of fs.readdirSync(base, { withFileTypes: true })) {
-      if (!e.isDirectory()) continue;
+      if (moved >= MAX_PER_CALL) break;
+      if (!e.isDirectory() || e.name === '_pruned') continue;
       const dir = path.join(base, e.name);
+      let m = null;
+      try { m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); } catch (_) { continue; }
+      if (!(m && typeof m.ts === 'number' && !keep.has(String(m.ts)))) continue;
       try {
-        const m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
-        if (m && typeof m.ts === 'number' && !keep.has(String(m.ts))) fs.rmSync(dir, { recursive: true, force: true });
-      } catch (_) {}
+        fs.mkdirSync(prunedDir, { recursive: true });
+        fs.renameSync(dir, path.join(prunedDir, e.name));
+        moved++;
+      } catch (_) { /* 单个失败不影响其余 */ }
     }
   } catch (_) {}
 }

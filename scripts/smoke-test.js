@@ -136,6 +136,42 @@ async function main() {
     }
   }
 
+  // ── 页面就绪闸门（必须先过这一关再跑用例）──
+  // CDP 连上页面时，页面很可能还在解析/初始化：此时 #projectSelect 等元素尚不存在，
+  // 首个用例的 setInterval 回调会抛 TypeError 且 Promise 永不 resolve（表现为「空项目列表」），
+  // 后续用例则命中 app.js 顶层 let 的 TDZ（表现为 "ReferenceError: viewMode is not defined"），
+  // 并连带拖拽 / override 等用例一起失败。服务刚重启时首次加载更慢，这个竞态必现。
+  //
+  // 刻意**从 Node 侧轮询**、每次求值都用短表达式，而不是在页面里挂一个「长生命周期 Promise」：
+  // 后者在页面仍在导航时执行上下文会被销毁，Runtime.evaluate 直接返回 undefined，
+  // 闸门就永远等不到结果（实测就是这个现象）。短表达式 + 外层重试能自愈上下文重建。
+  // 另注意：TDZ 下连 typeof 都会抛，所以判定必须包在页面侧的 try 里。
+  await (async () => {
+    const probe = `(() => {
+      try {
+        if (document.readyState !== 'complete') return 'readyState=' + document.readyState;
+        const sel = document.getElementById('projectSelect');
+        if (!sel) return 'no projectSelect';
+        if (!sel.options.length) return 'no options';
+        if (typeof viewMode === 'undefined') return 'no viewMode';
+        if (typeof switchAnalysisTab !== 'function') return 'no switchAnalysisTab';
+        const n = document.querySelectorAll('#axisNodes .node').length;
+        if (!n) return 'no axis nodes';
+        return 'ready';
+      } catch (e) { return 'err:' + e.message; }
+    })()`;
+    let last = '未开始';
+    let ok = false;
+    for (let i = 0; i < 150; i++) { // 上限 30s
+      const st = await evalExpr(probe);
+      if (st === 'ready') { ok = true; break; }
+      if (typeof st === 'string') last = st;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (!ok) throw new Error('页面就绪等待失败（最后状态：' + last + '）');
+    console.log('🚦 页面已就绪（DOM 完整 + app.js 初始化完成 + 节点已渲染）');
+  })();
+
   await check('项目列表已加载', async () => {
     const count = await evalExpr(`new Promise(resolve => {
       const t0 = Date.now();
@@ -631,39 +667,56 @@ async function main() {
     const v = await evalExpr(`fetch('/api/bookstats?project=' + encodeURIComponent(currentProject)).then(r => r.json()).then(d => JSON.stringify({ ok: !!d.ok, words: d.totalWords, chapters: d.chapterCount, error: d.error || '' }))`);
     try { const o = JSON.parse(v); return (o.ok && o.words > 0 && o.chapters > 0) ? 'OK(words=' + o.words + ', chapters=' + o.chapters + ')' : v; } catch (_) { return v; }
   });
-  await check('统计弹窗可打开', async () => {
+  await check('分析弹窗·统计标签可打开并渲染', async () => {
     const v = await evalExpr(`(async () => {
-      const btn = document.getElementById('bookStatsBtn');
+      const btn = document.getElementById('analysisBtn');
       if (!btn) return JSON.stringify({ ok: false, why: 'no btn' });
       btn.click();
-      await new Promise(r => setTimeout(r, 400));
-      const m = document.getElementById('bookStatsModal');
+      await new Promise(r => setTimeout(r, 150));
+      switchAnalysisTab('stats');
+      // 轮询等渲染完成（本地接口只要几十毫秒，但别依赖固定 sleep）
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        const b = document.getElementById('bookStatsBody');
+        if (b && (b.querySelector('.statCards') || b.innerHTML.indexOf('加载失败') !== -1)) break;
+      }
+      const m = document.getElementById('analysisModal');
+      const card = document.getElementById('analysisCard');
       const body = document.getElementById('bookStatsBody');
       const open = m && m.classList.contains('show');
-      const hasContent = body && body.childElementCount > 0;
-      const close = document.getElementById('bookStatsClose');
+      const paneOn = document.getElementById('analysisPaneStats').classList.contains('on');
+      const paneAttr = card && card.getAttribute('data-pane');
+      // 断言必须严于「有子元素」——「加载中...」占位也是一个子元素，会把未渲染的假象盖过去
+      const html = body ? body.innerHTML : '';
+      const hasContent = !!body && !!body.querySelector('.statCards') && body.childElementCount > 0;
+      const notLoading = html.indexOf('加载中') === -1 && html.indexOf('加载失败') === -1;
+      const close = document.getElementById('analysisClose');
       if (close) close.click();
       const closed = m && !m.classList.contains('show');
-      return JSON.stringify({ ok: open && hasContent && closed });
+      const ok = open && paneOn && paneAttr === 'stats' && hasContent && notLoading && closed;
+      return JSON.stringify({ ok, open, paneOn, paneAttr, hasContent, notLoading, closed, head: html.slice(0, 70) });
     })()`);
-    try { const o = JSON.parse(v); return o.ok ? 'OK(打开/渲染/关闭)' : v; } catch (_) { return v; }
+    try { const o = JSON.parse(v); return o.ok ? 'OK(切标签/渲染/关闭)' : v; } catch (_) { return v; }
   });
   await check('时间线 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/timeline?project=' + encodeURIComponent(currentProject)).then(r => r.json()).then(d => JSON.stringify({ ok: !!d.ok, n: Array.isArray(d.events) ? d.events.length : -1, error: d.error || '' }))`);
     try { const o = JSON.parse(v); return (o.ok && o.n >= 0) ? 'OK(events=' + o.n + ')' : v; } catch (_) { return v; }
   });
-  await check('时间线弹窗可打开', async () => {
+  await check('分析弹窗·时间线标签可打开', async () => {
     const v = await evalExpr(`(async () => {
-      const btn = document.getElementById('timelineBtn');
+      const btn = document.getElementById('analysisBtn');
       if (!btn) return JSON.stringify({ ok: false, why: 'no btn' });
       btn.click();
-      await new Promise(r => setTimeout(r, 400));
-      const m = document.getElementById('timelineModal');
+      await new Promise(r => setTimeout(r, 150));
+      switchAnalysisTab('timeline');
+      await new Promise(r => setTimeout(r, 300));
+      const m = document.getElementById('analysisModal');
       const open = m && m.classList.contains('show');
-      const close = document.getElementById('timelineClose');
+      const paneOn = document.getElementById('analysisPaneTimeline').classList.contains('on');
+      const close = document.getElementById('analysisClose');
       if (close) close.click();
       const closed = m && !m.classList.contains('show');
-      return JSON.stringify({ ok: open && closed });
+      return JSON.stringify({ ok: open && paneOn && closed, open, paneOn, closed });
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK' : v; } catch (_) { return v; }
   });
@@ -672,9 +725,8 @@ async function main() {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       const marker = '冒烟时间线节点' + Date.now();
       try {
-        const btn = document.getElementById('timelineBtn');
-        if (!btn) return JSON.stringify({ ok: false, why: 'no btn' });
-        btn.click();
+        if (!document.getElementById('analysisBtn')) return JSON.stringify({ ok: false, why: 'no btn' });
+        openAnalysis('timeline');
         await sleep(250);
         const titleIn = document.getElementById('tlTitle');
         const sel = document.getElementById('tlChapterSel');
@@ -713,7 +765,7 @@ async function main() {
         }
         await sleep(250);
         const goneOk = !Array.from(document.querySelectorAll('#timelineBody .tlRow')).some(r => (r.textContent || '').includes(marker));
-        document.getElementById('timelineClose').click();
+        document.getElementById('analysisClose').click();
         await sleep(700); // 等防抖保存落盘（最终 timelineNodes 为空）
         return JSON.stringify({ ok: badgeOk && editedOk && goneOk, badgeOk, editedOk, goneOk });
       } catch (e) {
@@ -738,7 +790,7 @@ async function main() {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       const marker = '冒烟轴Pin' + Date.now();
       try {
-        document.getElementById('timelineBtn').click();
+        openAnalysis('timeline');
         await sleep(250);
         document.getElementById('tlTitle').value = marker;
         const sel = document.getElementById('tlChapterSel');
@@ -766,7 +818,7 @@ async function main() {
         const row = rows.find(r => (r.textContent || '').includes(marker));
         if (row) { row.querySelector('.tlDel').click(); await sleep(120); const okBtn = document.getElementById('confirmOkBtn'); if (okBtn) okBtn.click(); }
         await sleep(300);
-        document.getElementById('timelineClose').click();
+        document.getElementById('analysisClose').click();
         await sleep(700);
         return JSON.stringify({ ok: !!pin2 && movedOk, before, after: pin2 ? { top: pin2.style.top } : null });
       } catch (e) {
@@ -806,9 +858,11 @@ async function main() {
     const v = await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       try {
-        const btn = document.getElementById('matrixBtn');
+        const btn = document.getElementById('analysisBtn');
         if (!btn) return JSON.stringify({ ok: false, why: 'no matrix btn' });
         btn.click();
+        await sleep(120);
+        switchAnalysisTab('matrix');
         await sleep(250);
         const cells = Array.from(document.querySelectorAll('#matrixBody td.hitCell'));
         if (!cells.length) return JSON.stringify({ ok: false, why: 'no hit cells' });
@@ -816,11 +870,11 @@ async function main() {
         const clickableOk = getComputedStyle(first).cursor === 'pointer';
         const hasCountTip = /命中：/.test(first.title || '');
         const hasData = !!(first.dataset.row && first.dataset.col);
-        const modalOpen = document.getElementById('matrixModal').classList.contains('show');
-        // 点击第一个命中格：应关闭矩阵并打开详情
+        const modalOpen = document.getElementById('analysisModal').classList.contains('show');
+        // 点击第一个命中格：应关闭分析弹窗并打开详情
         first.click();
         await sleep(300);
-        const modalClosed = !document.getElementById('matrixModal').classList.contains('show');
+        const modalClosed = !document.getElementById('analysisModal').classList.contains('show');
         const detailTitle = (document.querySelector('#detail h2') || {}).textContent || '';
         const ok = clickableOk && hasCountTip && hasData && modalOpen && modalClosed && !!detailTitle;
         return JSON.stringify({ ok, clickableOk, hasCountTip, hasData, modalOpen, modalClosed, detailTitle });
@@ -829,6 +883,135 @@ async function main() {
       }
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(✓命中/点击跳章)' : v; } catch (_) { return v; }
+  });
+  await check('分析入口合并为单按钮(5 视图→1 入口)', async () => {
+    const v = await evalExpr(`JSON.stringify({
+      has: !!document.getElementById('analysisBtn'),
+      oldBtns: ['matrixBtn','boardBtn','linkManagerBtn','bookStatsBtn','timelineBtn'].filter(id => !!document.getElementById(id)),
+      oldModals: ['matrixModal','boardModal','linkModal','bookStatsModal','timelineModal'].filter(id => !!document.getElementById(id)),
+      tabs: Array.from(document.querySelectorAll('#analysisModal .analysisTab')).map(b => b.dataset.pane),
+      panes: Array.from(document.querySelectorAll('#analysisModal .analysisPane')).map(p => p.dataset.pane)
+    })`);
+    try {
+      const o = JSON.parse(v);
+      const seq = 'matrix,board,link,stats,timeline';
+      const ok = o.has && o.oldBtns.length === 0 && o.oldModals.length === 0 && o.tabs.join(',') === seq && o.panes.join(',') === seq;
+      return ok ? 'OK(旧入口/旧弹窗已清空)' : v;
+    } catch (_) { return v; }
+  });
+  await check('分析弹窗·5 个标签互斥可见且宽度联动', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        openAnalysis('matrix');
+        await sleep(200);
+        const card = document.getElementById('analysisCard');
+        const report = [];
+        for (const tab of ['matrix','board','link','stats','timeline']) {
+          switchAnalysisTab(tab);
+          await sleep(80);
+          report.push({
+            tab,
+            paneOn: Array.from(document.querySelectorAll('#analysisModal .analysisPane.on')).map(p => p.dataset.pane).join(','),
+            tabOn: Array.from(document.querySelectorAll('#analysisModal .analysisTab.on')).map(b => b.dataset.pane).join(','),
+            attr: card.getAttribute('data-pane')
+          });
+        }
+        const exclusive = report.every(r => r.paneOn === r.tab && r.tabOn === r.tab && r.attr === r.tab);
+        // 隐藏的 pane 必须是真正不显示（display:none），否则会叠在一起。
+        // 注意排除当前激活的 timeline —— 它本来就该显示。
+        const hiddenNotShown = ['matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
+        const titleOk = (document.getElementById('analysisTitleMain').textContent || '').trim().length > 0;
+        document.getElementById('analysisClose').click(); // 收尾：关掉，避免影响后续用例
+        return JSON.stringify({ ok: exclusive && titleOk && hiddenNotShown, report, hiddenNotShown });
+      } catch (e) { return JSON.stringify({ ok: false, why: 'ERR ' + e.message }); }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(每次仅 1 个 pane 可见)' : v; } catch (_) { return v; }
+  });
+  await check('分析视图跳转统一走 focusNode(清搜索/关弹窗/开分类)', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const marker = '冒烟跳转统一' + Date.now();
+      let created = false;
+      try {
+        openAnalysis('timeline');
+        await sleep(300);
+        let rows = Array.from(document.querySelectorAll('#timelineBody .tlRow'));
+        if (!rows.length) {
+          const sel = document.getElementById('tlChapterSel');
+          if (!sel || !sel.options.length) return JSON.stringify({ ok: false, why: 'no chapters' });
+          document.getElementById('tlTitle').value = marker;
+          sel.value = sel.options[0].value;
+          document.getElementById('tlAddBtn').click();
+          await sleep(350);
+          rows = Array.from(document.querySelectorAll('#timelineBody .tlRow'));
+          created = true;
+        }
+        if (!rows.length) return JSON.stringify({ ok: false, why: 'no timeline row' });
+        // 前置条件：搜索框非空（focusNode 必须清掉它，否则目标节点会被过滤隐藏）
+        search.value = 'zzz-不存在的关键词-' + Date.now();
+        applyFilters();
+        const filteredBefore = search.value.length > 0;
+        rows[0].click();
+        await sleep(400);
+        const searchCleared = search.value === '';
+        const modalClosed = !document.getElementById('analysisModal').classList.contains('show');
+        const detailTitle = (document.querySelector('#detail h2') || {}).textContent || '';
+        const flashOk = !!document.querySelector('#axisNodes .node.flash');
+        // 清理本轮造出来的测试节点
+        if (created) {
+          openAnalysis('timeline');
+          await sleep(300);
+          const r = Array.from(document.querySelectorAll('#timelineBody .tlRow')).find(x => (x.textContent || '').includes(marker));
+          if (r) { r.querySelector('.tlDel').click(); await sleep(150); const okb = document.getElementById('confirmOkBtn'); if (okb) okb.click(); }
+          await sleep(300);
+          document.getElementById('analysisClose').click();
+          await sleep(700);
+        }
+        return JSON.stringify({ ok: filteredBefore && searchCleared && modalClosed && !!detailTitle, searchCleared, modalClosed, flashOk, detailTitle });
+      } catch (e) { return JSON.stringify({ ok: false, why: 'ERR ' + e.message }); }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(清搜索/关弹窗/渲染详情)' : v; } catch (_) { return v; }
+  });
+  await check('全书统计可下钻(卷→章节 / 分类→节点)', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        openAnalysis('stats');
+        await sleep(800);
+        const body = document.getElementById('bookStatsBody');
+        const volRow = body.querySelector('.volRow.clickable[data-drill="vol"]');
+        if (!volRow) return JSON.stringify({ ok: false, why: 'no vol row' });
+        const clickableOk = getComputedStyle(volRow).cursor === 'pointer';
+        volRow.click();
+        await sleep(150);
+        const panel = body.querySelector('.drillPanel');
+        const panelOpen = !!panel;
+        const drillRows = panel ? Array.from(panel.querySelectorAll('.drillRow')) : [];
+        const rowsOk = drillRows.length > 0 && !!nodeMap[drillRows[0].dataset.id];
+        volRow.click(); // 再点同一行 = 收起
+        await sleep(120);
+        const collapsed = !body.querySelector('.drillPanel');
+        // 分类 chip 下钻：优先挑「章节」（一定有节点），再点条目应跳转并关弹窗
+        const chips = Array.from(body.querySelectorAll('.catChip.clickable[data-drill="cat"]'));
+        const chip = chips.find(c => (c.textContent || '').trim().startsWith('章节')) || chips[0];
+        let catDrillOk = false, catJumpOk = false;
+        if (chip) {
+          chip.click();
+          await sleep(150);
+          const p2 = chip.parentNode.querySelector('.drillPanel');
+          catDrillOk = !!p2 && p2.querySelectorAll('.drillRow').length > 0;
+          if (catDrillOk) {
+            p2.querySelector('.drillRow').click();
+            await sleep(450);
+            catJumpOk = !document.getElementById('analysisModal').classList.contains('show') && !!((document.querySelector('#detail h2') || {}).textContent || '');
+          }
+        }
+        const ok = clickableOk && panelOpen && rowsOk && collapsed && catDrillOk && catJumpOk;
+        return JSON.stringify({ ok, clickableOk, panelOpen, rowCount: drillRows.length, rowsOk, collapsed, catDrillOk, catJumpOk });
+      } catch (e) { return JSON.stringify({ ok: false, why: 'ERR ' + e.message }); }
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? 'OK(展开/收起/跳转)' : v; } catch (_) { return v; }
   });
   await check('搜索键盘导航+轴视图平移定位', async () => {
     const v = await evalExpr(`(async () => {

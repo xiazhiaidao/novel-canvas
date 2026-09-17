@@ -782,16 +782,69 @@ function renderMatrix() {
   if (tip) tip.style.display = 'block';
 }
 
-function openMatrix() {
-  const m = document.getElementById('matrixModal');
-  if (m) m.classList.add('show');
-  renderMatrix();
+// ── 分析视图统一入口（矩阵 / 看板 / 连线 / 统计 / 时间线）────────
+// v1.20.0：原本 5 个平级弹窗收进一个「分析」入口 + 标签页。
+// 各视图的渲染函数（renderMatrix / renderBoard / renderLinkManager / renderTimelineList）
+// 保持原样，只是改由 switchAnalysisTab 按需调用。
+const ANALYSIS_TABS = {
+  matrix:   { title: '关系矩阵', sub: 'MATRIX' },
+  board:    { title: '状态看板', sub: 'BOARD' },
+  link:     { title: '手动连线', sub: 'LINKS' },
+  stats:    { title: '全书统计', sub: 'STATS' },
+  timeline: { title: '时间线 · 重要节点', sub: 'TIMELINE' }
+};
+let analysisTab = 'matrix';
+// 统计数据的缓存键（项目名 + 数据版本）。数据重载后版本变化会自然刷新，
+// 同一次打开内反复切标签则不重复打接口。
+let statsCacheKey = '';
+let statsCacheHtml = '';
+
+function switchAnalysisTab(tab) {
+  if (!ANALYSIS_TABS[tab]) tab = 'matrix';
+  analysisTab = tab;
+  const card = document.getElementById('analysisCard');
+  if (card) card.setAttribute('data-pane', tab); // 驱动 [data-pane] 宽度规则
+  document.querySelectorAll('#analysisModal .analysisTab').forEach(b => {
+    b.classList.toggle('on', b.dataset.pane === tab);
+  });
+  document.querySelectorAll('#analysisModal .analysisPane').forEach(p => {
+    p.classList.toggle('on', p.dataset.pane === tab);
+  });
+  const meta = ANALYSIS_TABS[tab];
+  const mainEl = document.getElementById('analysisTitleMain');
+  const subEl = document.getElementById('analysisTitleSub');
+  if (mainEl) mainEl.textContent = meta.title;
+  if (subEl) subEl.textContent = meta.sub;
+  if (tab === 'matrix') renderMatrix();
+  else if (tab === 'board') renderBoard();
+  else if (tab === 'link') renderLinkManager();
+  else if (tab === 'stats') loadBookStats();
+  else if (tab === 'timeline') renderTimelineList();
 }
 
-function closeMatrix() {
-  const m = document.getElementById('matrixModal');
+function openAnalysis(tab) {
+  const m = document.getElementById('analysisModal');
+  if (m) m.classList.add('show');
+  switchAnalysisTab(tab || analysisTab);
+}
+
+function closeAnalysis() {
+  const m = document.getElementById('analysisModal');
   if (m) m.classList.remove('show');
 }
+
+// 兼容旧调用点：视图内部跳转时只需「关掉分析弹窗」，统一走 closeAnalysis。
+// 保留这些名字，避免改散落在各 render 函数里的调用点。
+function closeMatrix() { closeAnalysis(); }
+function closeBoard() { closeAnalysis(); }
+function closeLinkManager() { closeAnalysis(); }
+function closeBookStats() { closeAnalysis(); }
+function closeTimeline() { closeAnalysis(); }
+function openMatrix() { openAnalysis('matrix'); }
+function openBoard() { openAnalysis('board'); }
+function openLinkManager() { openAnalysis('link'); }
+function openBookStats() { openAnalysis('stats'); }
+function openTimeline() { openAnalysis('timeline'); }
 // 矩阵点击：✓ 格 → 章节模式跳章 / 设定×角色看行节点；表头 → 查看节点
 function wireMatrixClicks() {
   const body = document.getElementById('matrixBody');
@@ -801,31 +854,25 @@ function wireMatrixClicks() {
     const cell = e.target.closest('td.hitCell');
     if (cell) {
       e.stopPropagation();
-      const rn = nodeMap[cell.dataset.row], cn = nodeMap[cell.dataset.col];
+      const rn = nodeMap[cell.dataset.row];
       if (!rn) return;
-      if (matrixMode === 'roleChapter' || matrixMode === 'foreshadowChapter') {
-        closeMatrix();
-        const ch = nodeAxisData(rn).chapter;
-        if (ch != null) axisJumpTo(ch);
-        showDetail(rn);
-      } else {
-        closeMatrix();
-        showDetail(rn);
-      }
+      // ② 三种模式统一走 focusNode：它会清搜索 / 展开分组 / 激活分类 / 轴平移居中 / 闪烁
+      closeAnalysis();
+      focusNode(rn.id);
       return;
     }
     const rowHead = e.target.closest('th.mxRowHead');
     if (rowHead) {
       e.stopPropagation();
       const n = nodeMap[rowHead.dataset.id];
-      if (n) { closeMatrix(); showDetail(n); }
+      if (n) { closeAnalysis(); focusNode(n.id); }
       return;
     }
     const colHead = e.target.closest('th.mxColHead');
     if (colHead) {
       e.stopPropagation();
       const n = nodeMap[colHead.dataset.id];
-      if (n) { closeMatrix(); showDetail(n); }
+      if (n) { closeAnalysis(); focusNode(n.id); }
       return;
     }
   });
@@ -893,16 +940,7 @@ function renderBoard() {
   });
 }
 
-function openBoard() {
-  const m = document.getElementById('boardModal');
-  if (m) m.classList.add('show');
-  renderBoard();
-}
-
-function closeBoard() {
-  const m = document.getElementById('boardModal');
-  if (m) m.classList.remove('show');
-}
+// 状态看板的开关由统一入口 switchAnalysisTab 负责，这里不再单独定义 open/closeBoard。
 
 // ── Diff 确认覆盖（Agent 新内容 -> 提案 -> 写回）───────────────
 let pendingDiff = null;
@@ -957,15 +995,7 @@ function closeDiffModal() {
 }
 
 // ── 手动连线管理 ──────────────────────────────────────────
-function openLinkManager() {
-  const m = document.getElementById('linkModal');
-  if (m) m.classList.add('show');
-  renderLinkManager();
-}
-function closeLinkManager() {
-  const m = document.getElementById('linkModal');
-  if (m) m.classList.remove('show');
-}
+// 开关由统一入口 switchAnalysisTab 负责，这里只保留渲染逻辑。
 function renderLinkManager() {
   const list = document.getElementById('linkList');
   const check = document.getElementById('showAllLinks');
@@ -2905,6 +2935,7 @@ async function loadData() {
   axisSegSize = (data.layout && data.layout.axisSegSize) || 0;
   layoutOverrides = (data.layout && data.layout.overrides) || {};
   timelineNodes = (data.layout && Array.isArray(data.layout.timelineNodes)) ? data.layout.timelineNodes : [];
+  statsCacheKey = ''; // 数据重载 → 全书统计缓存失效，下次打开重新拉取
   unrecognizedFiles = new Set(nodes.filter(n => n.unrecognized).map(n => n.file));
   enterAxisView(false);
 
@@ -4587,12 +4618,16 @@ if (linkModeSelect) {
     redrawEdges();
   });
 }
-const matrixBtn = document.getElementById('matrixBtn');
-if (matrixBtn) matrixBtn.addEventListener('click', openMatrix);
-const matrixClose = document.getElementById('matrixClose');
-if (matrixClose) matrixClose.addEventListener('click', closeMatrix);
-const matrixModalEl = document.getElementById('matrixModal');
-if (matrixModalEl) matrixModalEl.addEventListener('click', (e) => { if (e.target === matrixModalEl) closeMatrix(); });
+// ── 分析入口（v1.20.0：矩阵/看板/连线/统计/时间线 5 个视图合并为一个按钮 + 标签页）──
+const analysisBtn = document.getElementById('analysisBtn');
+if (analysisBtn) analysisBtn.addEventListener('click', () => openAnalysis(analysisTab || 'matrix'));
+const analysisClose = document.getElementById('analysisClose');
+if (analysisClose) analysisClose.addEventListener('click', closeAnalysis);
+const analysisModalEl = document.getElementById('analysisModal');
+if (analysisModalEl) analysisModalEl.addEventListener('click', (e) => { if (e.target === analysisModalEl) closeAnalysis(); });
+document.querySelectorAll('#analysisModal .analysisTab').forEach(tab => {
+  tab.addEventListener('click', () => switchAnalysisTab(tab.dataset.pane));
+});
 document.querySelectorAll('.matrixTab').forEach(tab => {
   tab.addEventListener('click', () => {
     matrixMode = tab.dataset.matrix;
@@ -4601,12 +4636,7 @@ document.querySelectorAll('.matrixTab').forEach(tab => {
   });
 });
 wireMatrixClicks();
-const boardBtn = document.getElementById('boardBtn');
-if (boardBtn) boardBtn.addEventListener('click', openBoard);
-const boardClose = document.getElementById('boardClose');
-if (boardClose) boardClose.addEventListener('click', closeBoard);
-const boardModalEl = document.getElementById('boardModal');
-if (boardModalEl) boardModalEl.addEventListener('click', (e) => { if (e.target === boardModalEl) closeBoard(); });
+wireStatsClicks();
 const diffClose = document.getElementById('diffClose');
 if (diffClose) diffClose.addEventListener('click', closeDiffModal);
 const diffCancel = document.getElementById('diffCancel');
@@ -4616,12 +4646,6 @@ if (diffApply) diffApply.addEventListener('click', applyDiff);
 const diffModalEl = document.getElementById('diffModal');
 if (diffModalEl) diffModalEl.addEventListener('click', (e) => { if (e.target === diffModalEl) closeDiffModal(); });
 try { showAllCustomLinks = localStorage.getItem('canvasShowAllLinks') === '1'; } catch (e) {}
-const linkManagerBtn = document.getElementById('linkManagerBtn');
-if (linkManagerBtn) linkManagerBtn.addEventListener('click', openLinkManager);
-const linkClose = document.getElementById('linkClose');
-if (linkClose) linkClose.addEventListener('click', closeLinkManager);
-const linkModalEl = document.getElementById('linkModal');
-if (linkModalEl) linkModalEl.addEventListener('click', (e) => { if (e.target === linkModalEl) closeLinkManager(); });
 const showAllLinks = document.getElementById('showAllLinks');
 if (showAllLinks) showAllLinks.addEventListener('change', () => {
   showAllCustomLinks = showAllLinks.checked;
@@ -5506,36 +5530,123 @@ async function loadBackupList() {
 }
 
 // ── 全书统计 ──
-async function openBookStats() {
-  const m = document.getElementById('bookStatsModal');
-  if (m) m.classList.add('show');
+// 由 switchAnalysisTab('stats') 调用（不再自己开关弹窗）。
+// 带缓存：同一次数据加载内反复切标签不重复打接口；loadData() 会清空缓存。
+async function loadBookStats() {
   const body = document.getElementById('bookStatsBody');
   if (!body) return;
+  const key = currentProject || '';
+  if (statsCacheKey === key && statsCacheHtml) {
+    body.innerHTML = statsCacheHtml;
+    return;
+  }
   body.innerHTML = '<div class="hint">加载中...</div>';
   try {
     const res = await fetch('/api/bookstats?project=' + encodeURIComponent(currentProject));
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    body.innerHTML = renderBookStats(d);
+    statsCacheHtml = renderBookStats(d);
+    statsCacheKey = key;
+    // 请求返回时用户可能已切到别的标签，此时不要再往隐藏 pane 里写内容
+    if (analysisTab !== 'stats') return;
+    body.innerHTML = statsCacheHtml;
   } catch (e) {
     body.innerHTML = '<div class="hint">加载失败：' + escapeHtml(e.message) + '</div>';
   }
 }
-function closeBookStats() {
-  const m = document.getElementById('bookStatsModal');
-  if (m) m.classList.remove('show');
+
+// ④ 下钻：统计里的每一行/每个 chip 都能点开，看到构成它的具体节点，再点节点跳画布。
+// 用事件委托挂在 #bookStatsBody 上（该元素不被 innerHTML 替换，只需绑一次）。
+function wireStatsClicks() {
+  const body = document.getElementById('bookStatsBody');
+  if (!body || body._statsWired) return;
+  body._statsWired = true;
+  body.addEventListener('click', (e) => {
+    const host = e.target.closest('[data-drill]');
+    if (!host) return;
+    e.stopPropagation();
+    const key = host.dataset.drillKey || '';
+    const parent = host.parentNode;
+    if (!parent) return;
+    const existing = parent.querySelector(':scope > .drillPanel');
+    const openKey = existing ? existing.dataset.host : null;
+    if (existing) existing.remove();
+    if (openKey !== null && openKey === key) return; // 再点同一行 = 收起
+    const panel = document.createElement('div');
+    panel.className = 'drillPanel';
+    panel.dataset.host = key;
+    panel.innerHTML = buildStatsDrill(host);
+    host.insertAdjacentElement('afterend', panel);
+    panel.querySelectorAll('.drillRow').forEach(r => {
+      r.addEventListener('click', () => {
+        closeAnalysis();
+        focusNode(r.dataset.id);
+      });
+    });
+  });
 }
+
+function drillRows(list, metaOf) {
+  if (!list.length) return '<div class="drillEmpty">这里没有可列出的内容</div>';
+  return list.map(n =>
+    '<div class="drillRow" data-id="' + escapeHtml(n.id) + '">' +
+      '<span class="drillName">' + escapeHtml(n.title || n.label || n.id) + '</span>' +
+      '<span class="drillMeta">' + escapeHtml(metaOf ? metaOf(n) : '') + '</span>' +
+    '</div>').join('');
+}
+
+function buildStatsDrill(host) {
+  const kind = host.dataset.drill;
+  if (kind === 'vol') {
+    const vol = host.dataset.drillKey.slice(4);
+    const list = nodes
+      .filter(n => isChapterNode(n) && volumeKeyOf(n) === vol)
+      .sort((a, b) => (Number(nodeAxisData(a).chapter) || 0) - (Number(nodeAxisData(b).chapter) || 0));
+    return '<div class="drillHead">' + escapeHtml(vol) + ' · ' + list.length + ' 章（点章节跳转）</div>' +
+      drillRows(list, n => {
+        const ch = nodeAxisData(n).chapter;
+        const len = (n.content || '').replace(/\s+/g, '').length;
+        return (ch != null ? '第' + ch + '章 · ' : '') + len.toLocaleString() + '字';
+      });
+  }
+  if (kind === 'outline') {
+    const list = nodes.filter(n =>
+      (n.label === '大纲' || (n.type === 'volume' && /大纲/.test(String(n.file || '')))) &&
+      !String(n.desc || '').trim() && !String(n.content || '').trim());
+    if (!list.length) return '<div class="drillEmpty">大纲项已全部填写</div>';
+    return '<div class="drillHead">待填写 ' + list.length + ' 项（点条目跳转填写）</div>' +
+      drillRows(list, n => volumeKeyOf(n));
+  }
+  if (kind === 'foreshadow') {
+    const list = nodes.filter(n => n.label === '伏笔' && (parseForeshadowStatus(n) || '未标记') !== '已回收');
+    if (!list.length) return '<div class="drillEmpty">伏笔已全部回收</div>';
+    return '<div class="drillHead">未回收 ' + list.length + ' 条（点条目跳转）</div>' +
+      drillRows(list, n => parseForeshadowStatus(n) || '未标记');
+  }
+  if (kind === 'cat') {
+    const cat = host.dataset.drillKey.slice(4);
+    const all = nodes.filter(n => n.label === cat && !isGlobalBoardNode(n));
+    const MAX = 60;
+    const list = all.slice(0, MAX);
+    return '<div class="drillHead">' + escapeHtml(cat) + ' · ' + all.length + ' 个节点（点条目跳转）' +
+      (all.length > MAX ? '，仅列出前 ' + MAX + ' 个' : '') + '</div>' +
+      drillRows(list, n => volumeKeyOf(n));
+  }
+  return '';
+}
+
 function fmtNum(n) { return Number(n || 0).toLocaleString('zh-CN'); }
 function renderBookStats(d) {
   const vols = d.byVolume || [];
   const maxVolWords = Math.max(1, ...vols.map(v => v.words || 0));
   const volBars = vols.map(v =>
-    '<div class="volRow"><span class="volName" title="' + escapeHtml(v.volume) + '">' + escapeHtml(v.volume) + '</span>' +
+    '<div class="volRow clickable" data-drill="vol" data-drill-key="vol:' + escapeHtml(v.volume) + '" title="点击查看该卷章节">' +
+    '<span class="volName" title="' + escapeHtml(v.volume) + '">' + escapeHtml(v.volume) + '</span>' +
     '<span class="volBar"><span class="volBarFill" style="width:' + Math.round((v.words / maxVolWords) * 100) + '%"></span></span>' +
     '<span class="volMeta">' + v.chapters + '章 · ' + fmtNum(v.words) + '字</span></div>'
   ).join('');
   const cats = Object.entries(d.categories || {}).map(([k, v]) =>
-    '<span class="catChip">' + escapeHtml(k) + ' ' + v + '</span>').join('');
+    '<span class="catChip clickable" data-drill="cat" data-drill-key="cat:' + escapeHtml(k) + '" title="点击查看该分类节点">' + escapeHtml(k) + ' ' + v + '</span>').join('');
   return '' +
     '<div class="statCards">' +
       '<div class="statCard"><div class="num">' + fmtNum(d.totalWords) + '</div><div class="lbl">总字数</div></div>' +
@@ -5544,14 +5655,16 @@ function renderBookStats(d) {
     '</div>' +
     '<div class="statsSection"><h4>各卷字数分布</h4>' + (volBars || '<div class="hint">暂无章节</div>') + '</div>' +
     '<div class="statsSection"><h4>大纲完成度</h4>' +
-      '<div class="barRow"><span class="barLabel">' + d.outline.filled + '/' + d.outline.total + ' 项已填写</span>' +
+      '<div class="barRow clickable" data-drill="outline" data-drill-key="outline" title="点击查看待填写项">' +
+      '<span class="barLabel">' + d.outline.filled + '/' + d.outline.total + ' 项已填写</span>' +
       '<span class="barTrack"><span class="barFill accent" style="width:' + d.outline.rate + '%"></span></span>' +
       '<span class="barPct">' + d.outline.rate + '%</span></div></div>' +
     '<div class="statsSection"><h4>伏笔回收率</h4>' +
-      '<div class="barRow"><span class="barLabel">已回收 ' + d.foreshadow.recovered + ' / 共 ' + d.foreshadow.total + ' 条</span>' +
+      '<div class="barRow clickable" data-drill="foreshadow" data-drill-key="foreshadow" title="点击查看未回收伏笔">' +
+      '<span class="barLabel">已回收 ' + d.foreshadow.recovered + ' / 共 ' + d.foreshadow.total + ' 条</span>' +
       '<span class="barTrack"><span class="barFill green" style="width:' + d.foreshadow.rate + '%"></span></span>' +
       '<span class="barPct">' + d.foreshadow.rate + '%</span></div></div>' +
-    '<div class="statsSection"><h4>分类统计</h4><div class="catChips">' + cats + '</div></div>';
+    '<div class="statsSection"><h4>分类统计</h4><div class="catChips">' + (cats || '<div class="hint">暂无节点</div>') + '</div></div>';
 }
 
 // ── 时间线（作者手动维护的重要节点，按章节排序；不再自动抽取时间标记） ──
@@ -5600,10 +5713,11 @@ function renderTimelineList() {
       '</span>';
     row.addEventListener('click', (e) => {
       if (e.target.closest('.tlEdit') || e.target.closest('.tlDel')) return;
-      axisJumpTo(Number(ev.chapter) || 1);
       const node = nodes.find(n => isChapterNode(n) && Number(nodeAxisData(n).chapter) === Number(ev.chapter));
-      if (node) showDetail(node);
-      closeTimeline();
+      closeAnalysis();
+      // ② 统一走 focusNode：清搜索 / 展开分组 / 激活分类 / 平移居中 / 闪烁，一次到位
+      if (node) focusNode(node.id);
+      else axisJumpTo(Number(ev.chapter) || 1); // 找不到章节节点时退化为只平移轴
     });
     row.querySelector('.tlEdit').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -5670,15 +5784,7 @@ function addTimelineNode() {
   renderTimelineList();
   renderAxisTimelinePins(); // 新节点立即标到进度轴上
 }
-function openTimeline() {
-  const m = document.getElementById('timelineModal');
-  if (m) m.classList.add('show');
-  renderTimelineList();
-}
-function closeTimeline() {
-  const m = document.getElementById('timelineModal');
-  if (m) m.classList.remove('show');
-}
+// 时间线的开关由统一入口 switchAnalysisTab 负责，这里不再单独定义 open/closeTimeline。
 
 // ── 聊天用量提示 ──
 function addUsageNote(usage) {
@@ -5691,12 +5797,7 @@ function addUsageNote(usage) {
   chatMessages.appendChild(note);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
-document.getElementById('bookStatsBtn').addEventListener('click', openBookStats);
-document.getElementById('bookStatsClose').addEventListener('click', closeBookStats);
-document.getElementById('bookStatsModal').addEventListener('click', (e) => { if (e.target === document.getElementById('bookStatsModal')) closeBookStats(); });
-document.getElementById('timelineBtn').addEventListener('click', openTimeline);
-document.getElementById('timelineClose').addEventListener('click', closeTimeline);
-document.getElementById('timelineModal').addEventListener('click', (e) => { if (e.target === document.getElementById('timelineModal')) closeTimeline(); });
+// 统计 / 时间线的开关已并入 #analysisModal（见上方分析入口绑定），此处只留时间线表单的事件。
 document.getElementById('tlAddBtn').addEventListener('click', addTimelineNode);
 document.getElementById('tlTitle').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTimelineNode(); });
 document.getElementById('settingsTabTheme').addEventListener('click', () => switchSettingsTab('theme'));

@@ -1323,6 +1323,61 @@
   html[data-theme="dark"] #ftInput:focus { background: rgba(255,255,255,.11); }
   html[data-theme="dark"] .ftToggle { background: rgba(255,255,255,.07); }
   html[data-theme="dark"] .ftHit:hover { background: rgba(255,255,255,.07); }
+  /* 分析弹窗：把原本 5 个平级的分析视图（矩阵/看板/连线/统计/时间线）收进一个入口。
+     用 .modal.analysisModal 双类提特异性，确保 overflow: hidden 能压过 .modal 的 overflow-y: auto
+     （本块定义在 .modal 之前，单类会被后者覆盖）——这一步不做的话 pane 内滚动会失效。 */
+  .modal.analysisModal {
+    width: min(1200px, 96vw); max-height: 88vh; overflow: hidden;
+    display: flex; flex-direction: column;
+    transition: width .18s ease;
+  }
+  /* 宽度随标签页切换：保留各视图原本各自调好的最佳宽度，不强行统一成一个值 */
+  .modal.analysisModal[data-pane="board"] { width: min(1000px, 94vw); }
+  .modal.analysisModal[data-pane="link"] { width: min(640px, 94vw); }
+  .modal.analysisModal[data-pane="stats"] { width: min(680px, 94vw); }
+  .modal.analysisModal[data-pane="timeline"] { width: min(1000px, 96vw); }
+  .analysisTabs { display: flex; gap: 2px; flex: none; border-bottom: 1px solid var(--panel-border); margin-bottom: 12px; }
+  .analysisTab {
+    padding: 8px 15px; border: none; background: transparent; color: var(--muted);
+    font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .analysisTab:hover { color: var(--text); background: rgba(15,23,42,.05); }
+  .analysisTab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .analysisPanes { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* 显隐由 .on 类驱动，不用 hidden 属性 —— pane 上的 ID 级 display:flex 会压过
+     [hidden] 的 display:none，导致切换标签时旧 pane 仍显示。 */
+  .analysisPane { display: none; }
+  .analysisPane.on { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  /* 矩阵 / 看板：内部 #matrixBody / #boardBody 自带 flex:1 + overflow:auto，
+     pane 本身不滚动，否则会出现内外两层滚动条 */
+  #analysisPaneMatrix.on, #analysisPaneBoard.on { overflow: hidden; }
+  /* 统计 / 时间线 / 连线：内容自然流动，由 pane 统一提供滚动 */
+  #analysisPaneStats.on, #analysisPaneTimeline.on, #analysisPaneLink.on { overflow-y: auto; }
+  html[data-theme="dark"] .analysisTab:hover { background: rgba(255,255,255,.07); }
+  /* 全书统计的可下钻元素 */
+  .volRow.clickable, .barRow.clickable { cursor: pointer; border-radius: 9px; padding: 5px 8px; margin: 0 -8px; transition: background .15s; }
+  .volRow.clickable:hover, .barRow.clickable:hover { background: rgba(15,23,42,.05); }
+  .catChip.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+  .catChip.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
+  html[data-theme="dark"] .volRow.clickable:hover, html[data-theme="dark"] .barRow.clickable:hover { background: rgba(255,255,255,.07); }
+  /* 统计下钻面板：点统计行展开的明细列表，再点条目跳到画布节点 */
+  .drillPanel {
+    margin: 6px 0 4px; padding: 6px 10px 8px; border-left: 2px solid var(--accent);
+    background: rgba(15,23,42,.03); border-radius: 0 10px 10px 0;
+    max-height: 240px; overflow-y: auto;
+  }
+  .drillHead { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .drillRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 5px 7px; border-radius: 7px; cursor: pointer; transition: background .12s;
+  }
+  .drillRow:hover { background: var(--accent-soft); }
+  .drillName { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drillMeta { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
+  .drillEmpty { font-size: 12px; color: var(--muted); padding: 4px 2px; }
+  html[data-theme="dark"] .drillPanel { background: rgba(255,255,255,.04); }
+  html[data-theme="dark"] .drillRow:hover { background: rgba(255,255,255,.08); }
   .modal {
     width: 460px; max-width: 94vw; background: var(--surface); border: 1px solid var(--panel-border);
     border-radius: 20px; padding: 20px 22px;
@@ -1396,8 +1451,7 @@
   .accentSwatch { width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; transition: transform .15s, border-color .15s; }
   .accentSwatch:hover { transform: scale(1.1); }
   .accentSwatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--accent); }
-  .matrixModal { width: min(1200px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }
-  .matrixModal h3 { display: flex; align-items: center; justify-content: space-between; }
+  /* .matrixModal 的宽度/高度已由 .modal.analysisModal + [data-pane] 接管（v1.20.0 合并分析视图） */
   .matrixTabs, .auditTabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .matrixTab, .auditTab {
     display: inline-flex; align-items: center; gap: 6px;
@@ -1580,7 +1634,7 @@
   .matrixTable .hitCell:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .matrixTable .mxRowHead, .matrixTable .mxColHead { cursor: pointer; }
   .matrixTable .mxRowHead:hover, .matrixTable .mxColHead:hover { color: var(--accent); background: rgba(15,23,42,.06); }
-  .boardModal { width: min(1000px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+  /* .boardModal 宽度已由 [data-pane="board"] 接管 */
   .boardSummary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .boardCard { border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px 14px; background: rgba(255,255,255,.55); }
   .boardCard .num { font-size: 22px; font-weight: 700; color: var(--accent); }
@@ -1601,7 +1655,7 @@
   .backupRow .restoreBtn { margin-top: 6px; padding: 5px 12px; border: 1px solid var(--panel-border); border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer; font-size: 12px; }
   .backupRow .restoreBtn:hover { border-color: var(--accent); }
   /* 全书统计 */
-  .bookStatsModal { width: min(680px, 94vw); }
+  /* .bookStatsModal 宽度已由 [data-pane="stats"] 接管 */
   .statCards { display: flex; gap: 10px; margin-bottom: 14px; }
   .statCard { flex: 1; background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px; text-align: center; }
   .statCard .num { font-size: 20px; font-weight: 700; color: var(--accent); }
@@ -1623,7 +1677,7 @@
   .catChips { display: flex; flex-wrap: wrap; gap: 6px; }
   .catChip { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 14px; font-size: 12px; background: rgba(15,23,42,.04); }
   /* 时间线（作者手动维护的重要节点） */
-  .timelineModal { width: min(1000px, 96vw); }
+  /* .timelineModal 宽度已由 [data-pane="timeline"] 接管 */
   .timelineBody { overflow-x: auto; padding-bottom: 4px; }
   .tlHint { font-size: 12px; color: var(--muted); background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 12px; margin: 10px 0 12px; line-height: 1.6; }
   .tlForm { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
@@ -1656,16 +1710,18 @@
   .diffPre.old { background: rgba(220,38,38,.04); }
   .diffPre.new { background: rgba(5,150,105,.05); }
   .diffActions { margin-top: 10px; }
-  .linkModal { width: min(640px, 94vw); }
+  /* .linkModal 宽度已由 [data-pane="link"] 接管 */
   .linkOptions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
   .linkCreate { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .linkSel { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 12px; }
   .linkArrowBig { color: var(--muted); font-size: 15px; flex-shrink: 0; }
   .linkCheck { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; }
   .linkCheck input { accent-color: var(--accent); width: 16px; height: 16px; }
-  .linkModal .danger { padding: 6px 14px; border: 1px solid rgba(220,38,38,.35); border-radius: 10px; background: rgba(220,38,38,.08); color: #b91c1c; font-size: 12px; cursor: pointer; transition: all .15s; }
-  .linkModal .danger:hover { background: rgba(220,38,38,.15); }
-  .linkList { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
+  .linkOptions .danger { padding: 6px 14px; border: 1px solid rgba(220,38,38,.35); border-radius: 10px; background: rgba(220,38,38,.08); color: #b91c1c; font-size: 12px; cursor: pointer; transition: all .15s; }
+  .linkOptions .danger:hover { background: rgba(220,38,38,.15); }
+  /* 连线列表：滚动交给外层 pane（#analysisPaneLink），这里不再自带 max-height，
+     否则会出现内外两层滚动条 */
+  .linkList { display: flex; flex-direction: column; gap: 8px; }
   .linkRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(255,255,255,.5); }
   .linkRow .linkNames { font-size: 13px; color: var(--text); word-break: break-all; line-height: 1.4; }
   .linkRow .linkArrow { color: var(--accent); margin: 0 6px; }
@@ -1885,11 +1941,7 @@
       </div>
       <span class="topBarDivider"></span>
       <div class="topBarGroup">
-        <button id="matrixBtn" class="toolBtn" title="用表格查看密集关系">矩阵</button>
-        <button id="boardBtn" class="toolBtn" title="章节/伏笔状态看板（含未回收伏笔）">看板</button>
-        <button id="linkManagerBtn" class="toolBtn" title="管理手动连线">连线</button>
-        <button id="bookStatsBtn" class="toolBtn" title="全书健康度统计">统计</button>
-        <button id="timelineBtn" class="toolBtn" title="从章节正文抽取时间标记的时间线">时间线</button>
+        <button id="analysisBtn" class="toolBtn" title="分析视图：关系矩阵 / 状态看板 / 手动连线 / 全书统计 / 时间线">分析</button>
       </div>
       <span class="topBarDivider"></span>
       <div class="topBarGroup">
@@ -2161,67 +2213,64 @@
       </div>
     </div>
   </div>
-  <div id="matrixModal" class="modal-mask">
-    <div class="modal matrixModal">
+  <div id="analysisModal" class="modal-mask">
+    <div class="modal analysisModal" id="analysisCard" data-pane="matrix">
       <div class="modalHead">
         <div class="modalTitle">
-          <div class="modalTitleMain">关系矩阵</div>
-          <div class="modalTitleSub">MATRIX</div>
+          <div class="modalTitleMain" id="analysisTitleMain">关系矩阵</div>
+          <div class="modalTitleSub" id="analysisTitleSub">MATRIX</div>
         </div>
-        <button class="modalClose" id="matrixClose" title="关闭">✕</button>
+        <button class="modalClose" id="analysisClose" title="关闭">✕</button>
       </div>
-      <div class="matrixTabs">
-        <button class="matrixTab on" data-matrix="roleChapter">角色 × 章节</button>
-        <button class="matrixTab" data-matrix="foreshadowChapter">伏笔 × 章节</button>
-        <button class="matrixTab" data-matrix="settingRole">设定 × 角色</button>
+      <div class="analysisTabs">
+        <button class="analysisTab on" data-pane="matrix">关系矩阵</button>
+        <button class="analysisTab" data-pane="board">状态看板</button>
+        <button class="analysisTab" data-pane="link">手动连线</button>
+        <button class="analysisTab" data-pane="stats">全书统计</button>
+        <button class="analysisTab" data-pane="timeline">时间线</button>
       </div>
-      <div id="matrixTip" class="matrixTip">✓=该章/该设定出现该实体；数字=命中别名数，悬停看明细；点 ✓ 跳转到对应章节，点表头查看节点。</div>
-      <div id="matrixBody" class="matrixBody"></div>
-    </div>
-  </div>
-  <div id="boardModal" class="modal-mask">
-    <div class="modal boardModal">
-      <div class="modalHead">
-        <div class="modalTitle">
-          <div class="modalTitleMain">状态看板</div>
-          <div class="modalTitleSub">BOARD</div>
+      <div class="analysisPanes">
+        <div class="analysisPane on" id="analysisPaneMatrix" data-pane="matrix">
+          <div class="matrixTabs">
+            <button class="matrixTab on" data-matrix="roleChapter">角色 × 章节</button>
+            <button class="matrixTab" data-matrix="foreshadowChapter">伏笔 × 章节</button>
+            <button class="matrixTab" data-matrix="settingRole">设定 × 角色</button>
+          </div>
+          <div id="matrixTip" class="matrixTip">✓=该章/该设定出现该实体；数字=命中别名数，悬停看明细；点 ✓ 跳转到对应章节，点表头查看节点。</div>
+          <div id="matrixBody" class="matrixBody"></div>
         </div>
-        <button class="modalClose" id="boardClose" title="关闭">✕</button>
-      </div>
-      <div id="boardSummary" class="boardSummary"></div>
-      <div id="boardBody" class="boardBody"></div>
-    </div>
-  </div>
-  <div id="bookStatsModal" class="modal-mask">
-    <div class="modal bookStatsModal">
-      <div class="modalHead">
-        <div class="modalTitle">
-          <div class="modalTitleMain">全书统计</div>
-          <div class="modalTitleSub">STATS</div>
+        <div class="analysisPane" id="analysisPaneBoard" data-pane="board">
+          <div id="boardSummary" class="boardSummary"></div>
+          <div id="boardBody" class="boardBody"></div>
         </div>
-        <button class="modalClose" id="bookStatsClose" title="关闭">✕</button>
-      </div>
-      <div id="bookStatsBody" class="bookStatsBody"></div>
-    </div>
-  </div>
-  <div id="timelineModal" class="modal-mask">
-    <div class="modal timelineModal">
-      <div class="modalHead">
-        <div class="modalTitle">
-          <div class="modalTitleMain">时间线 · 重要节点</div>
-          <div class="modalTitleSub">TIMELINE</div>
+        <div class="analysisPane" id="analysisPaneLink" data-pane="link">
+          <div class="linkOptions">
+            <label class="linkCheck"><input type="checkbox" id="showAllLinks"> 显示全部手动连线</label>
+            <button class="danger" id="clearLinksBtn">删除全部</button>
+          </div>
+          <div class="linkCreate">
+            <select id="linkFromSel" class="linkSel"></select>
+            <span class="linkArrowBig">→</span>
+            <select id="linkToSel" class="linkSel"></select>
+            <button class="toolBtn" id="linkAddBtn" title="创建手动连线">创建</button>
+          </div>
+          <div id="linkList" class="linkList"></div>
         </div>
-        <button class="modalClose" id="timelineClose" title="关闭">✕</button>
+        <div class="analysisPane" id="analysisPaneStats" data-pane="stats">
+          <div id="bookStatsBody" class="bookStatsBody"></div>
+        </div>
+        <div class="analysisPane" id="analysisPaneTimeline" data-pane="timeline">
+          <div class="tlHint">按剧情重要节点手动维护：填写节点名、选择所属章节即可。不再按「第几天」自动抽取——长篇剧情可跨越百年，以作者定义的节点为准，点击节点可跳转到对应章节。</div>
+          <div class="tlForm">
+            <input id="tlTitle" type="text" class="tlInput" placeholder="重要节点名，如：主角觉醒 / 城市沦陷 / 百年后归来" maxlength="60">
+            <select id="tlChapterSel" class="tlInput tlSelect" title="选择所属章节"></select>
+            <input id="tlProgress" type="number" min="0" max="100" class="tlInput tlProgressInput" placeholder="推进% (留空自动)" title="剧情推进 0-100%，留空则按章号默认">
+            <input id="tlNote" type="text" class="tlInput" placeholder="备注（可选）" maxlength="120">
+            <button id="tlAddBtn" class="toolBtn">添加</button>
+          </div>
+          <div id="timelineBody" class="timelineBody"></div>
+        </div>
       </div>
-      <div class="tlHint">按剧情重要节点手动维护：填写节点名、选择所属章节即可。不再按「第几天」自动抽取——长篇剧情可跨越百年，以作者定义的节点为准，点击节点可跳转到对应章节。</div>
-      <div class="tlForm">
-        <input id="tlTitle" type="text" class="tlInput" placeholder="重要节点名，如：主角觉醒 / 城市沦陷 / 百年后归来" maxlength="60">
-        <select id="tlChapterSel" class="tlInput tlSelect" title="选择所属章节"></select>
-        <input id="tlProgress" type="number" min="0" max="100" class="tlInput tlProgressInput" placeholder="推进% (留空自动)" title="剧情推进 0-100%，留空则按章号默认">
-        <input id="tlNote" type="text" class="tlInput" placeholder="备注（可选）" maxlength="120">
-        <button id="tlAddBtn" class="toolBtn">添加</button>
-      </div>
-      <div id="timelineBody" class="timelineBody"></div>
     </div>
   </div>
   <div id="diffModal" class="modal-mask">
@@ -2248,28 +2297,6 @@
         <button class="cancel" id="diffCancel">取消</button>
         <button class="primary" id="diffApply">覆盖文件</button>
       </div>
-    </div>
-  </div>
-  <div id="linkModal" class="modal-mask">
-    <div class="modal linkModal">
-      <div class="modalHead">
-        <div class="modalTitle">
-          <div class="modalTitleMain">手动连线</div>
-          <div class="modalTitleSub">LINKS</div>
-        </div>
-        <button class="modalClose" id="linkClose" title="关闭">✕</button>
-      </div>
-      <div class="linkOptions">
-        <label class="linkCheck"><input type="checkbox" id="showAllLinks"> 显示全部手动连线</label>
-        <button class="danger" id="clearLinksBtn">删除全部</button>
-      </div>
-      <div class="linkCreate">
-        <select id="linkFromSel" class="linkSel"></select>
-        <span class="linkArrowBig">→</span>
-        <select id="linkToSel" class="linkSel"></select>
-        <button class="toolBtn" id="linkAddBtn" title="创建手动连线">创建</button>
-      </div>
-      <div id="linkList" class="linkList"></div>
     </div>
   </div>
   <div id="auditModal" class="modal-mask">
