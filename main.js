@@ -6,6 +6,25 @@ const net = require('net');
 
 const PORT = Number(process.env.PORT || 8787);
 const URL = `http://127.0.0.1:${PORT}/`;
+
+// 无 GPU 环境（容器 / 远程桌面 / 无显卡驱动的虚拟机）下，Chromium 的 GPU 进程会反复崩溃并
+// 直接 FATAL("GPU process isn't usable. Goodbye.")，导致应用启动即退出、看不到任何提示。
+// 这里提供显式降级开关：设 NC_FORCE_SOFTWARE_RENDER=1 或带 --disable-gpu 启动即改用软件渲染。
+// 默认不改变行为——有 GPU 的机器仍走硬件加速，避免白白牺牲渲染性能。
+//
+// 实测要点（都是踩过的坑，别删）：
+//  1) 三段代码必须在 app ready 之前执行才生效；
+//  2) 只调 app.disableHardwareAcceleration() 不够——它只关硬件加速，Chromium 仍会去起
+//     GPU 进程，在此环境依旧 FATAL；
+//  3) 真正让进程活下来的是 'no-sandbox'。而 'disable-gpu' 通过 appendSwitch 追加是**无效**的
+//     （命令行 --disable-gpu 才有用），保留它只是为了覆盖 GPU 弱可用的环境；
+//     所以走 npm script 时请用 NC_FORCE_SOFTWARE_RENDER=1，而不是指望参数透传。
+if (process.env.NC_FORCE_SOFTWARE_RENDER === '1' || process.argv.includes('--disable-gpu')) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+}
 let serverProc = null;
 let serverStarting = false;
 let mainWindow = null;
