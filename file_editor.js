@@ -513,6 +513,7 @@ function renderFileEditor() {
       '<span class="filePath" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.path) + '</span>' +
       '<div class="fileActions">' +
         '<button id="filePreviewBtn">预览</button>' +
+        '<button id="fileDeslopBtn" title="离线检测 AI 味（纯本地规则，不调用大模型；判定权始终在你）">AI 味检测</button>' +
         '<button id="fileSelChatBtn" class="fileChatBtn" title="选中文字加入对话；未选中则加入整个文件">选中加入对话</button>' +
         '<button id="fileEditAiBtn" title="AI 续写 / AI 改写">AI 修改</button>' +
         '<button id="fileSaveBtn">保存</button>' +
@@ -537,6 +538,7 @@ function renderFileEditor() {
     '</div>' +
     '<textarea id="fileContent" spellcheck="false">' + escapeHtml(f.content) + '</textarea>' +
     '<div class="fileStatus" id="fileStatus">' + (f.dirty ? '未保存' : '已保存') + ' · ' + f.content.replace(/\s/g, '').length + ' 字</div>' +
+    '<div id="fileDeslopBox"></div>' +
     '<div id="fileProposalBox"></div>';
   const ta = document.getElementById('fileContent');
   ta.addEventListener('input', () => {
@@ -563,6 +565,7 @@ function renderFileEditor() {
     });
   }
   document.getElementById('filePreviewBtn').addEventListener('click', toggleFilePreview);
+  document.getElementById('fileDeslopBtn').addEventListener('click', runFileDeslopScan);
   document.getElementById('fileEditAiBtn').addEventListener('click', (e) => {
     // 「AI 修改」合并了 续写/改写 两个动作：点击弹出菜单
     const btn = document.getElementById('fileEditAiBtn');
@@ -650,6 +653,108 @@ async function addFileToChatByPath(relPath) {
   } catch (e) {
     showToast('读取文件失败：' + e.message, 'error');
   }
+}
+
+// ── AI 味检测（文件编辑器入口）────────────────────────────
+// 与画布详情栏（app.js runDeslopScan）共用服务端 /api/deslop/scan 与 renderDeslop 渲染，
+// 差别只有两点：① 文本源是 #fileContent 而非 #editContent；
+//            ② 渲染后的「定位 / 重建基线 / 改写」三个回调要指向本编辑器。
+// 之所以不直接调 app.js 的 wireDeslopHits()：它内部硬编码 #editContent，
+// 在文件编辑器里点「定位」不会高亮到本编辑器。
+async function runFileDeslopScan() {
+  const box = document.getElementById('fileDeslopBox');
+  const ta = document.getElementById('fileContent');
+  if (!box || !ta) return;
+  const btn = document.getElementById('fileDeslopBtn');
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<div class="hint">检测中...</div>';
+  try {
+    const res = await fetch('/api/deslop/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject, content: ta.value })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    box.innerHTML = renderDeslop(d);
+    wireFileDeslopHits();
+    // 结果在编辑器下方，检测完自动滚过去（否则用户以为「点了没反应」）
+    try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+  } catch (e) {
+    box.innerHTML = '<div class="hint">检测失败：' + escapeHtml(e.message) + '</div>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function wireFileDeslopHits() {
+  const box = document.getElementById('fileDeslopBox');
+  const ta = document.getElementById('fileContent');
+  if (!box || !ta) return;
+
+  // 重建文风基线 → 用新基线重算
+  const rebuild = box.querySelector('.dsRebuild');
+  if (rebuild) rebuild.addEventListener('click', async () => {
+    rebuild.disabled = true; rebuild.textContent = '提取中...';
+    try {
+      const res = await fetch('/api/deslop/voiceprint', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      showToast('已从 ' + (d.voiceprint.chapters || 0) + ' 章提取文风基线', 'success');
+      runFileDeslopScan();
+    } catch (e) {
+      showToast('提取失败：' + e.message, 'error');
+      rebuild.disabled = false; rebuild.textContent = '提取文风基线';
+    }
+  });
+
+  // 改写命中句：服务端按「命中句」生成 file_edit 提案，交既有审阅 UI（不直接写盘）
+  // 注意：/api/deslop/rewrite 要求传 nodeId（改写要落到画布上的一个具体节点），
+  // 传 path 会被拒（"需要从画布上的节点发起"）。所以这里按当前文件反查 nodeId。
+  const rewrite = box.querySelector('.dsRewrite');
+  if (rewrite) rewrite.addEventListener('click', async () => {
+    const old = rewrite.textContent;
+    const f = openFiles.find(x => x.path === activeFilePath);
+    const filePath = f ? f.path : activeFilePath;
+    const node = Object.values(nodeMap || {}).find(n => n && n.file === filePath);
+    if (!node) {
+      showToast('这个文件不在画布节点里，无法生成改写提案（可先把它纳入扫描）', 'error');
+      return;
+    }
+    rewrite.disabled = true; rewrite.textContent = '改写中...';
+    try {
+      const res = await fetch('/api/deslop/rewrite', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject, nodeId: node.id, content: ta.value })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      showToast('已生成改写提案（' + d.applied + '/' + d.requested + ' 句），请审阅后接受', 'success');
+      if (d.proposal && typeof renderFileProposal === 'function') renderFileProposal(d.proposal);
+    } catch (e) {
+      showToast('改写失败：' + e.message, 'error');
+      rewrite.disabled = false; rewrite.textContent = old;
+    }
+  });
+
+  // 定位：选中命中的原文片段并滚动过去（textarea 没有 scrollToLine，按行数估算）
+  box.querySelectorAll('.dsLocate').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cur = document.getElementById('fileContent');
+      if (!cur) return;
+      const s = Number(btn.dataset.dsStart), e = Number(btn.dataset.dsEnd);
+      try {
+        cur.focus();
+        cur.setSelectionRange(s, e);
+        const lines = cur.value.slice(0, s).split('\n').length;
+        const avgLineH = cur.scrollHeight / Math.max(lines, 1);
+        cur.scrollTop = Math.max(0, lines * avgLineH - cur.clientHeight / 3);
+      } catch (_) {}
+    });
+  });
 }
 
 function toggleFilePreview() {

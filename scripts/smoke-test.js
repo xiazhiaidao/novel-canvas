@@ -1169,6 +1169,71 @@ async function main() {
     } catch (_) { return v; }
   });
 
+  await check('AI 味检测（文件编辑器）：入口 + 定位走 #fileContent + 改写走 nodeId', async () => {
+    // 画布详情栏有检测，文件编辑器此前没有——这条守住「两个入口都能用」。
+    // 关键回归点：文件编辑器的「定位」必须操作 #fileContent（画布侧硬编码 #editContent），
+    // 且 /api/deslop/rewrite 要求 nodeId（传 path 会被拒）。
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const j = (r) => r.json();
+      const fs = await fetch('/api/files?project=' + encodeURIComponent(currentProject)).then(j);
+      const all = [];
+      (function walk(ns) { for (const n of (ns || [])) { if (n.type === 'file') all.push(n.path); if (n.children) walk(n.children); } })(fs.files || []);
+      const md = all.filter(p => /\\.md$/.test(p));
+      const chap = md.find(p => /正文|第.*章/.test(p)) || md[0];
+      if (!chap) return JSON.stringify({ ok: false, why: 'no md file' });
+      if (typeof switchSidebarMode === 'function') switchSidebarMode('files');
+      await openFile(chap);
+      await sleep(250);
+      const btn = document.getElementById('fileDeslopBtn');
+      const box = document.getElementById('fileDeslopBox');
+      const ta = document.getElementById('fileContent');
+      if (!btn || !box || !ta) return JSON.stringify({ ok: false, why: 'no btn/box/ta', hasBtn: !!btn, hasBox: !!box, hasTa: !!ta });
+
+      // 点检测 → 等结果
+      btn.click();
+      for (let i = 0; i < 60; i++) { await sleep(100); if (box.querySelector('.dsHead')) break; }
+      const head = box.querySelector('.dsHead');
+      const scoreEl = box.querySelector('.dsScore');
+      const hits = box.querySelectorAll('.dsHit').length;
+      const locateBtns = box.querySelectorAll('.dsLocate').length;
+
+      // 「定位」必须作用于文件编辑器自己的 textarea
+      let located = false, locatedInFile = false, locatedInEdit = false;
+      const eb = document.getElementById('editContent');
+      const loc = box.querySelector('.dsLocate');
+      if (loc) {
+        ta.setSelectionRange(0, 0);
+        if (eb) eb.setSelectionRange(0, 0);
+        loc.click();
+        locatedInFile = ta.selectionEnd > ta.selectionStart;
+        locatedInEdit = eb ? (eb.selectionEnd > eb.selectionStart) : false;
+        located = locatedInFile;
+      }
+
+      // 改写：按文件反查 nodeId（传 path 会被服务端拒）
+      const node = Object.values(nodeMap || {}).find(n => n && n.file === chap);
+      let rewriteGuard = '';
+      if (node) {
+        const r = await fetch('/api/deslop/rewrite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: currentProject, path: chap, content: ta.value }) }).then(j);
+        rewriteGuard = String(r.error || '').slice(0, 20);   // 传 path 应当被拒
+      }
+      return JSON.stringify({ ok: !!head && !!scoreEl, score: scoreEl ? scoreEl.textContent : '',
+        hits, locateBtns, located, locatedInFile, locatedInEdit,
+        hasRewrite: !!box.querySelector('.dsRewrite'), nodeFound: !!node, rewriteGuard, failed: /检测失败/.test(box.textContent) });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      if (!o.ok) return v;
+      if (o.failed) return '检测失败（不应出现）: ' + v;
+      if (!o.locatedInFile) return '「定位」未作用于 #fileContent: ' + v;
+      if (o.locatedInEdit) return '「定位」误作用于画布 #editContent: ' + v;
+      if (o.nodeFound && !/节点/.test(o.rewriteGuard)) return 'rewrite 传 path 未被拒（护栏失效）: ' + o.rewriteGuard;
+      return 'OK(指数 ' + o.score + ', ' + o.hits + ' 处命中, 定位=' + o.locatedInFile + ', 改写按钮=' + o.hasRewrite + ')';
+    } catch (_) { return v; }
+  });
+
   await check('监控中心：标签页渲染 + 状态栏监控条', async () => {
     const v = await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
