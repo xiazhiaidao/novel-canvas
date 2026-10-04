@@ -712,6 +712,135 @@ async function main() {
     return ok ? 'OK(5列=25, 6列=1, 无章号=null)' : ('解析结果 ' + a + ',' + b + ',' + c);
   });
 
+  // ── 阶段 3：去 AI 味（离线规则引擎 + 文风指纹）────────────────────
+  await check('AI 味检测：规则引擎能区分 AI 稿与自然稿', async () => {
+    // 直接对纯函数做标定断言：AI 稿（汇报式结论句 + 解释性旁白 + 精确量化 + 清单式排比）
+    // 必须显著高于同主题的自然稿（短句、无解释旁白）。**不调用任何大模型。**
+    const { deslopAnalyze } = require(path.join(root, 'server.js'));
+    const aiText = [
+      '# 第一章 测试',
+      '',
+      '他花了三秒钟确认自己不在床上，又花了五秒想起昨晚没喝酒，然后坐了起来。',
+      '',
+      '这是一辆房车。',
+      '',
+      '车窗外的景色在移动，灰色路面，灰色天空，灰色荒野。',
+      '',
+      '没有路牌，没有标线，没有对面来车。',
+      '',
+      '这意味着他必须尽快搞清楚状况。'
+    ].join('\n');
+    const humanText = [
+      '# 第一章 测试',
+      '',
+      '他是被颠醒的。',
+      '',
+      '车在晃，发动机从脚底下震上来。',
+      '',
+      '操。',
+      '',
+      '不记得怎么躺下的。',
+      '',
+      '他坐起来，伸手摸了摸口袋，空的。'
+    ].join('\n');
+    const a = deslopAnalyze(aiText, null);
+    const h = deslopAnalyze(humanText, null);
+    const ok = a.score >= 60 && h.score < 30 && a.score - h.score >= 40 && a.distinctTypes >= 3;
+    return ok ? ('OK(AI稿 ' + a.score + ' / 自然稿 ' + h.score + ', 病灶 ' + a.distinctTypes + ' 类)')
+      : ('区分度不足: AI=' + a.score + ' 自然=' + h.score + ' 病灶=' + a.distinctTypes);
+  });
+
+  await check('AI 味检测：每条命中都有位置与理由(非黑箱)', async () => {
+    const v = await evalExpr(`(async () => {
+      const d = await fetch('/api/deslop/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject, content: '这是一辆车。\\n\\n他花了三秒钟确认自己不在床上。\\n\\n没有路牌，没有标线，没有对面来车。' }) }).then(r => r.json());
+      if (d.error) return JSON.stringify({ ok: false, why: d.error });
+      const hits = d.hits || [];
+      const allExplained = hits.length > 0 && hits.every(h => h.name && h.reason && typeof h.severity === 'number');
+      const positioned = hits.filter(h => h.end > h.start).length;
+      const shape = typeof d.score === 'number' && !!d.level && !!d.stats && Array.isArray(hits);
+      return JSON.stringify({ ok: shape && allExplained, shape, allExplained, hits: hits.length, positioned, score: d.score, level: d.level });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(' + o.hits + ' 处命中均含理由, ' + o.positioned + ' 处可定位, score=' + o.score + ')') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('AI 味检测：文风指纹可提取并参与判定', async () => {
+    const v = await evalExpr(`(async () => {
+      const p = await fetch('/api/deslop/voiceprint', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject }) }).then(r => r.json());
+      if (p.error) return JSON.stringify({ ok: false, why: p.error });
+      const g = await fetch('/api/deslop/voiceprint?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      const vp = p.voiceprint || {};
+      const ok = !!vp.avgSentenceLen && typeof vp.commaPerSentence === 'number' && vp.chapters >= 1 && !!(g.voiceprint);
+      const s = await fetch('/api/deslop/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject, content: '他说：\\n\\n这是一辆车。\\n\\n他花了三秒钟看了一眼。' }) }).then(r => r.json());
+      return JSON.stringify({ ok: ok && !!s.baseline, avg: vp.avgSentenceLen, comma: vp.commaPerSentence, chapters: vp.chapters });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(基线: 平均句长 ' + o.avg + ' 字 / 逗号 ' + o.comma + ' / ' + o.chapters + ' 章)') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('AI 味检测：改写接口只改命中句且走提案(不直写盘)', async () => {
+    // 只验证**护栏路径**，不触发真实 LLM：
+    // ① 不传节点 → 明确报错；② 传了节点但没有命中句 → 明确报错。
+    // 真正改写要花钱，属手动验收项，冒烟不碰。
+    const v = await evalExpr(`(async () => {
+      const j = (u, b) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+      const noNode = await j('/api/deslop/rewrite', { project: currentProject, content: '他坐了下来。\\n\\n风还在吹。' });
+      const ch = nodes.find(x => x.label === '章节');
+      const noHit = ch ? await j('/api/deslop/rewrite', { project: currentProject, nodeId: ch.id, content: '他坐了下来。\\n\\n风还在吹。' }) : { error: 'no chapter' };
+      const ok = /需要从画布上的节点发起/.test(noNode.error || '') && /没有可改写的命中句/.test(noHit.error || '');
+      // 顺带确认：有命中时面板会出现「改写命中句」按钮（只存在性，不点击）
+      const n2 = nodes.find(x => x.label === '章节') || nodes[0];
+      showDetail(n2);
+      await new Promise(r => setTimeout(r, 120));
+      document.getElementById('detailDeslopBtn').click();
+      const box = document.getElementById('deslopBox');
+      for (let i = 0; i < 50; i++) { await new Promise(r => setTimeout(r, 100)); if (box.querySelector('.dsHead')) break; }
+      const hasHits = box.querySelectorAll('.dsHit').length > 0;
+      const hasRewriteBtn = !!box.querySelector('.dsRewrite');
+      return JSON.stringify({ ok, noNodeErr: (noNode.error || '').slice(0, 24), noHitErr: (noHit.error || '').slice(0, 24), hasHits, hasRewriteBtn });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      const ok = o.ok && (!o.hasHits || o.hasRewriteBtn);
+      return ok ? ('OK(护栏: ' + o.noNodeErr + ' / ' + o.noHitErr + ')' + (o.hasHits ? ' + 按钮存在' : '')) : v;
+    } catch (_) { return v; }
+  });
+
+  await check('AI 味检测：详情面板按钮与结果面板可用', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const n = Object.values(nodeMap).find(x => x.label === '章节') || Object.values(nodeMap)[0];
+      if (!n) return JSON.stringify({ ok: false, why: 'no node' });
+      showDetail(n);
+      await sleep(150);
+      const btn = document.getElementById('detailDeslopBtn');
+      const box = document.getElementById('deslopBox');
+      if (!btn || !box) return JSON.stringify({ ok: false, why: 'no btn/box' });
+      btn.click();
+      for (let i = 0; i < 60; i++) { await sleep(100); if (box.querySelector('.dsHead')) break; }
+      const head = box.querySelector('.dsHead');
+      const score = box.querySelector('.dsScore');
+      const hits = box.querySelectorAll('.dsHit').length;
+      const canLocate = box.querySelectorAll('.dsLocate').length;
+      const ta = document.getElementById('editContent');
+      let located = false;
+      const loc = box.querySelector('.dsLocate');
+      if (loc && ta) { loc.click(); located = ta.selectionEnd > ta.selectionStart; }
+      return JSON.stringify({ ok: !!head && !!score && hits > 0, hasHead: !!head, score: score ? score.textContent : '', hits, canLocate, located });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(指数 ' + o.score + ', ' + o.hits + ' 处命中, ' + o.canLocate + ' 处可定位, 选中=' + o.located + ')') : v;
+    } catch (_) { return v; }
+  });
+
   await check('监控中心：标签页渲染 + 状态栏监控条', async () => {
     const v = await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));

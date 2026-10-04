@@ -809,6 +809,7 @@ let statsCacheKey = '';
 let statsCacheHtml = '';
 let healthCacheKey = '';
 let healthCacheHtml = '';
+let currentDetailNodeId = ''; // 当前详情面板展示的节点 id（AI 味改写用）
 
 function switchAnalysisTab(tab) {
   if (!ANALYSIS_TABS[tab]) tab = 'matrix';
@@ -1266,6 +1267,7 @@ function renderMarkdown(text) {
 
 function showDetail(n) {
   const a = nodeAxisData(n);
+  currentDetailNodeId = n.id; // AI 味改写要落到具体节点/文件
   const levels = (axisDef && axisDef.levels) || [];
   const typeOptions = ['role', 'faction', 'setting', 'outline', 'volume', 'chapter', 'foreshadow', 'context', 'unrecognized'].map(t =>
     '<option value="' + t + '"' + (n.type === t ? ' selected' : '') + '>' + typeToLabel(t) + '</option>').join('');
@@ -1285,11 +1287,13 @@ function showDetail(n) {
       '<button id="copyIdBtn" style="padding:4px 10px;border:1px solid var(--panel-border);border-radius:8px;background:transparent;cursor:pointer;color:var(--muted)">复制节点ID</button>' +
       '<button id="previewToggle" style="padding:4px 10px;border:1px solid var(--panel-border);border-radius:8px;background:transparent;cursor:pointer;color:var(--muted)">预览</button>' +
       '<button id="detailAddChatBtn" title="将整个节点内容加入对话（引用标签，不直接发送）">添加到对话</button>' +
+      '<button id="detailDeslopBtn" title="离线检测 AI 味（纯本地规则，不调用大模型；判定权始终在你）">AI 味检测</button>' +
     '</div>' +
     '<div id="preview" style="overflow:auto;max-height:300px"></div>' +
     '<label>完整 Markdown 内容（保存会写回原文件）</label>' +
     '<textarea id="editContent">' + escapeHtml(n.content || '') + '</textarea>' +
     '<div class="btnRow"><button id="saveBtn">保存到项目文件</button></div>' +
+    '<div id="deslopBox"></div>' +
     '<div class="status" id="saveStatus"></div>';
   const propSaveBtn = document.getElementById('propSave');
   if (propSaveBtn) {
@@ -1383,6 +1387,8 @@ function showDetail(n) {
     const status = document.getElementById('saveStatus');
     if (status) status.textContent = '已添加引用「' + (n.title || n.file) + '」，可在输入框继续输入问题后发送';
   });
+  const deslopBtn = document.getElementById('detailDeslopBtn');
+  if (deslopBtn) deslopBtn.addEventListener('click', () => runDeslopScan());
   document.getElementById('saveBtn').addEventListener('click', async () => {
     const content = editArea.value;
     const status = document.getElementById('saveStatus');
@@ -5538,6 +5544,142 @@ async function loadBackupList() {
   } catch (e) {
     wrap.innerHTML = '<div class="hint">加载失败：' + escapeHtml(e.message) + '</div>';
   }
+}
+
+// ── AI 味检测（离线规则引擎；服务端算，前端只渲染。判定权始终在作者）──────
+async function runDeslopScan() {
+  const box = document.getElementById('deslopBox');
+  const ta = document.getElementById('editContent');
+  if (!box || !ta) return;
+  box.innerHTML = '<div class="hint">检测中...</div>';
+  try {
+    const res = await fetch('/api/deslop/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject, content: ta.value })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    box.innerHTML = renderDeslop(d);
+    wireDeslopHits();
+    // 结果在编辑器下方，检测完自动滚过去（否则用户以为「点了没反应」）
+    try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+  } catch (e) {
+    box.innerHTML = '<div class="hint">检测失败：' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function deslopLevelColor(score) {
+  return score >= 60 ? 'dsBad' : (score >= 30 ? 'dsMid' : 'dsGood');
+}
+
+function renderDeslop(d) {
+  const st = d.stats || {};
+  const real = (d.hits || []).filter(h => (h.severity || 0) >= 2);
+  const info = (d.hits || []).filter(h => (h.severity || 0) < 2);
+  // 按病灶严重度排序（重的先看），同类最多列 4 条——否则一个反复出现的弱信号（逗号长句）
+  // 会把整屏刷满，用户看不到真正的问题。剩下的按「另有 N 处」提示。
+  const sorted = real.slice().sort((a, b) => (b.severity || 0) - (a.severity || 0));
+  const countByType = {};
+  for (const h of sorted) countByType[h.type] = (countByType[h.type] || 0) + 1;
+  const shown = {};
+  const listed = sorted.filter(h => { shown[h.type] = (shown[h.type] || 0) + 1; return shown[h.type] <= 4; });
+  const hiddenTypes = Object.keys(countByType).filter(t => countByType[t] > 4)
+    .map(t => { const nm = (sorted.find(h => h.type === t) || {}).name || t; return nm + ' 另有 ' + (countByType[t] - 4) + ' 处'; });
+  const hitRow = h =>
+    '<div class="dsHit">' +
+      '<div class="dsHitTop"><span class="dsType">' + escapeHtml(h.name) + '</span>' +
+        (h.text ? '<span class="dsText">' + escapeHtml(String(h.text).slice(0, 60)) + '</span>' : '') +
+        (h.start != null && h.end != null && h.end > h.start
+          ? '<button class="dsLocate" data-ds-start="' + h.start + '" data-ds-end="' + h.end + '">定位</button>' : '') +
+      '</div>' +
+      '<div class="dsReason">' + escapeHtml(h.reason || '') + '</div>' +
+    '</div>';
+  const baselineLine = d.baseline
+    ? '文风基线：平均句长 ' + d.baseline.avgSentenceLen + ' 字 · 每句逗号 ' + d.baseline.commaPerSentence + '（取自 ' + d.baseline.chapters + ' 章你的稿子）'
+    : '还没有你的文风基线——先提取一次，之后检测比的是「偏离你自己的写法」，比绝对标准准得多。';
+  return '' +
+    '<div class="dsHead">' +
+      '<span class="dsScore ' + deslopLevelColor(d.score) + '">' + d.score + '</span>' +
+      '<span class="dsLevel">' + escapeHtml(d.level) + '</span>' +
+      '<span class="dsMeta">' + st.han + ' 字 · ' + st.sentences + ' 句 · 平均句长 ' + st.avgSentenceLen +
+        ' · 命中 ' + real.length + ' 处 / ' + (d.distinctTypes || 0) + ' 类</span>' +
+      '<button class="dsRebuild" title="用本项目已写章节重新提取你的文风基线">' +
+        (d.baseline ? '重建文风基线' : '提取文风基线') + '</button>' +
+      (real.length ? '<button class="dsRewrite" title="只改上述命中句，生成提案供你审阅（不会直接写盘）">改写命中句</button>' : '') +
+    '</div>' +
+    '<div class="dsBaseline">' + escapeHtml(baselineLine) + '</div>' +
+    (real.length
+      ? listed.map(hitRow).join('') +
+        (hiddenTypes.length ? '<div class="dsMore">同类还有：' + escapeHtml(hiddenTypes.join(' · ')) + '</div>' : '')
+      : '<div class="dsClean">没有检测到明显 AI 味痕迹。' + (info.length ? '（另有 ' + info.length + ' 处轻微提示）' : '') + '</div>') +
+    (info.length
+      ? '<details class="dsInfoWrap"><summary>轻微提示 ' + info.length + ' 处（人会正常使用的词与节奏，仅提示）</summary>' +
+        info.slice(0, 12).map(hitRow).join('') +
+        (info.length > 12 ? '<div class="dsMore">另有 ' + (info.length - 12) + ' 处同类</div>' : '') +
+        '</details>'
+      : '') +
+    '<div class="dsNote">这是检测与建议：分数只作参考，最终判定权在你。' +
+      '规则来自你自己的改稿方法论（汇报式叙述 / 议论文式思考 / 段尾必点题 / 清单式描写）。</div>';
+}
+
+function wireDeslopHits() {
+  const box = document.getElementById('deslopBox');
+  if (!box) return;
+  const rebuild = box.querySelector('.dsRebuild');
+  if (rebuild) rebuild.addEventListener('click', async () => {
+    rebuild.disabled = true; rebuild.textContent = '提取中...';
+    try {
+      const res = await fetch('/api/deslop/voiceprint', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      showToast('已从 ' + (d.voiceprint.chapters || 0) + ' 章提取文风基线', 'success');
+      runDeslopScan(); // 用新基线重算
+    } catch (e) {
+      showToast('提取失败：' + e.message, 'error');
+      rebuild.disabled = false; rebuild.textContent = '提取文风基线';
+    }
+  });
+  const rewrite = box.querySelector('.dsRewrite');
+  if (rewrite) rewrite.addEventListener('click', async () => {
+    const ta = document.getElementById('editContent');
+    const old = rewrite.textContent;
+    rewrite.disabled = true; rewrite.textContent = '改写中...';
+    try {
+      const res = await fetch('/api/deslop/rewrite', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: currentProject, nodeId: currentDetailNodeId, content: ta ? ta.value : '' })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      showToast('已生成改写提案（' + d.applied + '/' + d.requested + ' 句），请在文件编辑器审阅', 'success');
+      // 打开目标文件并把提案交给既有审阅 UI（接受/拒绝都走 /api/apply_proposal）
+      if (typeof switchSidebarMode === 'function') switchSidebarMode('files');
+      if (typeof openFile === 'function') await openFile(d.proposal.file);
+      if (typeof renderFileProposal === 'function') renderFileProposal(d.proposal);
+    } catch (e) {
+      showToast('改写失败：' + e.message, 'error');
+      rewrite.disabled = false; rewrite.textContent = old;
+    }
+  });
+  box.querySelectorAll('.dsLocate').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ta = document.getElementById('editContent');
+      if (!ta) return;
+      const s = Number(btn.dataset.dsStart), e = Number(btn.dataset.dsEnd);
+      try {
+        ta.focus();
+        ta.setSelectionRange(s, e);
+        // 按平均行高估算滚动位置（textarea 没有 scrollToLine），宁可偏上
+        const lines = ta.value.slice(0, s).split('\n').length;
+        const avgLineH = ta.scrollHeight / Math.max(lines, 1);
+        ta.scrollTop = Math.max(0, lines * avgLineH - ta.clientHeight / 3);
+      } catch (_) {}
+    });
+  });
 }
 
 // ── 监控中心（单一数据源 /api/health）──────────────────────────────

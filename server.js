@@ -2300,6 +2300,304 @@ function looksLikeCharacterCard(node) {
   return CHARACTER_KEY_LINE.test(String(node.content || ''));
 }
 
+// ══ AI 味检测（离线规则引擎，零 LLM 成本）══════════════════════════════
+// 判定标准来自作者本人验证过的改稿手册（工作区技能 webnovel-de-ai-flavor）：
+//   AI 味不在词句，在【思维形态】。四种病灶：
+//     ① 汇报式叙述：动作 → 观察 → 结论，三段齐全，像工作报告
+//     ② 议论文式思考：人物思考有论点有论据有结论，不带情绪
+//     ③ 段尾必点题：每段/每节收尾都要总结、升华、拔高
+//     ④ 清单式描写：场景用并列名词罗列，没有焦点
+//   附加：比喻精确而多余、术语化口吻。
+//   ⚠️ 【短段落不是病】——网文短段是正常呼吸节奏，不做「段落太短」这类判定。
+// 每条命中都必须给出**位置 + 理由**，不做黑箱分数。
+
+// 词表规则。severity 即打分权重——**权重是按「能否区分 AI 稿与人稿」标定出来的**，
+// 不是拍脑袋：用《房车求生》现稿（作者认可）与「旧版备份/AI味修订前-20260926」（AI 稿）两组样本对跑。
+// 「因为/所以」这类词人也会用 → 只作提示（0.3），不参与实质打分。
+const DESLOP_WORD_RULES = [
+  { key: 'filler', name: '抽象填充词', severity: 1.5, words: ['仿佛', '似乎', '某种', '一丝', '一抹', '不禁', '缓缓', '深深', '微微', '淡淡', '莫名', '隐隐', '宛若', '彷佛', '不由得', '下意识地'] },
+  { key: 'explain', name: '解释性旁白', severity: 4, words: ['这意味着', '也就是说', '这说明', '这才是', '换句话说', '换句话', '归根结底', '说到底', '真正的'] },
+  { key: 'conclude', name: '段尾点题/升华', severity: 3, words: ['才是', '终究', '从来都是', '所谓', '已经站在'] },
+  { key: 'term', name: '术语化口吻', severity: 3, words: ['量级', '系数', '阈值', '维度', '概率密度', '不是一个量级'] },
+  { key: 'essay', name: '议论文式连接词', severity: 0.3, words: ['因为', '所以', '毕竟', '至少', '反而', '与其', '不如', '因此', '由此可见', '综上所述'] },
+];
+
+const DESLOP_REGEX_RULES = [
+  { key: 'reportLabel', name: '汇报式结论句', severity: 4, re: /^\s*(这|那)(是|就是|叫)[^，。！？]{0,12}[。]?\s*$/, reason: '「这是…」式贴标签结论句，把观察直接说成结论' },
+  { key: 'trivialQuant', name: '无意义精确量化', severity: 3, re: /(花了?|用了?|过了?)[^。！？]{0,4}[一二三四五六七八九十两\d]+\s*秒钟?/, reason: '给无关紧要的动作配精确秒数，是汇报式叙述的典型痕迹' },
+  { key: 'metaphor', name: '比喻精确而多余', severity: 2.5, re: /(像|仿佛|如同|宛如)[^。！？]{2,22}?(一样|一般|似的|扔进|落进|砸进)/, reason: '比喻交代得完整又工整，读者不需要的信息被补齐了' },
+];
+
+const DESLOP_PANEL_LINE = /^\s*【/;
+
+// ④ 清单式描写：只有**结构真正对仗**才算——AI 的罗列是同一个句式复读
+// （「没有路牌，没有标线，没有对面来车」/「衣服是陌生的，口袋是空的」）；
+// 人写的罗列句式是散的（「橱柜里三瓶水，两包压缩饼干，一盒火柴」）。
+// 只按「多个短分句」判会把正常报菜名也算命中——这是第一版最大的误报源。
+function isParallelList(sentence) {
+  const segs = sentence.replace(/[。！？\s]+$/, '').split(/[，、]/).map(x => x.trim()).filter(Boolean);
+  if (segs.length < 3) return null;
+  if (segs.some(s => /\d/.test(s))) return null;              // 含数字的多为状态/面板行
+  if (/[了着过]|看|走|说|想|听|坐|站|跑|笑|拿|放|低|抬/.test(segs.join(''))) {
+    // 有动作也不一定不是清单（「菱形，半透明，缩在角落」），但先从严，宁可漏报
+    const prefix = {};
+    for (const s of segs) if (s.length >= 2) { const k = s.slice(0, 2); prefix[k] = (prefix[k] || 0) + 1; }
+    const maxPrefix = Object.values(prefix).sort((a, b) => b - a)[0] || 0;
+    if (maxPrefix < 3) return null;
+    return segs.length;
+  }
+  const prefix = {};
+  for (const s of segs) if (s.length >= 2) { const k = s.slice(0, 2); prefix[k] = (prefix[k] || 0) + 1; }
+  const maxPrefix = Object.values(prefix).sort((a, b) => b - a)[0] || 0;
+  const endDe = segs.filter(s => s.endsWith('的')).length;
+  if (maxPrefix >= 3 || endDe >= 3) return segs.length;
+  return null;
+}
+
+// 逐句切分（保留位置），并过滤掉系统面板行/纯符号行
+function deslopSentences(text) {
+  const src = String(text || '');
+  const out = [];
+  const re = /[^。！？\n]*[。！？]|[^。！？\n]+$/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const raw = m[0];
+    if (!raw.trim()) { if (raw === '') break; continue; }
+    out.push({ text: raw, start: m.index, end: m.index + raw.length });
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  return out;
+}
+
+function deslopCharCount(text) {
+  return (String(text || '').match(/[\u4e00-\u9fff]/g) || []).length;
+}
+
+// 单个句子的结构化命中
+function deslopSentenceHits(s) {
+  const hits = [];
+  const t = s.text;
+  if (DESLOP_PANEL_LINE.test(t.trim())) return hits;      // 【系统面板】不算叙述
+  const han = deslopCharCount(t);
+  if (han < 2) return hits;
+
+  for (const rule of DESLOP_WORD_RULES) {
+    for (const w of rule.words) {
+      if (t.includes(w)) {
+        hits.push({ type: rule.key, name: rule.name, severity: rule.severity, text: t.trim(), start: s.start, end: s.end, reason: '出现「' + w + '」' });
+        break; // 同一规则单句只报一次
+      }
+    }
+  }
+  for (const rule of DESLOP_REGEX_RULES) {
+    if (rule.re.test(t)) {
+      hits.push({ type: rule.key, name: rule.name, severity: rule.severity, text: t.trim(), start: s.start, end: s.end, reason: rule.reason });
+      break;
+    }
+  }
+  // ④ 清单式描写：整句是结构对仗的罗列（见 isParallelList）
+  const listLen = isParallelList(t);
+  if (listLen) {
+    hits.push({ type: 'listOnly', name: '清单式描写', severity: 3, text: t.trim(), start: s.start, end: s.end, reason: '整句是 ' + listLen + ' 个同句式的短分句复读，没有焦点' });
+  }
+  // 标点节奏：逗号长句 / 破折号
+  const commas = (t.match(/，/g) || []).length;
+  if (commas >= 6) {
+    hits.push({ type: 'longComma', name: '逗号长句', severity: 1.5, text: t.trim().slice(0, 60), start: s.start, end: s.end, reason: '一句里 ' + commas + ' 个逗号，气口太密' });
+  }
+  if ((t.match(/——/g) || []).length >= 2) {
+    hits.push({ type: 'emDash', name: '破折号滥用', severity: 1, text: t.trim().slice(0, 60), start: s.start, end: s.end, reason: '一句里重复用破折号' });
+  }
+  return hits;
+}
+
+// 全文统计（用于句长均匀度、n-gram 自重复、对话占比）
+function deslopStats(text) {
+  const src = String(text || '');
+  const lines = src.split('\n').map(l => l.trim()).filter(Boolean)
+    .filter(l => !DESLOP_PANEL_LINE.test(l) && !l.startsWith('#'));
+  const sentences = [];
+  for (const l of lines) for (const s of deslopSentences(l)) {
+    if (DESLOP_PANEL_LINE.test(s.text.trim())) continue;
+    if (deslopCharCount(s.text) >= 2) sentences.push(s.text.trim());
+  }
+  const lens = sentences.map(s => deslopCharCount(s));
+  const han = deslopCharCount(src);
+  const avg = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : 0;
+  const variance = lens.length ? lens.reduce((a, b) => a + (b - avg) * (b - avg), 0) / lens.length : 0;
+  const std = Math.sqrt(variance);
+  const dialogueChars = lines.filter(l => l.startsWith('“') || l.startsWith('"')).reduce((a, l) => a + deslopCharCount(l), 0);
+  return {
+    han,
+    sentences: sentences.length,
+    paragraphs: lines.length,
+    avgSentenceLen: Math.round(avg * 10) / 10,
+    sentenceStd: Math.round(std * 10) / 10,
+    commaPerSentence: sentences.length ? Math.round(((src.match(/，/g) || []).length / sentences.length) * 100) / 100 : 0,
+    dialogueRatio: han ? Math.round((dialogueChars / han) * 1000) / 1000 : 0,
+    exclamPer1000: han ? Math.round((((src.match(/！/g) || []).length) / han) * 1000) * 10 / 10 : 0,
+    emDashPer1000: han ? Math.round((((src.match(/——/g) || []).length) / han) * 1000) * 10 / 10 : 0,
+  };
+}
+
+// n-gram 自重复：同一 4 字串在正文里重复 ≥3 次（排除面板与标题）
+function deslopRepeats(text) {
+  const src = String(text || '');
+  const body = src.split('\n').filter(l => !DESLOP_PANEL_LINE.test(l.trim()) && !l.trim().startsWith('#')).join('\n');
+  const grams = new Map();
+  const han = body.replace(/[^\u4e00-\u9fff]/g, '');
+  for (let i = 0; i + 4 <= han.length; i++) {
+    const g = han.slice(i, i + 4);
+    grams.set(g, (grams.get(g) || 0) + 1);
+  }
+  const out = [];
+  for (const [g, n] of grams) {
+    if (n >= 5) out.push({ gram: g, count: n });   // 阈值 5：中文里 4 字串复用本来就常见，低阈值只会制造噪音
+  }
+  return out.sort((a, b) => b.count - a.count).slice(0, 10);
+}
+
+function deslopAnalyze(text, baseline) {
+  const src = String(text || '');
+  const lines = src.split('\n');
+  const hits = [];
+  let searchFrom = 0;
+  for (const line of lines) {
+    const idx = src.indexOf(line, searchFrom);
+    searchFrom = idx + line.length;
+    for (const s of deslopSentences(line)) {
+      const shifted = { text: s.text, start: idx + s.start, end: idx + s.end };
+      for (const h of deslopSentenceHits(shifted)) hits.push(h);
+    }
+  }
+  const stats = deslopStats(src);
+  const repeats = deslopRepeats(src);
+
+  // 句长均匀度：句子数量够多、标准差却极低 → 句式过于整齐（AI 的典型特征）
+  let uniform = null;
+  if (stats.sentences >= 8 && stats.sentenceStd < 4) {
+    uniform = {
+      type: 'uniform', name: '句长过于均匀', severity: 2, start: 0, end: 0, text: '',
+      reason: '本段 ' + stats.sentences + ' 句，长度标准差仅 ' + stats.sentenceStd + '（平均 ' + stats.avgSentenceLen + ' 字）——真人写作句长起伏更大'
+    };
+    hits.push(uniform);
+  }
+  for (const r of repeats.slice(0, 3)) {
+    hits.push({
+      type: 'repeat', name: '四字串自重复', severity: 0.3, start: 0, end: 0, text: r.gram,
+      reason: '「' + r.gram + '」在正文里重复出现 ' + r.count + ' 次（仅提示，很多是道具/术语名）'
+    });
+  }
+  if (stats.exclamPer1000 > 8) {
+    hits.push({ type: 'exclam', name: '感叹号偏密', severity: 1.5, start: 0, end: 0, text: '', reason: '每千字 ' + stats.exclamPer1000 + ' 个感叹号，情绪靠标点喊出来' });
+  }
+  if (stats.emDashPer1000 > 12) {
+    hits.push({ type: 'emDashDense', name: '破折号偏密', severity: 1.5, start: 0, end: 0, text: '', reason: '每千字 ' + stats.emDashPer1000 + ' 处破折号' });
+  }
+
+  // 文风指纹偏离：与作者自己的基线比，而不是与"绝对标准"比。
+  // 只查**正向**偏离（句子更长、逗号更多）——AI 稿的特征是变长变滑，
+  // 而作者亲手改短的稿子不该因为"比基线短"被扣分（第一版就是双向判定，把好稿子判成了 AI 味）。
+  const deviations = [];
+  if (baseline) {
+    if (baseline.avgSentenceLen && stats.sentences >= 8) {
+      const d = stats.avgSentenceLen - baseline.avgSentenceLen;
+      if (d >= 3.5) {
+        deviations.push({
+          type: 'voiceLen', name: '句子比你自己平时更长', severity: 3, start: 0, end: 0, text: '',
+          reason: '平均句长 ' + stats.avgSentenceLen + ' 字，你自己已认可章节的基线是 ' + baseline.avgSentenceLen + ' 字（长 ' + Math.round(d * 10) / 10 + '）'
+        });
+      }
+    }
+    if (baseline.commaPerSentence && stats.sentences >= 8) {
+      const d = stats.commaPerSentence - baseline.commaPerSentence;
+      if (d >= 0.45) {
+        deviations.push({
+          type: 'voiceComma', name: '逗号比你自己平时更密', severity: 2, start: 0, end: 0, text: '',
+          reason: '每句逗号 ' + stats.commaPerSentence + ' 个，你的基线是 ' + baseline.commaPerSentence + ' 个——你平时句子更短'
+        });
+      }
+    }
+  }
+  for (const d of deviations) hits.push(d);
+
+  // 打分：按**命中的不同病灶种类**计分，而不是简单累加命中条数。
+  // 理由（标定得出）：作者认可的稿子里也会偶尔出现一次排比或一个长句（那是刻意的修辞），
+  // 若按条数累加，好稿子会被判成 AI 味——第一版就是这么错的。
+  // 真正的 AI 味特征是「一篇里同时出现好几种病灶」，所以 distinct（种类数）权重最高。
+  // 同一病灶重复出现按 2 次封顶（出现 6 次不比出现 2 次更糟）。
+  // 只有 severity ≥ 2 的高特异性信号参与打分；filler（仿佛/缓缓）、essay（因为/所以）、
+  // repeat（道具名复用）这类人会正常使用的词只作提示。
+  const scored = hits.filter(h => (h.severity || 0) >= 2);
+  const typeCount = {};
+  for (const h of scored) typeCount[h.type] = (typeCount[h.type] || 0) + 1;
+  let cappedWeighted = 0;
+  for (const t of Object.keys(typeCount)) {
+    const all = scored.filter(h => h.type === t);
+    cappedWeighted += all.slice(0, 2).reduce((a, h) => a + h.severity, 0);
+  }
+  const distinct = Object.keys(typeCount).length;
+  let score = Math.round(Math.min(100, distinct * 14 + Math.max(0, cappedWeighted - distinct) * 8));
+  if (stats.han < 120) score = Math.min(score, 60); // 文本太短，统计不可靠，不给高分
+  const level = score >= 60 ? 'AI 味重' : (score >= 30 ? '有 AI 痕迹' : '基本自然');
+
+  return {
+    score, level, hits, stats, repeats, baseline: baseline || null,
+    hitCount: hits.length,
+    realHits: scored.length,      // 参与打分的命中数
+    distinctTypes: distinct       // 命中了多少种病灶
+  };
+}
+
+// 文风指纹：从作者已认可章节提取基线（句长 / 标点 / 对话占比），与其比"偏离你自己"而非"绝对标准"
+function chaptersTextOf(root, fileFilter) {
+  const chapters = buildNodes(root).filter(n => n.label === '章节');
+  const list = fileFilter ? chapters.filter(c => fileFilter(c)) : chapters;
+  return list.map(c => String(c.content || '')).join('\n');
+}
+function buildVoiceprint(root) {
+  const chapters = buildNodes(root).filter(n => n.label === '章节');
+  const allText = chapters.map(c => String(c.content || '')).join('\n');
+  // 先用全部章节算一个「临时基线」，拿它给每章打分，**剔除明显 AI 味重的章**（≥60 分）再重建。
+  // 为什么必须剔除：若整本书都是 AI 稿，基线自己就偏 AI，检测等于拿 AI 当标准，会失灵。
+  // 只在章节数 ≥5、且剔完仍留下足够样本（≥40% 且 ≥2 章）时才剔，避免把小项目剔空。
+  const provisional = deslopStats(allText);
+  let kept = chapters;
+  let excluded = 0;
+  if (chapters.length >= 5) {
+    const scored = chapters.map(c => ({ c, s: deslopAnalyze(String(c.content || ''), provisional).score }));
+    const keep = scored.filter(x => x.s < 60);
+    const minKeep = Math.max(2, Math.floor(chapters.length * 0.4));
+    if (keep.length >= minKeep) { kept = keep.map(x => x.c); excluded = chapters.length - kept.length; }
+  }
+  const s = deslopStats(kept.map(c => String(c.content || '')).join('\n'));
+  const vp = {
+    project: projectNameOfRoot(root),
+    builtAt: new Date().toISOString(),
+    chapters: kept.length,
+    excludedChapters: excluded,
+    avgSentenceLen: s.avgSentenceLen,
+    sentenceStd: s.sentenceStd,
+    commaPerSentence: s.commaPerSentence,
+    dialogueRatio: s.dialogueRatio,
+    paragraphsPer1000: s.han ? Math.round((s.paragraphs / s.han) * 1000 * 10) / 10 : 0,
+    sentencesPer1000: s.han ? Math.round((s.sentences / s.han) * 1000 * 10) / 10 : 0,
+    han: s.han
+  };
+  try {
+    fs.mkdirSync(path.join(ROOT, '.data'), { recursive: true });
+    fs.writeFileSync(voiceprintFile(vp.project), JSON.stringify(vp, null, 2), 'utf8');
+  } catch (_) {}
+  return vp;
+}
+function voiceprintFile(project) {
+  const safe = String(project || 'default').replace(/[\\/:*?"<>|]/g, '_');
+  return path.join(ROOT, '.data', 'voiceprint-' + safe + '.json');
+}
+function loadVoiceprint(project) {
+  try { return JSON.parse(fs.readFileSync(voiceprintFile(project), 'utf8')); } catch (_) { return null; }
+}
+
 // ── 时间线 ───────────────────────────────────────────────
 // 时间线改为作者手动维护的重要节点（存于布局文件 timelineNodes，见 /api/timeline）。
 // 旧版自动抽取「第N天 / 年月日」已移除：长篇剧情动辄跨越百年，按时间标记无法准确表达。
@@ -2806,6 +3104,144 @@ const server = http.createServer(async (req, res) => {
       const project = url.searchParams.get('project') || defaultProjectName();
       const root = resolveProjectRoot(project);
       return sendJson(res, { ok: true, ...buildBookStats(root) });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+
+  // AI 味检测：离线规则引擎（零 LLM 成本），返回指数 + 逐句命中（位置+理由）
+  if (pathname === '/api/deslop/scan' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = body.project || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      let text = typeof body.content === 'string' ? body.content : '';
+      if (!text && body.nodeId) {
+        const n = buildNodes(root).find(x => x.id === body.nodeId);
+        if (!n) return sendJson(res, { error: 'node not found: ' + body.nodeId });
+        text = String(n.content || '');
+      }
+      if (!text.trim()) return sendJson(res, { error: '没有可检测的正文' });
+      const vp = loadVoiceprint(projectNameOfRoot(root));
+      return sendJson(res, { ok: true, ...deslopAnalyze(text, vp) });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+  if (pathname === '/api/deslop/voiceprint' && req.method === 'GET') {
+    try {
+      const project = url.searchParams.get('project') || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      const vp = loadVoiceprint(projectNameOfRoot(root));
+      return sendJson(res, { ok: true, voiceprint: vp });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+  if (pathname === '/api/deslop/voiceprint' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = body.project || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      const vp = buildVoiceprint(root);
+      return sendJson(res, { ok: true, voiceprint: vp });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+
+  // AI 味针对性改写：**只改命中的句子**，产出 file_edit 提案供审阅（绝不整章重写、绝不绕过提案写盘）
+  if (pathname === '/api/deslop/rewrite' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = body.project || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      const nodes = buildNodes(root);
+      const node = body.nodeId ? nodes.find(n => n.id === body.nodeId) : null;
+      if (!node || !node.file) return sendJson(res, { error: '需要从画布上的节点发起（改写要落到具体文件）' });
+      const content = typeof body.content === 'string' && body.content.trim() ? body.content : String(node.content || '');
+      if (!content.trim()) return sendJson(res, { error: '没有可改写的正文' });
+      const vp = loadVoiceprint(projectNameOfRoot(root));
+      const analysis = deslopAnalyze(content, vp);
+      let targets = analysis.hits.filter(h => (h.severity || 0) >= 2 && h.end > h.start);
+      if (Array.isArray(body.hitIndexes) && body.hitIndexes.length) {
+        const real = analysis.hits.filter(h => (h.severity || 0) >= 2 && h.end > h.start);
+        targets = real.filter((h, i) => body.hitIndexes.includes(i));
+      }
+      // 先把「没什么可改的」这种便宜判定做掉，别让用户先去保存一趟才被告知无句可改
+      if (!targets.length) return sendJson(res, { error: '没有可改写的命中句（先跑一次检测）' });
+      // 与磁盘比对：不一致就先让用户保存，避免生成一个必然冲突的提案
+      let disk = '';
+      try { disk = readText(node.file, root); } catch (_) {}
+      if (disk && disk !== content) return sendJson(res, { error: '编辑器内容与磁盘不一致，请先保存再改写（否则提案会冲突）' });
+      // 同一句被多条规则命中时只提交一次
+      const seen = new Set();
+      const sentences = [];
+      for (const h of targets) {
+        const key = h.start + ':' + h.end;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        sentences.push({ text: h.text, name: h.name, reason: h.reason });
+        if (sentences.length >= 12) break;   // 一次最多 12 句，控制成本与上下文
+      }
+      const api = getApiConfig();
+      if (!api) throw new Error('AI 对话未配置：请设置 DEEPSEEK_API_KEY 后重启服务');
+      const sys = '你是网文润色编辑，专治「AI 味」。只改写我给你列出的句子，**保留全部剧情信息、人物名、地名、设定数值、叙事视角与人称**。'
+        + '原则：删掉解释性旁白与段尾点题；把议论文式的推理改成直觉与动作；拆掉结构对仗的并列罗列；句子该短就短，像人写的；'
+        + '不新增前文没有的事实，不改变事件顺序。只输出 JSON 数组，不要 Markdown 围栏、不要解释：'
+        + '[{"original":"原句（必须与我给的一字不差）","rewritten":"改写后"}]';
+      const vpTxt = vp
+        ? ('作者文风基线：平均句长 ' + vp.avgSentenceLen + ' 字，每句逗号 ' + vp.commaPerSentence + ' 个，对话占比 ' + vp.dialogueRatio + '。改写的句子要贴近这个节奏。')
+        : '（该项目还没有文风基线，按「短句、少逗号、去解释」处理）';
+      const userMsg = '【' + vpTxt + '】\n\n【需要改写的句子】\n'
+        + sentences.map((s, i) => (i + 1) + '. ' + s.text + '\n   （命中：' + s.name + '——' + s.reason + '）').join('\n');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 120000);
+      let parsed = null;
+      try {
+        const r = await fetch(api.base + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api.apiKey },
+          body: JSON.stringify({ model: api.model, messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: userMsg }
+          ], stream: false }),
+          signal: controller.signal
+        });
+        const data = await r.json();
+        recordUsage(api.model, data.usage, data, project);
+        const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
+        parsed = parseJsonFromAI(reply);
+        if (!parsed) throw new Error('AI 改写结果无法解析：' + String(reply).slice(0, 200));
+      } finally {
+        clearTimeout(timer);
+      }
+      const arr = Array.isArray(parsed) ? parsed : (parsed.replacements || parsed.items || []);
+      let newContent = content;
+      let applied = 0;
+      for (const r of arr) {
+        if (!r || typeof r.rewritten !== 'string' || !r.rewritten.trim()) continue;
+        const orig = String(r.original || '').trim();
+        if (!orig || !newContent.includes(orig)) continue;
+        if (orig === r.rewritten.trim()) continue;
+        newContent = newContent.replace(orig, r.rewritten.trim());
+        applied++;
+      }
+      if (!applied) throw new Error('模型没有给出可用的改写（返回格式或原句不匹配）');
+      if (countWords(newContent) > countWords(content) * 1.25) {
+        return sendJson(res, { error: '改写把篇幅撑大了 25% 以上，已放弃生成提案（AI 味倾向是「收敛」而不是「加料」）' });
+      }
+      const proposal = proposalSet({
+        id: 'p' + (proposalSeq++),
+        kind: 'file_edit',
+        file: node.file,
+        title: node.title + '（AI 味改写）',
+        oldContent: content,
+        newContent,
+        root,
+        project: projectNameOfRoot(root)
+      });
+      return sendJson(res, { ok: true, proposal, applied, requested: sentences.length });
     } catch (e) {
       return sendJson(res, { error: e.message });
     }
@@ -3985,4 +4421,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf, buildProjectHealth, foreshadowPlantedChapter };
+module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf, buildProjectHealth, foreshadowPlantedChapter, deslopAnalyze, deslopStats, buildVoiceprint, loadVoiceprint };
