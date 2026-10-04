@@ -40,9 +40,10 @@ function switchSidebarMode(mode) {
     document.getElementById('sidebarShow').classList.remove('show');
   }
   fileMode = mode === 'files';
+  sidebarEl.classList.toggle('responsive-open', window.innerWidth <= 1180 && fileMode);
   document.getElementById('activityCanvas').classList.toggle('on', !fileMode);
   document.getElementById('activityFiles').classList.toggle('on', fileMode);
-  document.getElementById('sidebarTitle').textContent = fileMode ? '文件' : '画布';
+  document.getElementById('sidebarTitle').textContent = fileMode ? '正文与资料' : '内容导航';
   document.getElementById('canvasPanel').style.display = fileMode ? 'none' : 'flex';
   document.getElementById('filePanel').style.display = fileMode ? 'flex' : 'none';
   if (fileMode) {
@@ -56,6 +57,9 @@ function switchSidebarMode(mode) {
 
 function activateEditorTab(kind) {
   activeEditorKind = kind;
+  document.body.classList.toggle('editing-file', kind === 'file');
+  document.getElementById('activityCanvas').classList.toggle('on', kind === 'canvas');
+  document.getElementById('activityFiles').classList.toggle('on', kind === 'file' || fileMode);
   const canvasTab = document.getElementById('canvasTab');
   const canvasWrap = document.getElementById('canvasWrap');
   const fileEditor = document.getElementById('fileEditor');
@@ -63,7 +67,9 @@ function activateEditorTab(kind) {
   canvasWrap.classList.toggle('hidden', kind !== 'canvas');
   fileEditor.classList.toggle('active', kind === 'file');
   if (kind === 'file') {
+    if (window.innerWidth <= 1180) document.getElementById('sidebar').classList.remove('responsive-open');
     collapseDetailForFileEditor();
+    document.dispatchEvent(new Event('activeFileChanged'));
   } else {
     expandDetailAfterFileEditor();
     if (typeof updateView === 'function') updateView();
@@ -231,6 +237,19 @@ async function openFile(path) {
   renderFileEditor();
   refreshFileTreeActive();
   activateEditorTab('file');
+}
+
+async function openFileProposal(proposal) {
+  const existing = await fetch('/api/file?project=' + encodeURIComponent(currentProject) + '&path=' + encodeURIComponent(proposal.file)).then(r => r.json());
+  if (existing.error && proposal.oldContent !== '') throw new Error(existing.error);
+  if (existing.error && !openFiles.some(f => f.path === proposal.file)) {
+    openFiles.push({ path: proposal.file, name: proposal.file.split('/').pop(), content: '', savedContent: '', dirty: false, pendingCreate: true });
+    activeFilePath = proposal.file;
+    renderFileTabs();
+    renderFileEditor();
+    activateEditorTab('file');
+  } else await openFile(proposal.file);
+  renderFileProposal(proposal);
 }
 
 // 从「全项目搜索」结果跳转：打开文件并定位到指定行。
@@ -502,6 +521,7 @@ function initFileFindReplace(ta, f) {
 function renderFileEditor() {
   const body = document.getElementById('fileEditorBody');
   if (!body) return;
+  body.classList.remove('reviewing-proposal');
   if (!activeFilePath) {
     body.innerHTML = '<div class="fileEditorEmpty">从左侧文件树选择 .md 文件<br>可多标签编辑，支持 AI 改写 / 续写</div>';
     return;
@@ -510,14 +530,16 @@ function renderFileEditor() {
   if (!f) return;
   body.innerHTML =
     '<div class="fileToolbar">' +
-      '<span class="filePath" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.path) + '</span>' +
+      '<span class="filePath" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.name.replace(/\.md$/i,'')) + '</span>' +
       '<div class="fileActions">' +
         '<button id="filePreviewBtn">预览</button>' +
+        '<button id="fileSaveBtn">保存</button>' +
+        '<details class="fileTools"><summary>写作工具</summary><div>' +
         '<button id="fileDeslopBtn" title="离线检测 AI 味（纯本地规则，不调用大模型；判定权始终在你）">AI 味检测</button>' +
         '<button id="fileSelChatBtn" class="fileChatBtn" title="选中文字加入对话；未选中则加入整个文件">选中加入对话</button>' +
         '<button id="fileEditAiBtn" title="AI 续写 / AI 改写">AI 修改</button>' +
-        '<button id="fileSaveBtn">保存</button>' +
         '<button id="fileDeleteBtn" class="danger">删除</button>' +
+        '</div></details>' +
       '</div>' +
     '</div>' +
     '<div id="filePreviewBox" style="display:none"></div>' +
@@ -541,7 +563,13 @@ function renderFileEditor() {
     '<div id="fileDeslopBox"></div>' +
     '<div id="fileProposalBox"></div>';
   const ta = document.getElementById('fileContent');
+  if (f.pendingCreate) {
+    ta.readOnly = true;
+    ['fileSaveBtn', 'fileDeleteBtn', 'fileEditAiBtn'].forEach(id => { document.getElementById(id).disabled = true; });
+    document.getElementById('fileStatus').textContent = '新文件提案 · 接受后才会创建文件';
+  }
   ta.addEventListener('input', () => {
+    if (f.pendingCreate) return;
     f.content = ta.value;
     f.dirty = f.content !== f.savedContent;
     if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
@@ -628,6 +656,7 @@ function renderFileEditor() {
       addWholeFileToChat(f);
     }
   });
+  if (currentFileProposal && currentFileProposal.file === f.path) renderFileProposal(currentFileProposal);
   if (typeof updateStatusBar === 'function') updateStatusBar();
 }
 
@@ -775,23 +804,24 @@ function toggleFilePreview() {
 }
 
 async function saveFile(f) {
-  if (!f) return;
+  if (!f || f.pendingCreate) return;
   if (!openFiles.includes(f)) return; // 已关闭/已丢弃的文件不写盘
+  const project = currentProject, submittedContent = f.content;
   const st = document.getElementById('fileStatus');
   if (st && f.path === activeFilePath) st.textContent = '保存中...';
   try {
     const res = await fetch('/api/file/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: currentProject, path: f.path, content: f.content })
+      body: JSON.stringify({ project, path: f.path, content: submittedContent })
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    f.savedContent = f.content;
-    f.dirty = false;
-    if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
-    if (st && f.path === activeFilePath) st.textContent = '已保存';
+    f.savedContent = submittedContent;
+    f.dirty = f.content !== submittedContent;
+    if (st && f.path === activeFilePath) st.textContent = f.dirty ? '未保存 · 将自动保存' : '已保存';
     renderFileTabs();
+    await refreshProjectMonitor(project).catch(() => {});
   } catch (e) {
     if (st && f.path === activeFilePath) st.textContent = '保存失败：' + e.message;
   }
@@ -928,55 +958,103 @@ async function aiEditFile(mode) {
   }
 }
 
+function fileProposalChange(proposal) {
+  const before = String(proposal.oldContent || '').split('\n'), after = String(proposal.newContent || '').split('\n');
+  let start = 0, oldEnd = before.length, newEnd = after.length;
+  while (start < oldEnd && start < newEnd && before[start] === after[start]) start++;
+  while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
+  return { line: start + 1, removed: before.slice(start, oldEnd), added: after.slice(start, newEnd) };
+}
+
+async function dismissFileProposal(proposal) {
+  if (currentFileProposal?.id === proposal.id) currentFileProposal = null;
+  const box = document.getElementById('fileProposalBox');
+  if (box) box.innerHTML = '';
+  document.getElementById('fileEditorBody')?.classList.remove('reviewing-proposal');
+  const pending = openFiles.find(f => f.path === proposal.file && f.pendingCreate);
+  if (pending) await closeFile(pending.path);
+}
+
 function renderFileProposal(proposal) {
   const box = document.getElementById('fileProposalBox');
   if (!box || !proposal) return;
   currentFileProposal = proposal;
+  document.getElementById('fileEditorBody').classList.add('reviewing-proposal');
+  const change = fileProposalChange(proposal);
+  const sourceNode = proposal.nodeId ? nodeMap[proposal.nodeId] : nodes.find(n => n.file === proposal.file && n.content === proposal.oldContent);
+  const baseLine = ['edit', 'delete'].includes(proposal.kind) ? (sourceNode?.startLine || 1) : 1;
   box.innerHTML =
     '<div class="fileDiffBox">' +
       '<h4>AI 修改「' + escapeHtml(proposal.title || proposal.file) + '」</h4>' +
-      '<div class="fileDiffCols">' +
+      '<div class="fileReviewChanges"><section><div class="fileReviewLabel">原文变更区间（区间内可能含未修改行）</div>' +
+      change.removed.map((line, i) => '<div class="fileReviewLine removed">− ' + (baseLine + change.line - 1 + i) + '  ' + escapeHtml(line) + '</div>').join('') +
+      '</section><section><div class="fileReviewLabel">建议替换为</div>' + change.added.map(line => '<div class="fileReviewLine added">＋ ' + escapeHtml(line) + '</div>').join('') + '</section></div>' +
+      '<button class="locateOriginal">定位原文</button><details><summary>查看完整修改前后内容</summary><div class="fileDiffCols">' +
         '<div><div class="fileDiffLabel old">旧内容</div><pre class="old">' + escapeHtml(proposal.oldContent || '（空）') + '</pre></div>' +
         '<div><div class="fileDiffLabel new">新内容</div><pre class="new">' + escapeHtml(proposal.newContent || '（空）') + '</pre></div>' +
-      '</div>' +
+      '</div></details>' +
       '<div class="fileDiffActions">' +
-        '<button class="accept">接受</button>' +
-        '<button class="reject">拒绝</button>' +
+        '<button class="reject">拒绝修改</button><button class="adjust">继续调整</button><button class="return">返回正文</button>' +
+        '<button class="accept">接受修改</button>' +
       '</div>' +
     '</div>';
   box.querySelector('.accept').addEventListener('click', () => acceptFileProposal(proposal.id));
+  box.querySelector('.locateOriginal').onclick = () => {
+    document.getElementById('fileEditorBody').classList.remove('reviewing-proposal');
+    jumpTextareaToLine(document.getElementById('fileContent'), baseLine + change.line - 1);
+  };
+  box.querySelector('.return').onclick = () => document.getElementById('fileEditorBody').classList.remove('reviewing-proposal');
+  box.querySelector('.adjust').onclick = () => {
+    addSelectionToChat(proposal.file, (proposal.title || proposal.file) + '（待审阅方案）', proposal.newContent || proposal.oldContent, '', '提案', true);
+    document.getElementById('chatAllowProposals').checked = true;
+    document.getElementById('chatMode').value = 'agent';
+    chatInput.value = '请继续调整「' + (proposal.title || proposal.file) + '」的修改方案：\n';
+    chatInput.focus();
+    if (typeof writingTaskChanged === 'function') writingTaskChanged();
+  };
   box.querySelector('.reject').addEventListener('click', async () => {
     try {
-      await fetch('/api/proposals/reject', {
+      const d = await fetch('/api/proposals/reject', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: proposal.id })
-      });
-    } catch (e) { /* 忽略网络错误，仍关闭面板 */ }
-    currentFileProposal = null;
-    box.innerHTML = '';
+      }).then(r => r.json());
+      if (d.error) throw new Error(d.error);
+      if (typeof markChatProposal === 'function') markChatProposal(proposal.id, 'rejected');
+      await dismissFileProposal(proposal);
+    } catch (e) { showToast('拒绝失败：' + e.message, 'error'); }
   });
 }
 
 async function acceptFileProposal(id) {
   const p = currentFileProposal;
   if (!p || p.id !== id) return;
+  const project = currentProject;
+  const opened = openFiles.find(f => f.path === p.file);
+  const reviewBuffer = opened?.content;
+  if (opened && opened.dirty) {
+    showToast('文件有未保存修改，请先保存或处理草稿，再接受提案', 'error');
+    return;
+  }
   try {
     const res = await fetch('/api/apply_proposal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, project: currentProject })
+      body: JSON.stringify({ id, project })
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    if (project !== currentProject) return;
+    if (typeof markChatProposal === 'function') markChatProposal(id, 'applied');
     const f = openFiles.find(x => x.path === p.file);
     if (f) {
-      const readRes = await fetch('/api/file?project=' + encodeURIComponent(currentProject) + '&path=' + encodeURIComponent(p.file));
+      const readRes = await fetch('/api/file?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(p.file));
       const rd = await readRes.json();
       if (!rd.error) {
-        f.content = rd.content;
+        if (f.content === reviewBuffer) f.content = rd.content;
         f.savedContent = rd.content;
-        f.dirty = false;
+        f.dirty = f.content !== rd.content;
+        f.pendingCreate = false;
       }
     }
     const box = document.getElementById('fileProposalBox');
@@ -984,9 +1062,9 @@ async function acceptFileProposal(id) {
     currentFileProposal = null;
     renderFileTabs();
     renderFileEditor();
-    await loadData().catch(() => {});
-    const chapterNode = Object.values(nodeMap).find(n => isChapterNode(n) && n.file === p.file);
-    if (chapterNode) runAdvance(chapterNode.id);
+    plotDevices = []; // 写盘成功后，下次打开剧情页重新读取已采纳记录
+    await refreshProjectMonitor().catch(() => {});
+    if (fileMode) await loadFileTree();
     showToast('已接受修改并写回文件', 'success');
   } catch (e) {
     showToast('接受失败：' + e.message, 'error');

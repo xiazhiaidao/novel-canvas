@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,7 +10,7 @@
     --panel: rgba(255,255,255,.85);
     --panel-border: rgba(15,23,42,.10);
     --text: #1e2430;
-    --text-strong: #000; /* 用户硬约束：所有强调文字一律黑色（token 化，见 canvas_theme.css force-black 块） */
+    --text-strong: #000;
     --edge-auto: rgba(100,116,139,.95);   /* 自动连线（虚线）：浅色主题石板灰 */
     --edge-manual: rgba(180,83,9,.95);    /* 手动连线（实线）：浅色主题琥珀 */
     /* 连线语义化（v1.25）：三类自动连线各有颜色，与手动连线区分 */
@@ -447,38 +447,34 @@
     background-size: 150px 90px;
     pointer-events: none;
   }
-  html[data-theme="dark"] #axisGrid {
-    background-image:
-      linear-gradient(to right, rgba(255,255,255,.05) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255,255,255,.05) 1px, transparent 1px);
-  }
+
   /* 剧情推进轴：层级参考网格线 + y=x 对角线引导 */
   #axisGrid .axisLevelLine {
     position: absolute; height: 1px; border-top: 1px dashed rgba(148,163,184,.5);
     pointer-events: none;
   }
-  html[data-theme="light"] #axisGrid .axisLevelLine { border-top-color: rgba(100,116,139,.45); }
+
   /* 细刻度网格：每 10% 一条淡点线（y 轴细化） */
   #axisGrid .axisPctLine {
     position: absolute; height: 1px;
     border-top: 1px dotted rgba(148,163,184,.22);
     pointer-events: none;
   }
-  html[data-theme="light"] #axisGrid .axisPctLine { border-top-color: rgba(100,116,139,.2); }
+
   /* 细刻度百分比小标签 */
   #axisYLabels .axisPctLabel {
     position: absolute; left: 96px; height: 16px; line-height: 16px;
     font-size: 9px; color: rgba(148,163,184,.55);
     pointer-events: none; white-space: nowrap;
   }
-  html[data-theme="light"] #axisYLabels .axisPctLabel { color: rgba(100,116,139,.5); }
+
   /* 分段分界线（卷/境界/剧情节点） */
   #axisGrid .axisBandLine {
     position: absolute; height: 1px;
     border-top: 1.5px dashed var(--accent, #f97316);
     opacity: .45; pointer-events: none;
   }
-  html[data-theme="light"] #axisGrid .axisBandLine { opacity: .55; }
+
   /* 分段标签（带名 + 百分比范围） */
   #axisYLabels .axisBandLabel {
     font-size: 12px; font-weight: 700;
@@ -490,14 +486,14 @@
     border-top: 1.5px dotted var(--accent, #f97316);
     opacity: .5; pointer-events: none;
   }
-  html[data-theme="light"] #axisGrid .axisDiagLine { opacity: .6; }
+
   /* X/Y 轴线：黑色实线（暗色主题用浅色保证可见——黑底上纯黑会隐形） */
   #axisGrid .axisFrameLine {
     position: absolute; background: #111827; pointer-events: none;
   }
   #axisGrid .axisFrameLine.h { height: 2px; border-radius: 1px; }
   #axisGrid .axisFrameLine.v { width: 2px; border-radius: 1px; }
-  html[data-theme="dark"] #axisGrid .axisFrameLine { background: #e5e7eb; }
+
   #axisYLabels {
     position: absolute; left: 8px; top: 0; bottom: 0; width: 120px;
     display: flex; flex-direction: column; pointer-events: none; z-index: 2;
@@ -507,7 +503,7 @@
     background: rgba(255,255,255,.82); padding: 2px 8px; border-radius: 6px;
     border: 1px solid rgba(15,23,42,.12); white-space: nowrap;
   }
-  html[data-theme="dark"] #axisYLabels .axisYLabel { color: #e5e7eb; background: rgba(17,24,39,.85); border-color: rgba(255,255,255,.12); }
+
   #axisXLabels {
     position: absolute; left: 0; right: 0; height: 28px; pointer-events: none; z-index: 2;
   }
@@ -584,7 +580,7 @@
     z-index: 6; font-size: 12px; color: #cbd5e1;
     backdrop-filter: blur(8px);
   }
-  html[data-theme="light"] #axisBar { background: rgba(255,255,255,.95); border-top-color: rgba(0,0,0,.08); color: #475569; box-shadow: 0 -2px 10px rgba(15,23,42,.05); }
+
   #axisBar .barLabel { white-space: nowrap; color: #94a3b8; }
   #axisBar input#axisJump {
     width: 62px; height: 28px; border: 1px solid rgba(255,255,255,.22);
@@ -592,7 +588,7 @@
     outline: none; transition: border-color .18s, box-shadow .18s;
   }
   #axisBar input#axisJump:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,197,107,.2); }
-  html[data-theme="light"] #axisBar input#axisJump { background: #fff; color: #111; border-color: #cbd5e1; }
+
   #axisBar .barBtn {
     height: 28px; padding: 0 13px; border: 1px solid rgba(255,255,255,.22);
     background: rgba(255,255,255,.08); color: inherit; border-radius: var(--rad-sm); cursor: pointer; font-size: 12px;
@@ -605,26 +601,26 @@
   #axisTicks .tick.has { background: var(--accent, #f97316); opacity: .85; }
   #axisTicks .tick.has:hover { opacity: 1; }
   #axisTicks .tick.now { outline: 2px solid #fff; outline-offset: -2px; }
-  html[data-theme="light"] #axisTicks .tick.now { outline-color: #111; }
+
   #axisBar .barStats { white-space: nowrap; color: #94a3b8; font-size: 11px; }
   #axisBar select {
     height: 26px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px;
     background: rgba(0,0,0,.35); color: #fff; font-size: 12px; padding: 0 6px; outline: none; cursor: pointer;
   }
-  html[data-theme="light"] #axisBar select { background: #fff; color: #111; border-color: #cbd5e1; }
+
   #axisBar select option { background: var(--surface); color: var(--text); }
   /* Y 轴分区带：横向分隔线 + 分区标签 */
   #axisGrid .axisBandLine { position: absolute; left: 0; right: 0; border-top: 1px dashed rgba(148,163,184,.5); pointer-events: none; }
-  html[data-theme="light"] #axisGrid .axisBandLine { border-top-color: rgba(100,116,139,.5); }
+
   #axisYLabels .axisYLabel.band {
     font-weight: 800; color: #fff; background: linear-gradient(135deg,#334155,#475569);
     border: 1px solid rgba(15,23,42,.25); padding: 3px 10px; letter-spacing: .5px;
     box-shadow: 0 1px 3px rgba(0,0,0,.25);
   }
-  html[data-theme="light"] #axisYLabels .axisYLabel.band { color: #1e293b; background: linear-gradient(135deg,#e2e8f0,#cbd5e1); border-color: rgba(15,23,42,.15); }
+
   #axisYLabels .axisYLabel.band small { display: block; font-size: 9px; font-weight: 500; opacity: .75; letter-spacing: 0; }
   #axisXLabels .axisXLabel.seg { font-size: 11px; font-weight: 700; color: #374151; cursor: pointer; pointer-events: auto; }
-  html[data-theme="dark"] #axisXLabels .axisXLabel.seg { color: #e5e7eb; }
+
   #axisXLabels .axisXLabel.seg:hover { color: var(--accent, #f97316); }
   /* 拖动节点时的实时悬浮提示（章号/进度/分段） */
   .axisDragHint {
@@ -634,7 +630,7 @@
     border: 1px solid rgba(255,255,255,.15); white-space: nowrap;
     box-shadow: 0 2px 6px rgba(0,0,0,.3);
   }
-  html[data-theme="light"] .axisDragHint { background: rgba(255,255,255,.95); color: #111827; border-color: rgba(15,23,42,.2); }
+
 
   /* 识别报告 */
   .recognitionModal { width: min(760px, 92vw); max-height: 82vh; display: flex; flex-direction: column; }
@@ -644,7 +640,7 @@
     flex: 1; min-width: 110px; padding: 10px 12px; border-radius: 12px;
     background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); text-align: center;
   }
-  html[data-theme="dark"] .recModalStat { background: rgba(255,255,255,.04); }
+
   .recModalStat b { display: block; font-size: 20px; color: var(--text-strong); }
   .recModalStat span { font-size: 11px; color: var(--muted); }
   .recSection { margin-bottom: 12px; }
@@ -717,7 +713,7 @@
     padding: 10px; margin-bottom: 10px; border-radius: 12px;
     background: rgba(15,23,42,.03); border: 1px solid var(--panel-border);
   }
-  html[data-theme="dark"] #detail .nodeProps { background: rgba(255,255,255,.04); }
+
   #detail .propRow { display: flex; flex-direction: column; gap: 3px; }
   #detail .propRow label { margin: 0; font-size: 10px; }
   #detail .propRow select, #detail .propRow input {
@@ -1319,7 +1315,7 @@
   }
   .shortcutKeys .plus { font-size: 10px; color: var(--muted); }
   .shortcutDesc { font-size: 12px; color: var(--muted); text-align: right; }
-  html[data-theme="dark"] .shortcutKeys kbd { background: rgba(255,255,255,.08); }
+
   #statusShortcutBtn { cursor: pointer; opacity: .7; }
   #statusShortcutBtn:hover { opacity: 1; color: var(--accent); }
   #statusSearchBtn { cursor: pointer; opacity: .7; }
@@ -1375,10 +1371,10 @@
     border: 1px solid var(--panel-border); border-bottom-width: 2px; background: rgba(15,23,42,.05);
   }
   .ftFoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel-border); font-size: 11px; color: var(--muted); }
-  html[data-theme="dark"] #ftInput { background: rgba(255,255,255,.07); }
-  html[data-theme="dark"] #ftInput:focus { background: rgba(255,255,255,.11); }
-  html[data-theme="dark"] .ftToggle { background: rgba(255,255,255,.07); }
-  html[data-theme="dark"] .ftHit:hover { background: rgba(255,255,255,.07); }
+
+
+
+
   /* 分析弹窗：把原本 5 个平级的分析视图（矩阵/看板/连线/统计/时间线）收进一个入口。
      用 .modal.analysisModal 双类提特异性，确保 overflow: hidden 能压过 .modal 的 overflow-y: auto
      （本块定义在 .modal 之前，单类会被后者覆盖）——这一步不做的话 pane 内滚动会失效。 */
@@ -1412,13 +1408,13 @@
   #analysisPaneMatrix.on, #analysisPaneBoard.on { overflow: hidden; }
   /* 统计 / 时间线 / 连线：内容自然流动，由 pane 统一提供滚动 */
   #analysisPaneStats.on, #analysisPaneTimeline.on, #analysisPaneLink.on { overflow-y: auto; }
-  html[data-theme="dark"] .analysisTab:hover { background: rgba(255,255,255,.07); }
+
   /* 全书统计的可下钻元素 */
   .volRow.clickable, .barRow.clickable { cursor: pointer; border-radius: 9px; padding: 5px 8px; margin: 0 -8px; transition: background .15s; }
   .volRow.clickable:hover, .barRow.clickable:hover { background: rgba(15,23,42,.05); }
   .catChip.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
   .catChip.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
-  html[data-theme="dark"] .volRow.clickable:hover, html[data-theme="dark"] .barRow.clickable:hover { background: rgba(255,255,255,.07); }
+
   /* 统计下钻面板：点统计行展开的明细列表，再点条目跳到画布节点 */
   .drillPanel {
     margin: 6px 0 4px; padding: 6px 10px 8px; border-left: 2px solid var(--accent);
@@ -1434,8 +1430,8 @@
   .drillName { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .drillMeta { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
   .drillEmpty { font-size: 12px; color: var(--muted); padding: 4px 2px; }
-  html[data-theme="dark"] .drillPanel { background: rgba(255,255,255,.04); }
-  html[data-theme="dark"] .drillRow:hover { background: rgba(255,255,255,.08); }
+
+
   .modal {
     width: 460px; max-width: 94vw; background: var(--surface); border: 1px solid var(--panel-border);
     border-radius: 20px; padding: 20px 22px;
@@ -1499,7 +1495,7 @@
     border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 9px 12px;
     background: rgba(15,23,42,.03); transition: border-color .15s, background .15s;
   }
-  html[data-theme="dark"] .axisYOpt { background: rgba(255,255,255,.04); }
+
   .axisYOpt:hover { border-color: var(--accent); }
   .axisYOpt input[type=radio] { accent-color: #d97706; width: 15px; height: 15px; flex: none; }
   .axisYOpt span { font-size: 13px; color: var(--text); line-height: 1.5; }
@@ -1659,7 +1655,7 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     text-align: center; line-height: 1.15;
   }
-  html[data-theme="dark"] .usageDonutCenter { background: #141a24; }
+
   .usageDonutCenter .n { font-size: 13px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
   .usageDonutCenter .l { font-size: 9px; color: var(--muted); }
   .usageDonutLegend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -2041,20 +2037,22 @@
   .fileDiffActions .reject { background: #fee2e2 !important; color: #b91c1c !important; }
 </style>
 <link rel="stylesheet" href="canvas_theme.css">
+<link rel="stylesheet" href="chat_workspace.css">
 </head>
 <body>
 
 
-  
+
 <div id="app">
   <div id="topBar">
     <div class="topBarLeft">
       <span id="appTitle"><span class="appLogo"></span>小说画布</span>
       <select id="projectSelect"></select>
-      <button id="changeFolderBtn" class="toolBtn" title="切换小说项目根目录">更换文件夹</button>
+      <details class="workspaceMenu"><summary aria-label="项目操作" title="项目操作">⋯</summary><div><button id="changeFolderBtn" class="toolBtn" title="切换小说项目根目录">更换文件夹</button></div></details>
     </div>
+    <nav id="activityBar" aria-label="工作区"><button id="activityCanvas" class="activityBtn on" title="画布" data-view="canvas">画布</button><button id="activityFiles" class="activityBtn" title="文件" data-view="files">正文</button></nav>
     <div class="topBarRight">
-      <div class="topBarGroup">
+      <details class="workspaceMenu" id="canvasToolsMenu"><summary>画布工具</summary><div class="topBarGroup">
         <button id="viewModeBtn" class="toolBtn" title="自由布局 / 进度轴视图切换">进度轴</button>
         <button id="recognitionBtn" class="toolBtn" title="识别报告：查看漏识别/错识别内容">识别</button>
         <button id="autoLayoutBtn" class="toolBtn" title="自动排列节点">自动排列</button>
@@ -2067,38 +2065,24 @@
           <option value="chapter">章节聚焦</option>
           <option value="off">关闭连线</option>
         </select>
-      </div>
+      </div></details>
       <span class="topBarDivider"></span>
       <div class="topBarGroup">
         <button id="analysisBtn" class="toolBtn" title="分析视图：关系矩阵 / 状态看板 / 手动连线 / 全书统计 / 时间线">分析</button>
+        <button id="writingToolsBtn" class="toolBtn" title="章节生成、人物状态、卷管理及章节核心">写作</button>
       </div>
       <span class="topBarDivider"></span>
       <div class="topBarGroup">
         <button id="focusBtn" class="toolBtn" title="专注模式：隐藏侧栏/顶栏/聊天（Ctrl+Shift+F）">⛶ 专注</button>
+        <button id="activityChat" class="activityBtn" title="AI 对话" aria-label="AI 对话" data-view="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h16v12H9l-5 4z"/></svg></button>
+        <button id="activityTheme" class="activityBtn" title="主题设置" aria-label="主题设置" data-view="theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 14a8 8 0 0 1-10-10A8 8 0 1 0 20 14Z"/></svg></button>
       </div>
     </div>
   </div>
   <div id="appMain">
-    <nav id="activityBar">
-      <div class="activityTop">
-        <button id="activityCanvas" class="activityBtn on" title="画布" data-view="canvas">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
-        </button>
-        <button id="activityFiles" class="activityBtn" title="文件" data-view="files">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        </button>
-      </div>
-      <div class="activityBottom">
-        <button id="activityChat" class="activityBtn" title="AI 对话" data-view="chat">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v12H9l-5 4z"/></svg>
-        </button>
-        <button id="activityTheme" class="activityBtn" title="主题设置" data-view="theme">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 2 1.2l.5 2.6h4l.5-2.6a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.6a7 7 0 0 0 .1-1.2z"/></svg>
-        </button>
-      </div>
-    </nav>
     <aside id="sidebar">
-      <div id="sidebarHeader"><span id="sidebarTitle">画布</span><button id="sidebarCollapse" title="收起侧栏">◀</button></div>
+      <div id="sidebarBook"><span class="bookEyebrow">当前小说</span><h1 id="sidebarBookTitle">小说画布</h1><span id="sidebarBookMeta"></span></div>
+      <div id="sidebarHeader"><span id="sidebarTitle">内容导航</span><button id="sidebarCollapse" title="收起侧栏">◀</button></div>
       <div id="canvasPanel">
         <div id="searchWrap"><input id="search" placeholder="搜索节点..."></div>
         <div id="filters"></div>
@@ -2112,6 +2096,7 @@
     </aside>
     <div id="sidebarResizer" class="resizer" title="拖拽调整侧栏宽度"></div>
     <div id="centerArea">
+      <div id="workspaceHeader"><strong id="workspaceProjectTitle">情节画布</strong><span>情节画布</span><span class="workspaceSpacer"></span><button id="axisHelpBtn" title="画布操作说明">操作说明</button><button id="workspaceNewNode" class="primary">＋ 节点</button></div>
       <div id="editorTabs">
         <div id="canvasTab" class="on" title="画布">画布</div>
         <div id="fileTabs"></div>
@@ -2125,9 +2110,11 @@
             <svg id="axisEdges"></svg>
             <div id="axisNodes"></div>
             <div id="axisTimeline"></div>
-            <div id="axisYLabels"></div>
-            <div id="axisXLabels"></div>
           </div>
+          <div id="axisYLabels" aria-label="纵轴刻度"></div>
+          <div id="axisXLabels" aria-label="章节刻度"></div>
+          <div id="axisCorner"><span id="axisRulerName">剧情进度</span><small>章号 →</small></div>
+          <div id="axisCursorX" hidden></div><div id="axisCursorY" hidden></div>
           <div id="axisBar">
             <select id="axisYModeSel" title="Y 轴划分方式：按卷 / 按境界 / 按剧情关键节点 / 按进度">
               <option value="volume">Y:按卷</option>
@@ -2145,6 +2132,7 @@
             <span class="barLabel" title="输入章号回车跳转">跳转</span>
             <input id="axisJump" type="number" min="1" step="1" placeholder="章号" title="输入章号回车跳转">
             <button id="axisFitAllBtn" class="barBtn" title="缩放让所有章节可见（看整体分布）">全图</button>
+            <button id="axisZoomOut" class="barBtn" title="缩小画布" aria-label="缩小画布">−</button><span id="axisZoomValue">100%</span><button id="axisZoomIn" class="barBtn" title="放大画布" aria-label="放大画布">＋</button>
             <div id="axisTicks" title="章节刻度：高亮=该章有内容，点击跳转"></div>
             <span id="axisStats" class="barStats"></span>
           </div>
@@ -2161,39 +2149,23 @@
         <div id="fileEditorBody"></div>
       </div>
       <div id="chatPanel">
-        <div id="chatHeader"><span class="chLeft"><span class="chTitle">AI 对话</span><select id="chatModel" title="选择 AI 模型"></select><select id="chatDock" title="对话框停靠位置"><option value="bottom">底部</option><option value="right">右侧</option><option value="left">左侧</option><option value="float">悬浮</option></select></span><span class="chRight"><button id="newChatBtn" title="清空当前项目对话">清空</button> <button id="chatToggle">＋</button></span></div>
+        <div id="chatHeader"><div class="chLeft"><div class="agentHeading"><span class="chTitle" id="chatTitle">写作 Agent</span><span id="agentTaskTitle">新任务</span></div><button id="chatDetailTab">详情</button></div><div class="chRight"><button id="chatTaskHistoryBtn" title="查看当前小说的任务历史">历史</button><button id="newChatBtn" title="新建独立任务" aria-label="新建任务">＋</button><button id="chatWideBtn" title="展开对话到主工作区" aria-label="展开任务">⛶</button><details class="chatMore"><summary title="更多设置">•••</summary><div><label>模型<select id="chatModel" title="选择 AI 模型"></select></label><label>位置<select id="chatDock" title="对话框停靠位置"><option value="right">右侧</option><option value="bottom">底部</option><option value="left">左侧</option><option value="float">悬浮</option></select></label><label>写作侧重<select id="chatTask" aria-label="写作侧重"><option value="general">自动</option><option value="character">人物设计</option><option value="outline">规划大纲</option><option value="writer">生成正文</option><option value="polish">润色正文</option><option value="reviewer">检查一致性</option></select></label></div></details><button id="chatToggle" title="收起写作 Agent" aria-label="收起写作 Agent">＋</button></div></div>
+        <section id="chatTaskHistory" hidden aria-label="任务历史"><div class="agentHistoryHead"><strong>任务历史</strong><button id="chatTaskHistoryClose" aria-label="关闭任务历史">✕</button></div><input id="chatTaskSearch" placeholder="搜索任务…" aria-label="搜索任务"><div id="chatTaskList"></div></section>
         <div id="chatResizeHandle" title="拖拽调整大小"></div>
-        <div id="chatToolbar">
-          <div id="roleBar" style="display: none">
-            <span class="roleBarLabel">角色</span>
-            <button class="roleChip active" data-role="general" title="通用助手">通用</button>
-            <button class="roleChip" data-role="character" title="人物设计师">人物</button>
-            <button class="roleChip" data-role="outline" title="大纲规划师">大纲</button>
-            <button class="roleChip" data-role="writer" title="正文写手">正文</button>
-            <button class="roleChip" data-role="polish" title="润色编辑">润色</button>
-            <button class="roleChip" data-role="reviewer" title="审查员">审查</button>
-          </div>
-          <div class="toolSep"></div>
-          <div id="agentBar" style="display: none">
-            <button class="agentCmd" data-agent="plot">剧情军师</button>
-            <button class="agentCmd" data-agent="deslop">去AI味</button>
-            <button class="agentCmd" data-agent="foresight">伏笔审计</button>
-            <button class="agentCmd" data-agent="audit">防漂移</button>
-            <button class="agentCmd" data-agent="advance">人物推进</button>
-            <button class="agentCmd" data-agent="write">生成下一章</button>
-            <button class="agentCmd" data-agent="volumes">卷管理</button>
-            <button class="agentCmd" data-agent="cores">章节核心</button>
-          </div>
-        </div>
-        <div id="chatMessages" style="display: none"><div class="msg assistant">你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。右键节点可“添加到对话”。</div></div>
+        <div id="chatMessages" style="display: none"><details id="chatChanges" hidden><summary><span id="chatChangesSummary">修改清单</span></summary><div id="chatChangesBody"></div></details></div>
         <div id="skillBar" style="display: none"></div>
-        <div id="refBar" style="display: none"></div>
-        <div id="chatInputRow" style="display: none"><textarea id="chatInput" placeholder="和 AI 聊小说...（Shift+Enter 换行）" rows="2"></textarea><button id="chatSend">发送</button><button id="chatStop" style="display:none" title="停止生成">停止</button></div>
+        <button id="chatNewReply" hidden>有新回复 ↓</button>
+        <div id="chatContext"><div id="chatContextTags"></div><details id="chatScope"><summary>范围</summary><label>重点文件<select id="chatTarget" aria-label="重点文件"><option value="">项目资料</option></select></label><small>Agent 可查阅项目内相关文件；修改会生成待审提案。</small></details></div>
+        <details id="chatSources"><summary><span id="chatSourceSummary">参考资料 · 展开查看</span></summary><div id="refBar"></div><div class="chatSourceActions"><button id="chatRestoreSources">恢复已移除资料</button></div></details>
+        <div id="chatComposer">
+          <div id="chatInputRow" style="display: none"><textarea id="chatInput" aria-label="给 Agent 的任务" placeholder="交给 Agent 一个写作任务，例如：加强这一章的冲突，并检查前文设定…" rows="2"></textarea><div id="chatToolbar" class="chatComposeFooter"><button id="chatAttachActive" title="添加当前文件或画布节点" aria-label="添加当前内容">＋</button><select id="chatMode" aria-label="执行方式"><option value="agent">Agent · 可提案</option><option value="discuss">讨论 · 只读</option></select><input type="checkbox" id="chatAllowProposals" hidden><button id="chatSend" title="发送（Enter）" aria-label="发送">↑</button><button id="chatStop" style="display:none" title="停止执行">停止</button></div></div>
+        </div>
+        <div class="chatInputHint">Enter 发送 · Shift + Enter 换行 · 文件修改需审阅</div>
       </div>
     </div>
     <div id="detailResizer" class="resizer" title="拖拽调整右侧栏宽度"></div>
     <aside id="detail">
-      <div id="detailHead"><span>详情 / 编辑</span><button id="detailCollapse">▶</button></div>
+      <div id="detailHead"><span>详情 / 编辑</span><button id="detailAiTab">AI 助手</button><button id="detailCollapse">▶</button></div>
       <div id="detailBody"><div class="empty"><div class="emptyIcon">◈</div><div class="emptyTitle">点击节点查看完整内容</div><div class="emptySub">在画布中选择角色 · 设定 · 伏笔 · 章节节点</div></div></div>
     </aside>
   </div>
@@ -2647,5 +2619,6 @@
 <script src="canvas_upgrade.js"></script>
 <script src="app.js"></script>
 <script src="file_editor.js"></script>
+<script src="chat_workspace.js"></script>
 </body>
 </html>

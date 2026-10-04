@@ -186,7 +186,7 @@ async function changeProjectsRoot() {
 function setupDevReload() {
   if (app.isPackaged) return;
   // 注意：必须覆盖全部前端 JS。漏掉 app.js/file_editor.js 会导致改了它们窗口不刷新（用户看不到新功能）
-  const watchFiles = ['index.html', 'canvas_upgrade.js', 'canvas_theme.css', 'app.js', 'file_editor.js'];
+  const watchFiles = ['index.html', 'canvas_upgrade.js', 'canvas_theme.css', 'app.js', 'file_editor.js', 'chat_workspace.js', 'chat_workspace.css'];
   for (const f of watchFiles) {
     const p = path.join(__dirname, f);
     try {

@@ -372,12 +372,13 @@ function renderVolumeGroups(div, list) {
   }
 }
 
-function renderFilters() {
+function renderFilters(preserve = false) {
   filtersEl.innerHTML = '';
-  activeCats = new Set(nodes.map(n => n.label));
-  for (const label of activeCats) {
+  const labels = new Set(nodes.map(n => n.label));
+  if (!preserve) activeCats = new Set(labels);
+  for (const label of labels) {
     const chip = document.createElement('span');
-    chip.className = 'filterChip on';
+    chip.className = 'filterChip' + (activeCats.has(label) ? ' on' : '');
     chip.textContent = label;
     chip.addEventListener('click', () => {
       if (activeCats.has(label)) activeCats.delete(label);
@@ -398,7 +399,7 @@ function renderLaneBar() {
   const lanes = laneList();
   const defined = lanes.filter(l => l !== NO_LANE);
   if (defined.length < 1) {
-    el.innerHTML = '<div class="laneEmpty">泳道：节点属性里填「泳道」即可按剧情线分行（如 主线 / 支线 / 反派线）</div>';
+    el.innerHTML = '<div class="laneEmpty" title="在节点属性中填写泳道，可按主线、支线等剧情线分行">泳道未设置</div>';
     return;
   }
   el.innerHTML =
@@ -498,11 +499,11 @@ function axisPanToNode(el) {
   if (!g || !axisView) return;
   const vw = axisView.offsetWidth || 1000;
   const vh = axisView.offsetHeight || 600;
-  if (axisViewT.scale < 0.35) axisViewT.scale = 0.55; // 过小比例 → 放大到可读
+  if (axisViewT.scale < .85) axisViewT.scale = 1;
   const cx = (parseFloat(el.style.left) || 0) + (el.offsetWidth || 60) / 2;
   const cy = (parseFloat(el.style.top) || 0) + (el.offsetHeight || 24) / 2;
-  axisViewT.x = vw / 2 - cx * axisViewT.scale;
-  axisViewT.y = vh / 2 - cy * axisViewT.scale;
+  axisViewT.x = 96 + (vw - 96) / 2 - cx * axisViewT.scale;
+  axisViewT.y = 36 + (vh - 78) / 2 - cy * axisViewT.scale;
   applyAxisTransform();
 }
 // 搜索框键盘导航：Enter/↓ 下一个命中，↑/Shift+Enter 上一个，Esc 清空
@@ -769,6 +770,7 @@ function updateEgoHighlight() {
       el.classList.toggle('egoNeighbor', isNeighbor);
     });
   });
+  updateAxisRulers();
 }
 
 // ── 关系矩阵（密集关系用表格看）─────────────────────────────
@@ -858,6 +860,9 @@ let statsCacheKey = '';
 let statsCacheHtml = '';
 let healthCacheKey = '';
 let healthCacheHtml = '';
+let healthSnapshot = null;
+let healthRequestSeq = 0;
+let projectDataRequestSeq = 0;
 let currentDetailNodeId = ''; // 当前详情面板展示的节点 id（AI 味改写用）
 
 function switchAnalysisTab(tab) {
@@ -1266,7 +1271,7 @@ function axisEdgeD(a, b) {
   const pa = axisNodePos(a), pb = axisNodePos(b);
   if (!pa || !pb) return null;
   const left = pa.x <= pb.x ? [pa, pb] : [pb, pa];
-  return edgeD(left[0].x + axisCardW, left[0].y + 17, left[1].x, left[1].y + 17);
+  return edgeD(left[0].x + axisCardW, left[0].y + axisCardH / 2, left[1].x, left[1].y + axisCardH / 2);
 }
 function redrawAxisEdges() {
   const svg = document.getElementById('axisEdges');
@@ -1341,7 +1346,7 @@ function renderMarkdown(text) {
     if (inList) { html += '</ul>'; inList = false; }
     if (/^#{1,4}\s/.test(line)) {
       const lvl = line.match(/^#+/)[0].length;
-      html += '<h' + lvl + ' style="margin:8px 0 4px;color:var(--accent)">' + line.replace(/^#+\s*/, '') + '</h' + lvl + '>';
+      html += '<h' + lvl + ' style="margin:8px 0 12px;color:var(--text)">' + line.replace(/^#+\s*/, '') + '</h' + lvl + '>';
     } else if (/^(-----|\*\*\*|___)$/.test(t)) {
       html += '<hr style="border:none;border-top:1px solid var(--panel-border);margin:8px 0">';
     } else if (t === '') {
@@ -1361,6 +1366,7 @@ function renderMarkdown(text) {
 function showDetail(n) {
   const a = nodeAxisData(n);
   currentDetailNodeId = n.id; // AI 味改写要落到具体节点/文件
+  document.dispatchEvent(new CustomEvent('detailNodeChanged', { detail: n }));
   const levels = (axisDef && axisDef.levels) || [];
   const typeOptions = ['role', 'faction', 'setting', 'outline', 'volume', 'chapter', 'foreshadow', 'context', 'unrecognized'].map(t =>
     '<option value="' + t + '"' + (n.type === t ? ' selected' : '') + '>' + typeToLabel(t) + '</option>').join('');
@@ -1574,6 +1580,11 @@ function showDetail(n) {
 function focusNode(id) {
   const n = nodeMap[id];
   if (!n) return;
+  if (hiddenLanes.delete(laneOf(n))) {
+    renderLaneBar();
+    renderAxisView();
+    saveViewStateDebounced();
+  }
   // 点侧栏节点 = "跳到这个节点"：清掉搜索关键字，避免该节点被搜索过滤隐藏
   if (search.value) {
     search.value = '';
@@ -1927,13 +1938,13 @@ function fitView() {
 // 有章号的节点 → 对应章列泳道；无章号的节点（角色/大纲/设定/未识别）→ 顶部未分类带横向 lane，
 // 不再 round-robin 塞进章列（避免无关卡片挤占章节轴的横向排布）。
 const axisColW = 280;   // 每章最小列宽（v1.10 起仅兜底，实际按章段聚合）
-const axisRowH = 100;   // 剧情推进轴高度单位（plotH = 6 行高，默认 600px）
-const axisCardW = 130;  // 轴内紧凑卡片宽（index.html CSS 同步）
-const axisLaneStep = 138; // 格内卡片横向步进 = 卡宽 + 8 间隙
+const axisRowH = 168;   // 保持连续推进坐标，工作视图允许纵向平移
+const axisCardW = 236, axisCardH = 144; // 与 canvas_theme.css 中的轴卡片一致
+const axisLaneStep = 252;
 const MAX_AXIS_SEGMENTS = 20; // X 轴最多聚合为多少列（章节太多时按段分组，避免横向爆炸）
 const AXIS_SEG_MIN_W = 150;   // 每段最小列宽(px)
 const axisPadL = 150;   // 左侧 Y 轴标签区
-const axisPadT = 40;    // 顶部（未分类带之下）
+const axisPadT = 160;   // 为未分章资料留一行完整卡片
 const axisPadR = 40;
 const axisPadB = 100;   // 底部：X 章号标签 + 底部导航条(38px)留白
 // 轴视图的平移/缩放状态（与自由视图独立）：屏幕 = 内容 * scale + (x, y)
@@ -2189,24 +2200,26 @@ function computeAxisLayout() {
   let x = axisPadL;
   for (let s = 0; s < nSegs; s++) {
     const from = s * segSize + 1, to = Math.min(maxChapter, from + segSize - 1);
-    let maxCells = 0;
-    for (let ch = from; ch <= to; ch++) maxCells = Math.max(maxCells, chCount[ch] || 0);
-    segW[s] = Math.max(AXIS_SEG_MIN_W, maxCells * axisLaneStep + 20);
+    let cellsW = 0;
+    for (let ch = from; ch <= to; ch++) cellsW += Math.max(1, chCount[ch] || 0) * axisLaneStep;
+    segW[s] = Math.max(AXIS_SEG_MIN_W, cellsW + 20);
     segStart[s] = x;
     x += segW[s] + 24; // 段间距
   }
   // 章切片（用于反查章号/跳转）：章在段内按比例细分，x 命中段内哪一格即哪章
   const chapterW = {};    // 章切片宽(px)
   const chapterStart = {}; // 章切片 X 起点
+  let withinSegment = 0;
   for (let ch = 1; ch <= maxChapter; ch++) {
     const s = segOf(ch);
-    const inner = Math.max(1, segW[s] - 20) / segSize;
-    chapterStart[ch] = segStart[s] + (ch - (s * segSize + 1)) * inner;
-    chapterW[ch] = inner;
+    if ((ch - 1) % segSize === 0) withinSegment = 0;
+    chapterStart[ch] = segStart[s] + withinSegment;
+    chapterW[ch] = Math.max(1, chCount[ch] || 0) * axisLaneStep;
+    withinSegment += chapterW[ch];
   }
 
   // 未分类带高度：有无章号的节点时，横向 lane 展开一层
-  const bandH = unrecCount ? 44 : 0;
+  const bandH = unrecCount ? axisCardH + 16 : 0;
 
   // Y：连续剧情推进轴。plotTop(顶=结局) → plotTop+plotH(底=开端)，未分类带在顶端之上
   // plotH 取 6 行高（600px）：长篇小说（80+ 章）对角线也清晰可见；层级仅作参考网格线
@@ -2219,7 +2232,7 @@ function computeAxisLayout() {
   for (let i = 0; i < levels.length; i++) {
     levelY[i] = plotTop + (1 - i / nLevels) * plotH;
   }
-  const bw = x - 24 + axisPadR;
+  const bw = Math.max(x - 24 + axisPadR, unrecCount ? axisPadL + 10 + unrecCount * axisLaneStep + axisPadR : 0);
   const bh = contentBottom + axisPadB - (axisPadT - bandH);
 
   // 分段几何：每个 band 等高切片（band 0=底部），band 间分界线 + 中心标签 y
@@ -2387,7 +2400,67 @@ function applyAxisTransform() {
   const inner = document.getElementById('axisInner') || document.getElementById('axisView');
   if (!inner) return;
   inner.style.transform = `translate(${axisViewT.x}px, ${axisViewT.y}px) scale(${axisViewT.scale})`;
+  const axisView = document.getElementById('axisView');
+  axisView.classList.toggle('axis-overview', axisViewT.scale < .65);
+  const zoomValue = document.getElementById('axisZoomValue');
+  if (zoomValue) zoomValue.textContent = Math.round(axisViewT.scale * 100) + '%';
+  updateAxisRulers();
   updateAxisBar();
+}
+
+// 刻度固定在视口边缘，只转换位置，字号不受节点缩放影响。
+function updateAxisRulers() {
+  const view = document.getElementById('axisView');
+  if (!view || !axisGeom || viewMode !== 'axis') return;
+  const xRail = document.getElementById('axisXLabels'), yRail = document.getElementById('axisYLabels');
+  if (!xRail || !yRail) return;
+  const railW = yRail.offsetWidth || 96, topH = 36, bottomH = 42;
+  const { x, y, scale } = axisViewT;
+  const chapter = egoNodeId && nodeMap[egoNodeId] ? nodeAxisData(nodeMap[egoNodeId]).chapter : null;
+  let lastX = -Infinity;
+  for (const label of xRail.children) {
+    if (!label.dataset.coord) label.dataset.coord = parseFloat(label.style.left) || 0;
+    const px = x + Number(label.dataset.coord) * scale - railW;
+    const gap = Math.max(64, label.textContent.length * 11 + 16);
+    label.style.left = px + 'px';
+    const visible = px >= gap / 2 && px <= xRail.offsetWidth - gap / 2 && px - lastX >= gap;
+    label.hidden = !visible;
+    if (visible) lastX = px;
+    label.classList.toggle('is-current', !!chapter && chapter >= Number(label.dataset.from) && chapter <= Number(label.dataset.to));
+  }
+  const labels = [...yRail.children].map(label => {
+    if (!label.dataset.coord) label.dataset.coord = parseFloat(label.style.top) || 0;
+    let py = y + Number(label.dataset.coord) * scale - topH;
+    if (label.dataset.bandStart) {
+      const start = Math.max(0, y + Number(label.dataset.bandStart) * scale - topH);
+      const end = Math.min(yRail.clientHeight, y + Number(label.dataset.bandEnd) * scale - topH);
+      py = end - start >= 44 ? (start + end - 44) / 2 : -100;
+    }
+    label.style.top = py + 'px';
+    return { label, py, height:label.classList.contains('axisBandLabel') ? 44 : 25, minor:label.classList.contains('axisPctLabel') };
+  }).sort((a,b) => Number(a.minor) - Number(b.minor) || a.py - b.py);
+  const occupied = [];
+  for (const { label, py, height } of labels) {
+    const visible = py >= 0 && py + height <= yRail.clientHeight && !occupied.some(([a,b]) => py < b + 5 && py + height > a - 5);
+    label.hidden = !visible;
+    label.classList.remove('is-current');
+    if (visible) occupied.push([py,py + height]);
+  }
+  const name = document.getElementById('axisRulerName');
+  if (name) name.textContent = axisGeom.laneOn ? '剧情泳道' : ({volume:'卷 / 进度',realm:'境界 / 进度',plot:'剧情阶段',progress:'剧情进度'}[axisGeom.bandMode] || '剧情进度');
+  const pos = egoNodeId ? axisNodePos(egoNodeId) : null;
+  const cx = document.getElementById('axisCursorX'), cy = document.getElementById('axisCursorY');
+  if (cx && cy) {
+    const px = pos ? x + (pos.x + axisCardW / 2) * scale : -1;
+    const py = pos ? y + (pos.y + axisCardH / 2) * scale : -1;
+    cx.hidden = !pos || px < railW || px > view.clientWidth;
+    cy.hidden = !pos || py < topH || py > view.clientHeight - bottomH;
+    cx.style.left = px + 'px'; cy.style.top = py + 'px';
+    if (pos) {
+      const nearest = labels.filter(p => !p.label.hidden && !p.minor).sort((a,b) => Math.abs(a.py + topH - py) - Math.abs(b.py + topH - py))[0];
+      if (nearest && Math.abs(nearest.py + topH - py) < 90) nearest.label.classList.add('is-current');
+    }
+  }
 }
 
 // 底部导航条：更新"当前视野内"的章刻度高亮
@@ -2415,9 +2488,15 @@ function axisJumpTo(ch) {
   const target = g.chapterStart[ch] + g.chapterW[ch] / 2;
   const axisView = document.getElementById('axisView');
   const vw = (axisView && axisView.offsetWidth) || 1000;
-  if (axisViewT.scale < 0.35) axisViewT.scale = 0.55; // 从全图/过小比例跳转 → 放大到可读
-  axisViewT.x = vw / 2 - target * axisViewT.scale;
+  if (axisViewT.scale < .85) axisViewT.scale = 1;
+  axisViewT.x = 96 + (vw - 96) / 2 - target * axisViewT.scale;
+  const item = g.items.find(p => p.effCh === ch);
+  if (item) {
+    const centerY = g.laneOn ? g.laneYOf(laneOf(item.n)) + 8 + axisCardH / 2 : yForProgress(item.progress);
+    axisViewT.y = 36 + (axisView.clientHeight - 78) / 2 - centerY * axisViewT.scale;
+  }
   applyAxisTransform();
+  saveViewStateDebounced();
 }
 
 // 全图：缩放让所有章节可见（看整体分布）
@@ -2428,14 +2507,15 @@ function axisFitAll() {
   const g = computeAxisLayout();
   const topCoord = axisBandTop();
   // 全图允许缩到很小（82 章全图 scale≈0.025，卡片成色块但能看到整体分布）
-  let scale = Math.min(1.6, vh / g.bh, vw / g.bw);
+  let scale = Math.min(1.6, (vh - 94) / g.bh, (vw - 112) / g.bw);
   scale = Math.max(0.02, scale);
   axisViewT = {
-    x: (vw - g.bw * scale) / 2,
-    y: (vh - g.bh * scale) / 2 - topCoord * scale,
+    x: 96 + (vw - 96 - g.bw * scale) / 2,
+    y: 36 + (vh - 78 - g.bh * scale) / 2 - topCoord * scale,
     scale
   };
   applyAxisTransform();
+  saveViewStateDebounced();
 }
 
 // 底部导航条事件（只绑定一次；renderAxisView 每次重渲染也会调用本函数，防重复绑定）
@@ -2450,6 +2530,16 @@ function initAxisBarEvents() {
   });
   const go = document.getElementById('axisFitAllBtn');
   if (go) go.addEventListener('click', () => axisFitAll());
+  function zoomStep(direction) {
+    const view = document.getElementById('axisView');
+    const mx = 96 + (view.clientWidth - 96) / 2, my = 36 + (view.clientHeight - 78) / 2;
+    const nx = (mx - axisViewT.x) / axisViewT.scale, ny = (my - axisViewT.y) / axisViewT.scale;
+    const scale = Math.min(2.5,Math.max(.02,axisViewT.scale * direction));
+    axisViewT = { x:mx - nx * scale, y:my - ny * scale, scale };
+    applyAxisTransform(); saveViewStateDebounced();
+  }
+  document.getElementById('axisZoomIn').onclick = () => zoomStep(1.15);
+  document.getElementById('axisZoomOut').onclick = () => zoomStep(1 / 1.15);
   // v1.9：Y 轴划分方式切换（按卷/按境界/按关键节点/按进度）
   const sel = document.getElementById('axisYModeSel');
   if (sel) sel.addEventListener('change', () => {
@@ -2681,9 +2771,21 @@ function renderAxisView() {
       const el = document.createElement('div');
       el.className = 'axisYLabel axisBandLabel';
       el.style.top = (geom.bandLabelY[i] - 9) + 'px';
+      el.dataset.bandStart = geom.bandLabelY[i] - geom.bandHpx / 2;
+      el.dataset.bandEnd = geom.bandLabelY[i] + geom.bandHpx / 2;
       const name = geom.bands[i];
-      const label = (geom.bandMode === 'volume' ? name : name) + ' ' + Math.round(i / geom.bands.length * 100) + '~' + Math.round((i + 1) / geom.bands.length * 100) + '%';
-      el.textContent = label;
+      el.textContent = name;
+      el.title = name;
+      const range = document.createElement('small');
+      range.textContent = Math.round(i / geom.bands.length * 100) + '–' + Math.round((i + 1) / geom.bands.length * 100) + '%';
+      el.appendChild(range);
+      yEl.appendChild(el);
+    }
+    for (let pp = 0; pp <= 100; pp += 10) {
+      const el = document.createElement('div');
+      el.className = 'axisPctLabel';
+      el.style.top = (yForProgress(pp) - 8) + 'px';
+      el.textContent = pp + '%';
       yEl.appendChild(el);
     }
   } else {
@@ -2714,8 +2816,6 @@ function renderAxisView() {
     const unrecEl = document.createElement('div');
     unrecEl.className = 'axisYLabel';
     unrecEl.style.top = (bandTop - 9) + 'px';
-    unrecEl.style.background = '#6b7280';
-    unrecEl.style.color = '#fff';
     unrecEl.textContent = '未分类';
     yEl.appendChild(unrecEl);
   }
@@ -2728,13 +2828,11 @@ function renderAxisView() {
     chHasMap[p.effCh] = true;
   }
   // X 轴章号标签：按段聚合显示（段内多章合并，避免每章一标签太密）；段内每章仍可用底部刻度跳转
-  const xLabelTop = contentBottom + 6;
-  xEl.style.top = xLabelTop + 'px';
-  xEl.style.height = '28px';
   for (let s = 0; s < nSegs; s++) {
     const from = s * segSize + 1, to = Math.min(maxChapter, from + segSize - 1);
-    const el = document.createElement('div');
+    const el = document.createElement('button');
     el.className = 'axisXLabel seg';
+    el.dataset.from = from; el.dataset.to = to;
     el.style.left = (segStart[s] + segW[s] / 2) + 'px';
     el.textContent = segSize === 1 ? ('第' + from + '章') : ('第' + from + '~' + to + '章');
     // 段信息（hover）：段内章节数 / 有内容章数 / 节点数；点击跳转到段首章
@@ -2745,6 +2843,8 @@ function renderAxisView() {
     }
     el.title = (segSize === 1 ? ('第' + from + '章') : ('第' + from + '~' + to + '章'))
       + '：' + (to - from + 1) + '章（' + hasCnt + '章有内容）· ' + nodeCnt + '个节点\n点击跳转到第' + from + '章';
+    const chapterNode = geom.items.find(p => p.effCh === from && p.n.label === '章节');
+    if (chapterNode) el.title = chapterNode.n.title + '\n' + el.title;
     el.addEventListener('click', () => axisJumpTo(from));
     xEl.appendChild(el);
   }
@@ -2765,15 +2865,15 @@ function renderAxisView() {
       const key = (effCh != null ? effCh : 'band') + '|' + lane;
       const slot = laneCursor[key] || 0;
       laneCursor[key] = slot + 1;
-      x = (effCh != null ? segStart[segOf(effCh)] + 10 : axisPadL + 10) + slot * axisLaneStep;
+      x = (effCh != null ? chapterStart[effCh] + 10 : axisPadL + 10) + slot * axisLaneStep;
       y = geom.laneYOf(lane) + 8;
       el.dataset.lane = lane;
-      el.style.borderLeft = '3px solid ' + laneColorOf(n);
+      el.style.setProperty('--node-color', laneColorOf(n));
     } else if (effCh != null) {
       const lane = chLaneCursor[effCh] || 0;
       chLaneCursor[effCh] = lane + 1;
-      x = segStart[segOf(effCh)] + 10 + lane * axisLaneStep;
-      y = yForProgress(progress) - 17; // 34px 高卡片居中于推进线
+      x = chapterStart[effCh] + 10 + lane * axisLaneStep;
+      y = yForProgress(progress) - axisCardH / 2;
     } else {
       x = axisPadL + 10 + bandLane * axisLaneStep;
       bandLane++;
@@ -2783,6 +2883,9 @@ function renderAxisView() {
     el.style.top = y + 'px';
     el.innerHTML = '<span class="typeTag"></span><div class="ntitle"></div><div class="ndesc"></div><div class="nmeta"><span class="nfile"></span><span class="nstats"></span></div>';
     fillNodeContent(el, n);
+    el.title = n.title;
+    if (!n.desc) el.querySelector('.ndesc').textContent = String(n.content || '').replace(/^#+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0,160);
+    el.querySelector('.nstats').textContent = (effCh != null ? '第' + effCh + '章 · ' : '未分章 · ') + stripWords(n.content) + ' 字';
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       if (el._dragged) { el._dragged = false; return; }
@@ -2811,9 +2914,10 @@ function renderAxisView() {
         const g2 = axisGeom;
         const nx2 = parseFloat(el.style.left), ny2 = parseFloat(el.style.top);
         const ch2 = axisChapterFromX(nx2);
-        const prog2 = progressFromY(ny2 + 17);
-        let txt = '第' + ch2 + '章 · ' + prog2 + '%';
-        if (g2 && g2.bands && g2.bands.length) {
+        const prog2 = progressFromY(ny2 + axisCardH / 2);
+        const lane2 = g2?.laneOn ? g2.lanes[Math.max(0, Math.min(g2.lanes.length - 1, Math.floor((ny2 + axisCardH / 2 - g2.plotTop) / g2.laneBandH)))] : null;
+        let txt = '第' + ch2 + '章 · ' + (lane2 || prog2 + '%');
+        if (g2 && !g2.laneOn && g2.bands && g2.bands.length) {
           const bi = Math.max(0, Math.min(g2.bands.length - 1, Math.floor(prog2 / 100 * g2.bands.length)));
           txt = (g2.bands[bi] || '') + ' · ' + txt;
         }
@@ -2832,6 +2936,13 @@ function renderAxisView() {
         const nx = parseFloat(el.style.left);
         const ny = parseFloat(el.style.top);
         const g = axisGeom;
+        if (g.laneOn) {
+          const lane = g.lanes[Math.max(0, Math.min(g.lanes.length - 1, Math.floor((ny + axisCardH / 2 - g.plotTop) / g.laneBandH)))];
+          layoutAxis[n.id] = { chapter: axisChapterFromX(nx), level: null, lane: lane === NO_LANE ? '' : lane };
+          saveLayout();
+          renderAxisView();
+          return;
+        }
         // 落在未分类带（顶部，y < 结局线 - 半带高）→ 清除章号与推进（未分章）
         if (ny < g.plotTop - g.bandH / 2) {
           const ov = nodeAxisData(n);
@@ -2839,11 +2950,11 @@ function renderAxisView() {
           el.style.left = (axisPadL + 10) + 'px';
           el.style.top = axisBandTop() + 4 + 'px';
           saveLayout();
-          redrawAxisEdges();
+          renderAxisView();
           return;
         }
         const chapter = axisChapterFromX(nx);
-        const progress = progressFromY(ny + 17); // 卡片中心对应推进值
+        const progress = progressFromY(ny + axisCardH / 2);
         layoutAxis[n.id] = { chapter, level: null, lane: nodeAxisData(n).lane };
         axisProgress[chapter] = progress; // 整章推进（同章卡片共享该 y）
         // 卷模式下：拖出本卷带范围 → 提示（卷归属按文件路径，不会因拖动改变）
@@ -2859,10 +2970,10 @@ function renderAxisView() {
           }
         }
         // 落回格位（该章所在段首 lane，推进线位置）
-        el.style.left = (g.segStart[g.segOf(chapter)] + 10) + 'px';
-        el.style.top = yForProgress(progress) - 17 + 'px';
+        el.style.left = (g.chapterStart[chapter] + 10) + 'px';
+        el.style.top = yForProgress(progress) - axisCardH / 2 + 'px';
         saveLayout();
-        redrawAxisEdges();
+        renderAxisView();
       }
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
@@ -2924,6 +3035,7 @@ function renderAxisView() {
   const segHint = geom.segSize > 1 ? ' · X 按段聚合（每段' + geom.segSize + '章，底部刻度仍可逐章跳转）' : '';
   hint.textContent = escapeHtml(axisDef.name || '进度轴') + ' · 章节沿 X 轴铺开，' + bandHint + segHint + ' · 灰色带=未分类/无章内容 · 拖空白平移 · 滚轮缩放 · 拖节点左右调章号 · 点节点看详情与关联连线（虚线=自动关联，实线=手动连线，点实线可删）' + (timelineNodes.length ? ' · ⚑=时间线重要节点（可拖动标在轴上）' : ' · 时间线弹窗可添加重要节点（⚑标在轴上）');
   axisView.appendChild(hint);
+  applyAxisTransform();
 }
 
 function enterAxisView(save) {
@@ -2964,18 +3076,14 @@ function fitAxisView() {
   const vw = axisView.offsetWidth || 1000;
   const vh = axisView.offsetHeight || 600;
   const geom = computeAxisLayout();
-  // 章节沿 X 轴铺开：高度优先（Y 全显），宽度不硬缩全图——
-  // 章少时按宽度全图 fit（scale 更大），章多时保底 0.55（卡片可读），X 方向横向平移浏览
-  let scale = Math.min(1.6, vh / geom.bh);
-  const wFit = vw / geom.bw;
-  scale = Math.min(scale, Math.max(wFit, 0.55));
-  scale = Math.max(0.35, scale);
-  // 内容坐标系原点不在 (0,0)：未分类带顶为负坐标，居中需减去 topCoord*scale
-  const topCoord = axisBandTop();
-  const showAllX = geom.bw * scale <= vw + 1;
+  // 初始按可读比例定位首章，完整分布通过「全图」查看。
+  const scale = 1;
+  const showAllX = geom.bw * scale <= vw - 112;
+  const first = geom.items.filter(p => p.effCh != null).sort((a,b) => a.effCh - b.effCh)[0];
+  const centerY = first ? (geom.laneOn ? geom.laneYOf(laneOf(first.n)) + 8 + axisCardH / 2 : yForProgress(first.progress)) : axisBandTop() + axisCardH / 2;
   axisViewT = {
-    x: showAllX ? (vw - geom.bw * scale) / 2 : 0,
-    y: (vh - geom.bh * scale) / 2 - topCoord * scale,
+    x: showAllX ? 96 + (vw - 96 - geom.bw * scale) / 2 : 96 - axisPadL + 20,
+    y: 36 + (vh - 78) / 2 - centerY * scale,
     scale
   };
   applyAxisTransform();
@@ -2984,7 +3092,7 @@ function fitAxisView() {
 // 轴视图交互：空白拖拽平移 + 滚轮缩放（挂在 canvasWrap 上，仅在 axis 模式生效）
 function startAxisPan(e) {
   if (e.button !== 0) return;
-  if (e.target.closest('.node')) return;
+  if (e.target.closest('.node,#axisXLabels,#axisYLabels,#axisCorner,#axisBar')) return;
   if (egoNodeId) clearEgo(); // 点空白清除选中节点及其关联连线
   axisPanning = true;
   axisPanStartX = e.clientX;
@@ -3142,9 +3250,15 @@ function updateStatusBar() {
 }
 
 async function loadData() {
+  const project = currentProject;
+  const seq = ++projectDataRequestSeq;
+  ++healthRequestSeq;
+  healthSnapshot = null;
   const q = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
   const res = await fetch('/api/data' + q);
   const data = await res.json();
+  if (seq !== projectDataRequestSeq || project !== currentProject) return;
+  if (data.error) throw new Error(data.error);
   currentProject = data.project || currentProject;
   nodes = data.nodes;
   nodeMap = {};
@@ -3191,8 +3305,10 @@ async function loadData() {
   if (savedView) applyAxisTransform(); // 恢复平移/缩放（在渲染完成后应用）
   viewStateReady = true;               // 此后才允许把视图状态写回盘
   detailBody.innerHTML = '<div class="empty">点击节点查看完整内容</div>';
-  clearPendingRefs();
+  if (typeof loadWritingTasks !== 'function') clearPendingRefs(!chatJustSwitched);
   loadChatHistory(chatJustSwitched); chatJustSwitched = false;
+  document.dispatchEvent(new Event('projectDataUpdated'));
+  loadPendingProposals();
   updateStatusBar();
   refreshHealthBar(); // 状态栏迷你监控条（异步，不阻塞加载）
 }
@@ -3542,6 +3658,7 @@ const chatInput = document.getElementById('chatInput');
 const chatSend = document.getElementById('chatSend');
 const chatPanel = document.getElementById('chatPanel');
 function addMsg(role, text) {
+  if (typeof addWritingMessage === 'function') return addWritingMessage(role, text);
   const div = document.createElement('div');
   div.className = 'msg ' + role;
   div.textContent = text;
@@ -3565,6 +3682,7 @@ function addMsg(role, text) {
 }
 
 function renderProposals(list) {
+  if (typeof renderWritingProposals === 'function') return renderWritingProposals(list);
   if (!Array.isArray(list) || list.length === 0) return;
   for (const p of list) {
     if (renderedProposalIds.has(p.id)) continue;
@@ -3616,6 +3734,7 @@ function renderProposals(list) {
 
 // 渲染 AI 工具调用过程（读/搜/改/连线等步骤）
 function renderAgentSteps(steps) {
+  if (typeof renderWritingSteps === 'function') return renderWritingSteps(steps);
   if (!Array.isArray(steps) || steps.length === 0) return;
   for (const s of steps) {
     const div = document.createElement('div');
@@ -3737,7 +3856,7 @@ function initChatStop() {
   });
 }
 // 流式请求公共入口：POST /api/chat {stream:true}，返回 {reply, steps, usage, proposals}；abort 可中途停止
-async function chatFetchStream(payload, onDelta) {
+async function chatFetchStream(payload, onDelta, onEvent) {
   chatAbort = new AbortController();
   setChatBusy(true);
   try {
@@ -3756,6 +3875,7 @@ async function chatFetchStream(payload, onDelta) {
     const dec = new TextDecoder('utf-8');
     let buf = '';
     const result = { reply: '', steps: [], usage: null, proposals: [], error: null };
+    let receivedDone = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -3776,16 +3896,20 @@ async function chatFetchStream(payload, onDelta) {
         if (event === 'delta') { result.reply += obj.text || ''; }
         else if (event === 'tool') { result.steps.push({ tool: obj.name, summary: obj.summary }); }
         else if (event === 'done') {
+          receivedDone = true;
+          result.outcome = obj.outcome || 'completed';
           if (obj.reply) result.reply = obj.reply;
           if (Array.isArray(obj.proposals)) result.proposals = obj.proposals;
           if (Array.isArray(obj.steps) && obj.steps.length) result.steps = obj.steps;
           result.usage = obj.usage || result.usage;
         } else if (event === 'error') { result.error = obj.message; }
+        if (typeof onEvent === 'function') onEvent(event, obj);
       }
       // 增量渲染回调
       if (typeof onDelta === 'function' && result.reply) onDelta(result.reply);
     }
     if (result.error) throw new Error(result.error);
+    if (!receivedDone) throw new Error('连接在任务完成前中断，可在当前任务中继续');
     return result;
   } catch (e) {
     if (e.name === 'AbortError') { const err = new Error('stopped'); err.stopped = true; throw err; }
@@ -3797,6 +3921,7 @@ async function chatFetchStream(payload, onDelta) {
 }
 
 async function sendChat() {
+  if (typeof sendWritingChat === 'function') return sendWritingChat();
   const text = chatInput.value.trim();
   if (!text) return;
   chatInput.value = '';
@@ -4533,11 +4658,11 @@ chatMessages.addEventListener('keydown', (e) => {
   }
 });
 // ── 对话框：拖拽调整大小 + 停靠位置（底部/右侧/左侧/悬浮） ──
-function chatDockNow() { try { return localStorage.getItem('novelCanvasChatDock') || 'bottom'; } catch (_) { return 'bottom'; } }
+function chatDockNow() { try { return localStorage.getItem('novelCanvasChatDock') || 'right'; } catch (_) { return 'right'; } }
 function chatSizes() {
-  let h = 300, w = 360, fr = null;
+  let h = 360, w = 460, fr = null;
   try { h = parseInt(localStorage.getItem('novelCanvasChatHeight') || '300', 10) || 300; } catch (_) {}
-  try { w = parseInt(localStorage.getItem('novelCanvasChatWidth') || '360', 10) || 360; } catch (_) {}
+  try { w = parseInt(localStorage.getItem('novelCanvasChatWidth') || '460', 10) || 460; } catch (_) {}
   try { fr = JSON.parse(localStorage.getItem('novelCanvasChatFloat') || 'null'); } catch (_) {}
   if (!fr || typeof fr.x !== 'number') fr = { x: Math.round(window.innerWidth * 0.55), y: 70, w: 420, h: 480 };
   return { bottom: h, side: w, float: fr };
@@ -4550,6 +4675,10 @@ function syncChatPanel() {
   const centerArea = document.getElementById('centerArea');
   const dock = chatDockNow();
   const collapsed = isChatCollapsed();
+  const wideBtn = document.getElementById('chatWideBtn');
+  if (wideBtn) wideBtn.textContent = panel.classList.contains('chat-wide') ? '还原' : '⛶';
+  panel.classList.toggle('chat-collapsed', collapsed);
+  if (typeof syncWritingDetail === 'function') syncWritingDetail(dock, collapsed);
   const s = chatSizes();
   panel.classList.remove('dock-bottom', 'dock-right', 'dock-left', 'dock-float');
   panel.classList.add('dock-' + dock);
@@ -4595,6 +4724,7 @@ function toggleChat() {
     btn.textContent = '—';
     if (activityChat) activityChat.classList.add('on');
   } else {
+    chatPanel.classList.remove('chat-wide');
     msgs.style.display = 'none';
     row.style.display = 'none';
     if (skillBar) skillBar.style.display = 'none';
@@ -4658,7 +4788,7 @@ function initChatFloatDrag() {
   if (!header || !panel) return;
   header.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (!panel.classList.contains('dock-float')) return;
+    if (!panel.classList.contains('dock-float') || panel.classList.contains('chat-wide')) return;
     if (e.target.closest('select, button, input, textarea')) return;
     e.preventDefault();
     const r = panel.getBoundingClientRect();
@@ -4703,6 +4833,7 @@ function selectedSkills() {
   return [...document.querySelectorAll('#skillBar .skillChip.active')].map(b => b.dataset.name);
 }
 async function newChat() {
+  if (typeof newWritingTask === 'function') return newWritingTask();
   if (!(await confirmDialog('清空当前项目的对话记录？'))) return;
   chatHistory = [];
   clearPendingRefs();
@@ -4712,7 +4843,7 @@ async function newChat() {
 document.getElementById('newChatBtn').addEventListener('click', (e) => { e.stopPropagation(); newChat(); });
 document.getElementById('chatToggle').addEventListener('click', toggleChat);
 document.getElementById('chatHeader').addEventListener('click', (e) => {
-  if (e.target.closest('#chatToggle, #chatModel, #newChatBtn, select, button')) return;
+  if (e.target.closest('details, select, button')) return;
   if (document.getElementById('chatPanel').classList.contains('dock-float')) return; // 悬浮时标题只用于拖动
   toggleChat();
 });
@@ -4731,6 +4862,7 @@ sidebarCollapseBtn.addEventListener('click', () => {
 });
 sidebarShowBtn.addEventListener('click', () => {
   sidebarEl.classList.remove('hidden');
+  sidebarEl.classList.add('responsive-open');
   document.getElementById('sidebarResizer').classList.remove('hidden');
   sidebarShowBtn.classList.remove('show');
 });
@@ -4971,20 +5103,29 @@ window.addEventListener('resize', () => { if (document.getElementById('minimap')
 
 // ── 主题设置 ──────────────────────────────────────────────
 const THEME_KEY = 'novelTheme';
-function defaultTheme() { return { mode: 'dark', accent: '#ffb454' }; }
+function defaultTheme() { return { mode: 'light', accent: '#315c72' }; }
 function loadTheme() {
-  try { return Object.assign(defaultTheme(), JSON.parse(localStorage.getItem(THEME_KEY)) || {}); }
+  try {
+    const t = Object.assign(defaultTheme(), JSON.parse(localStorage.getItem(THEME_KEY)) || {});
+    if (t.accent === '#ffb454') t.accent = '#315c72'; // 迁移旧默认琥珀，保留浅深色选择和其他自选颜色
+    return t;
+  }
   catch (_) { return defaultTheme(); }
 }
 function applyTheme(t) {
   document.documentElement.dataset.theme = t.mode;
-  document.documentElement.style.setProperty('--accent', t.accent);
+  const color = t.mode === 'dark' && t.accent === '#315c72' ? '#9cc4d5' : t.accent;
+  document.documentElement.style.setProperty('--accent', color);
+  document.documentElement.style.setProperty('--button-bg', color);
+  const rgb = /^#[0-9a-f]{6}$/i.test(color) ? [1,3,5].map(i => parseInt(color.slice(i,i+2),16) / 255).map(v => v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055,2.4)) : [0,0,0];
+  const light = .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2];
+  document.documentElement.style.setProperty('--button-text', light > .179 ? '#182b35' : '#fff');
 }
 function initTheme() {
   const t = loadTheme();
   applyTheme(t);
   document.getElementById('themeMode').value = t.mode;
-  const ACCENTS = ['#ffb454', '#7aa2f7', '#a78bfa', '#34d399', '#f87171', '#f59e0b'];
+  const ACCENTS = ['#315c72', '#4e8076', '#7b6b99', '#a47946', '#a34e5e', '#64717d'];
   const wrap = document.getElementById('accentSwatches');
   wrap.innerHTML = '';
   for (const c of ACCENTS) {
@@ -5860,11 +6001,11 @@ function renderPlot() {
     '</div>';
 
   const devHtml = plotDevices.length
-    ? '<details class="plotDevices"><summary>已用桥段 ' + plotDevices.length + ' 条（新提案会避开它们）</summary>' +
+    ? '<details class="plotDevices"><summary>桥段记录 ' + plotDevices.length + ' 条（新提案会避开它们）</summary>' +
       plotDevices.slice(-20).reverse().map(d =>
         '<div class="plotField"><b>' + escapeHtml(d.span || '—') + '</b><span>' + escapeHtml(d.title) + '：' + escapeHtml((d.summary || '').slice(0, 80)) +
-        (d.chapter ? '（第 ' + d.chapter + ' 章）' : '') + '</span></div>').join('') + '</details>'
-    : '<span class="plotDevices">还没有已用桥段记录 —— 采纳第一个方案后会自动记下来，后续提案会避开它。</span>';
+        (d.state === 'planned' ? '（已采纳大纲，尚未确认写入正文）' : (d.chapter ? '（第 ' + d.chapter + ' 章）' : '')) + '</span></div>').join('') + '</details>'
+    : '<span class="plotDevices">还没有桥段记录 —— 接受大纲提案并写盘后会记下来，后续提案会避开它。</span>';
 
   let listHtml;
   if (plotBusy) {
@@ -5945,12 +6086,10 @@ async function adoptPlot(i) {
     });
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    plotDevices = []; // 已记入桥段库，下次进标签重新拉
     showToast('已生成大纲提案：' + d.target, 'success');
     closeAnalysis();
     if (typeof switchSidebarMode === 'function') switchSidebarMode('files');
-    if (typeof openFile === 'function') await openFile(d.proposal.file);
-    if (typeof renderFileProposal === 'function') renderFileProposal(d.proposal);
+    if (typeof openFileProposal === 'function') await openFileProposal(d.proposal);
   } catch (e) {
     showToast('采纳失败：' + e.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = '采纳 → 生成分章大纲提案'; }
@@ -6098,31 +6237,84 @@ function wireDeslopHits() {
 // ── 监控中心（单一数据源 /api/health）──────────────────────────────
 // 原则：所有数字都来自服务端聚合接口，前端不再自己算一遍；每个数字可下钻到「待办明细」，
 // 每条告警都能 focusNode() 跳到对应节点（禁止用 showDetail 跳转，见 v1.20 的隐性依赖）。
-async function fetchHealth() {
-  const res = await fetch('/api/health?project=' + encodeURIComponent(currentProject));
+async function fetchHealth(project = currentProject) {
+  const res = await fetch('/api/health?project=' + encodeURIComponent(project));
   const d = await res.json();
   if (d.error) throw new Error(d.error);
   return d;
 }
+
+function publishHealth(d, project) {
+  healthSnapshot = { ...d, project, chapters: nodes.filter(n => n.label === '章节') };
+  healthCacheKey = project;
+  healthCacheHtml = renderHealth(d);
+  const body = document.getElementById('healthBody');
+  if (body && analysisTab === 'health') {
+    body.innerHTML = healthCacheHtml;
+    wireHealthClicks();
+  }
+  renderHealthBar(d);
+}
+
+// 只刷新磁盘快照与监控，不重建编辑器、不清空草稿、不改变平移/缩放及聊天状态。
+async function refreshProjectMonitor(project = currentProject) {
+  if (!project || project !== currentProject) return;
+  const seq = ++projectDataRequestSeq;
+  const healthSeq = ++healthRequestSeq;
+  const [data, health] = await Promise.all([
+    fetch('/api/data?project=' + encodeURIComponent(project)).then(r => r.json()),
+    fetchHealth(project)
+  ]);
+  if (seq !== projectDataRequestSeq || project !== currentProject) return;
+  if (data.error) throw new Error(data.error);
+  nodes = data.nodes;
+  nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
+  ensureGroupNodeMap();
+  unrecognizedFiles = new Set(nodes.filter(n => n.unrecognized).map(n => n.file));
+  links = buildLinks();
+  statsCacheKey = '';
+  renderSidebar();
+  renderFilters(true);
+  renderNodes();
+  applyFilters();
+  renderAxisView();
+  applyAxisTransform();
+  redrawEdges();
+  updateStatusBar();
+  if (healthSeq === healthRequestSeq) publishHealth(health, project);
+  document.dispatchEvent(new Event('projectDataUpdated'));
+}
+
+setInterval(() => {
+  if (!document.hidden && currentProject && viewStateReady && !axisPanning && !panning) refreshProjectMonitor().catch(() => {});
+}, 60000);
 
 // 状态栏迷你监控条：伏笔待收 / 一致性分 / 待办数（数据来自同一个 /api/health）。
 // 刻意不含「字数」——字数·章数已由紧邻的 #statusWords 常驻显示，重复显示只会让状态栏更挤。
 async function refreshHealthBar() {
   const el = document.getElementById('statusHealth');
   if (!el || !currentProject) return;
+  const project = currentProject, seq = ++healthRequestSeq;
   try {
-    const d = await fetchHealth();
-    const open = (d.foreshadow && d.foreshadow.open) || 0;
-    const alerts = (d.alerts || []).filter(a => a.level === 'warn').length;
-    const avg = d.consistency && d.consistency.totalAudits ? d.consistency.avgOverall : null;
-    const parts = [];
-    if (open > 0) parts.push('<span class="' + (alerts ? 'shWarn' : '') + '">伏笔待收 ' + open + '</span>');
-    if (avg != null) parts.push('一致性 ' + avg);
-    if (alerts > 0) parts.push('<span class="shWarn">待办 ' + alerts + '</span>');
-    el.innerHTML = parts.length ? parts.join(' · ') : '监控正常';
+    const d = await fetchHealth(project);
+    if (project !== currentProject || seq !== healthRequestSeq) return;
+    publishHealth(d, project);
   } catch (_) {
-    el.textContent = '';
+    if (project === currentProject && seq === healthRequestSeq) el.textContent = '';
   }
+}
+
+function renderHealthBar(d) {
+  const el = document.getElementById('statusHealth');
+  if (!el) return;
+  const open = (d.foreshadow && d.foreshadow.open) || 0;
+  const alerts = (d.alerts || []).filter(a => a.level === 'warn').length;
+  const avg = d.consistency && d.consistency.totalAudits ? d.consistency.avgOverall : null;
+  const parts = [];
+  if (open > 0) parts.push('<span class="' + (alerts ? 'shWarn' : '') + '">伏笔待收 ' + open + '</span>');
+  if (avg != null) parts.push('一致性 ' + avg);
+  if (alerts > 0) parts.push('<span class="shWarn">待办 ' + alerts + '</span>');
+  el.innerHTML = parts.length ? parts.join(' · ') : '监控正常';
 }
 
 async function loadHealth() {
@@ -6135,14 +6327,13 @@ async function loadHealth() {
     return;
   }
   body.innerHTML = '<div class="hint">加载中...</div>';
+  const seq = ++healthRequestSeq;
   try {
-    const d = await fetchHealth();
-    healthCacheHtml = renderHealth(d);
-    healthCacheKey = key;
-    if (analysisTab !== 'health') return; // 请求返回时用户可能已切走
-    body.innerHTML = healthCacheHtml;
-    wireHealthClicks();
+    const d = await fetchHealth(key);
+    if (key !== currentProject || seq !== healthRequestSeq) return;
+    publishHealth(d, key);
   } catch (e) {
+    if (key !== currentProject || seq !== healthRequestSeq || analysisTab !== 'health') return;
     body.innerHTML = '<div class="hint">加载失败：' + escapeHtml(e.message) + '</div>';
   }
 }
@@ -6208,7 +6399,7 @@ function renderHealth(d) {
 // 卡片下钻：把「数字」展开成「待办明细」，条目再点一次跳画布
 function buildHealthDrill(kind, d) {
   if (kind === 'chapters' || kind === 'words') {
-    const list = nodes.filter(n => n.label === '章节')
+    const list = [...(d.chapters || [])]
       .sort((a, b) => (Number(nodeAxisData(a).chapter) || 0) - (Number(nodeAxisData(b).chapter) || 0));
     return '<div class="drillHead">共 ' + list.length + ' 章（点章节跳转 · 字数不含空白）</div>' +
       drillRows(list, n => {
@@ -6246,7 +6437,6 @@ function wireHealthClicks() {
   const body = document.getElementById('healthBody');
   if (!body || body._healthWired) return;
   body._healthWired = true;
-  let lastHealth = null;
   body.addEventListener('click', async (e) => {
     // ⓪ 从监控直达剧情提案（待办 → 方案）
     const toPlot = e.target.closest('[data-hplot]');
@@ -6269,11 +6459,11 @@ function wireHealthClicks() {
     const openKind = existing ? existing.dataset.hkind : null;
     if (existing) existing.remove();
     if (openKind === kind) return; // 再点同一个卡片 = 收起
-    if (!lastHealth) { try { lastHealth = await fetchHealth(); } catch (_) { return; } }
+    if (!healthSnapshot || healthSnapshot.project !== currentProject) return;
     const panel = document.createElement('div');
     panel.className = 'drillPanel';
     panel.dataset.hkind = kind;
-    panel.innerHTML = buildHealthDrill(kind, lastHealth);
+    panel.innerHTML = buildHealthDrill(kind, healthSnapshot);
     host.innerHTML = '';
     host.appendChild(panel);
     panel.querySelectorAll('.drillRow').forEach(r => {

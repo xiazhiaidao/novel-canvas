@@ -1,0 +1,564 @@
+// AI 写作面板：任务与本次资料在发送前确定，文件修改仍走既有提案审阅。
+let writingBusy = false, writingPreparing = null;
+let sourcePreviewSeq = 0, sourcePreviewTimer = null, sourceProject = '';
+let chatExcludedIds = new Set(), chatSourcePacket = null;
+let detailHiddenByChat = false;
+const writingDrafts = new Map();
+const writingTaskStores = new Map(), writingProposalCache = new Map();
+const writingChangesPanel = document.getElementById('chatChanges');
+let activeWritingTask = null, writingTaskProject = '', writingTaskSaveTimer = null;
+const writingStateLabels = { idle:'未开始', running:'执行中', completed:'已完成', review:'待审阅', stopped:'已停止', failed:'执行失败', interrupted:'已中断', limited:'待继续' };
+
+function writingTasksKey(project) { return 'novelAgentTasks_' + encodeURIComponent(project); }
+function writingStore(project = currentProject) { return writingTaskStores.get(project); }
+function saveWritingTasks(project = currentProject) {
+  const store = writingStore(project);
+  if (!store) return;
+  try { localStorage.setItem(writingTasksKey(project), JSON.stringify(store)); }
+  catch (_) { showToast('任务记录保存失败：浏览器存储空间不足，请保留当前窗口并导出重要内容', 'error'); }
+}
+function captureWritingTask() {
+  if (!activeWritingTask || writingTaskProject !== currentProject) return;
+  activeWritingTask.draft = chatInput.value;
+  activeWritingTask.refs = pendingRefs.map(r => ({ ...r }));
+  activeWritingTask.target = document.getElementById('chatTarget').value;
+  activeWritingTask.excluded = [...chatExcludedIds];
+  activeWritingTask.mode = document.getElementById('chatAllowProposals').checked ? 'agent' : 'discuss';
+  activeWritingTask.role = document.getElementById('chatTask').value;
+  activeWritingTask.messages = chatHistory;
+}
+function writingTaskChanged() {
+  captureWritingTask();
+  clearTimeout(writingTaskSaveTimer);
+  const project = currentProject;
+  writingTaskSaveTimer = setTimeout(() => saveWritingTasks(project), 180);
+}
+function makeWritingTask(messages = []) {
+  return { id:crypto.randomUUID(), title:messages.find(m => m.role === 'user')?.content.slice(0,32) || '新任务', created:Date.now(), updated:Date.now(), state:'idle', messages, turns:[], proposals:[], draft:'', refs:[], excluded:[], target:'', mode:'agent', role:'general' };
+}
+function loadWritingTasks() {
+  const project = currentProject;
+  if (!project) return;
+  if (writingTaskProject === project && activeWritingTask) return;
+  let store = writingStore(project);
+  if (!store) {
+    try { store = JSON.parse(localStorage.getItem(writingTasksKey(project)) || 'null'); } catch (_) {}
+    if (!store || !Array.isArray(store.tasks)) {
+      let messages = [];
+      try { const old = JSON.parse(localStorage.getItem('novelChatHistory_' + encodeURIComponent(project)) || '[]'); if (Array.isArray(old)) messages = old.filter(m => m && ['user','assistant','ref'].includes(m.role) && typeof m.content === 'string'); } catch (_) {}
+      const task = makeWritingTask(messages); if (messages.length) task.title = '历史对话';
+      store = { activeId:task.id, tasks:[task] };
+    }
+    store.tasks = store.tasks.filter(t => t && typeof t.id === 'string' && Array.isArray(t.messages));
+    for (const task of store.tasks) {
+      task.turns = Array.isArray(task.turns) ? task.turns : []; task.proposals = Array.isArray(task.proposals) ? task.proposals : [];
+      if (task.state === 'running') task.state = 'interrupted';
+      for (const turn of task.turns) if (turn.status === 'running') { turn.status = 'interrupted'; for (const step of turn.steps || []) if (step.status === 'running') step.status = 'interrupted'; if (turn.partial) { task.messages.push({role:'assistant',content:turn.partial + '\n\n（执行已中断，可继续补充要求）'}); delete turn.partial; } }
+    }
+    if (!store.tasks.length) { const task = makeWritingTask(); store.tasks.push(task); store.activeId = task.id; }
+    writingTaskStores.set(project, store);
+  }
+  writingTaskProject = project;
+  activateWritingTask(store.activeId || store.tasks[0].id, true);
+}
+function activateWritingTask(id, loading = false) {
+  if (writingBusy && !loading) { showToast('先停止当前执行，再切换任务', 'info'); return; }
+  const store = writingStore(), task = store?.tasks.find(t => t.id === id) || store?.tasks[0];
+  if (!task) return;
+  if (!loading) { captureWritingTask(); saveWritingTasks(); }
+  activeWritingTask = task; store.activeId = task.id;
+  chatHistory = task.messages; pendingRefs = (task.refs || []).map(r => ({ ...r })); chatExcludedIds = new Set(task.excluded || []);
+  chatInput.value = task.draft || ''; chatInput.style.height = '';
+  document.getElementById('chatTask').value = task.role || 'general'; setCurrentRole(task.role || 'general');
+  document.getElementById('chatAllowProposals').checked = task.mode !== 'discuss';
+  document.getElementById('chatMode').value = task.mode === 'discuss' ? 'discuss' : 'agent';
+  refreshChatTargets(task.target || '');
+  document.getElementById('chatTarget').value = task.target || '';
+  document.getElementById('chatTaskHistory').hidden = true;
+  renderWritingTask(); saveWritingTasks(); requestChatSourcePreview();
+}
+function newWritingTask() {
+  if (!currentProject) { showToast('项目尚未加载，请稍候', 'info'); return; }
+  if (writingBusy) { showToast('先停止当前执行，再新建任务', 'info'); return; }
+  loadWritingTasks(); captureWritingTask();
+  const task = makeWritingTask(); writingStore().tasks.unshift(task);
+  activateWritingTask(task.id); expandChatPanel(); chatInput.focus();
+}
+function updateWritingTaskHeader() {
+  const title = document.getElementById('agentTaskTitle');
+  title.textContent = activeWritingTask?.title || '新任务'; title.title = title.textContent;
+  document.getElementById('chatTitle').textContent = '写作 Agent';
+  renderWritingTaskHistory();
+}
+function renderWritingTaskHistory() {
+  const host = document.getElementById('chatTaskList'), query = document.getElementById('chatTaskSearch').value.trim().toLowerCase();
+  host.replaceChildren();
+  for (const task of [...(writingStore()?.tasks || [])].sort((a,b) => b.updated - a.updated)) {
+    if (query && !String(task.title).toLowerCase().includes(query)) continue;
+    const button = document.createElement('button'); button.className = 'agentTaskItem'; button.classList.toggle('active', task.id === activeWritingTask?.id);
+    const name = document.createElement('strong'); name.textContent = task.title;
+    const meta = document.createElement('span'); meta.textContent = (writingStateLabels[task.state] || '已保存') + ' · ' + new Date(task.updated).toLocaleDateString('zh-CN');
+    button.append(name,meta); button.onclick = () => activateWritingTask(task.id); host.appendChild(button);
+  }
+  if (!host.childElementCount) host.textContent = '没有匹配的任务';
+}
+function renderWritingTurn(turn) {
+  const box = document.createElement('details'); box.className = 'agentRun'; box.dataset.turn = turn.id; box.open = ['running','failed','interrupted','limited'].includes(turn.status);
+  const summary = document.createElement('summary'); summary.className = 'agentRunSummary';
+  summary.textContent = (writingStateLabels[turn.status] || '已完成') + ' · ' + (turn.phase || '查阅与处理') + (turn.steps?.length ? ' · ' + turn.steps.length + ' 项操作' : '');
+  const list = document.createElement('div'); list.className = 'agentRunSteps';
+  for (const step of turn.steps || []) {
+    const line = document.createElement('div'); line.className = 'agentStep'; line.dataset.status = step.status;
+    const icon = document.createElement('span'); icon.className = 'agentStepMark'; icon.textContent = step.status === 'running' ? '●' : step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : '○';
+    const text = document.createElement('span'); text.textContent = step.summary; line.append(icon,text);
+    if (step.path && /\.md$/i.test(step.path)) { const open = document.createElement('button'); open.textContent = '查看'; open.onclick = () => { if (!writingBusy) { switchSidebarMode('files'); openFile(step.path).catch(e => showToast(e.message,'error')); } }; line.appendChild(open); }
+    list.appendChild(line);
+  }
+  if (!list.childElementCount) { const hint = document.createElement('div'); hint.textContent = turn.status === 'running' ? '等待 Agent 查阅与处理…' : '本轮没有调用项目工具'; list.appendChild(hint); }
+  box.append(summary,list); return box;
+}
+function renderWritingTask() {
+  chatMessages.replaceChildren(); updateWritingTaskHeader();
+  const task = activeWritingTask;
+  if (!task) return;
+  if (!task.messages.length) {
+    const empty = document.createElement('div'); empty.className = 'agentWelcome';
+    empty.innerHTML = '<h3>把一个写作任务交给 Agent</h3><p>它会查阅项目资料、处理要求，并把文件修改交给你审阅。</p><div class="agentExamples"></div>';
+    for (const prompt of ['检查当前章节的设定与人物动机', '加强这一章的冲突，保留原有人物动机', '查找尚未回收的伏笔，给出后续安排']) { const button = document.createElement('button'); button.textContent = prompt; button.onclick = () => { chatInput.value = prompt; chatInput.focus(); writingTaskChanged(); }; empty.querySelector('.agentExamples').appendChild(button); }
+    chatMessages.appendChild(empty);
+  }
+  for (const [i,m] of task.messages.entries()) {
+    addWritingMessage(m.role,m.content);
+    const turn = task.turns.find(t => t.messageIndex === i);
+    if (turn) chatMessages.appendChild(renderWritingTurn(turn));
+  }
+  renderWritingChanges(); chatScrollEnd(true);
+}
+function renderWritingContext() {
+  const host = document.getElementById('chatContextTags'); host.replaceChildren();
+  const target = writingTargetFile();
+  if (target) { const tag = document.createElement('span'); tag.className = 'agentContextTag'; tag.title = target; tag.textContent = (document.getElementById('chatTarget').value ? '重点：' : '正在编辑：') + target.split(/[\\/]/).pop(); host.appendChild(tag); }
+  for (const ref of pendingRefs) {
+    const tag = document.createElement('span'); tag.className = 'agentContextTag'; tag.title = ref.title || ref.file;
+    const label = document.createElement('span'); label.textContent = ref.title || ref.file || '选中片段';
+    const remove = document.createElement('button'); remove.textContent = '×'; remove.title = '移除该参考'; remove.disabled = writingBusy;
+    remove.onclick = () => { pendingRefs = pendingRefs.filter(r => r.id !== ref.id); writingTaskChanged(); requestChatSourcePreview(); };
+    tag.append(label,remove); host.appendChild(tag);
+  }
+  if (!host.childElementCount) { const label = document.createElement('span'); label.className = 'agentContextHint'; label.textContent = '使用当前小说的项目资料'; host.appendChild(label); }
+}
+
+function syncWritingDetail(dock, collapsed) {
+  const detail = document.getElementById('detail');
+  const resize = document.getElementById('detailResizer');
+  if (dock === 'right' && !collapsed) {
+    if (!detail.classList.contains('hidden')) detailHiddenByChat = true;
+    detail.classList.add('hidden');
+    resize.classList.add('hidden');
+    document.getElementById('detailShow').classList.remove('show');
+  } else if (detailHiddenByChat) {
+    detailHiddenByChat = false;
+    detail.classList.remove('hidden');
+    resize.classList.remove('hidden');
+  }
+}
+
+function refreshChatTargets(preferred) {
+  const sel = document.getElementById('chatTarget');
+  const previous = preferred ?? sel.value;
+  const files = [...new Set(nodes.filter(n => n.file && !n.synthetic).map(n => n.file))];
+  sel.replaceChildren(new Option('项目资料', ''));
+  for (const file of files) sel.add(new Option(file.split(/[\\/]/).pop(), file));
+  sel.value = files.includes(previous) ? previous : '';
+  if (sourceProject !== currentProject) {
+    sourceProject = currentProject;
+    chatSourcePacket = null;
+    document.getElementById('chatAllowProposals').checked = activeWritingTask?.mode !== 'discuss';
+  }
+  syncRoleBar();
+  document.getElementById('chatTitle').textContent = '写作 Agent';
+  document.getElementById('chatTitle').title = currentProject;
+  document.getElementById('sidebarBookTitle').textContent = currentProject || '小说画布';
+  document.getElementById('workspaceProjectTitle').textContent = currentProject || '情节画布';
+  document.getElementById('sidebarBookMeta').textContent = nodes.filter(n => n.label === '章节').length + ' 章 · ' + nodes.length + ' 个节点';
+  requestChatSourcePreview();
+}
+
+function writingTargetFile() {
+  const chosen = document.getElementById('chatTarget').value;
+  if (chosen) return chosen;
+  const current = activeEditorKind === 'file' && openFiles.find(f => f.path === activeFilePath && !f.pendingCreate);
+  return current ? current.path : '';
+}
+function chatSourceSpec() {
+  const targetFile = writingTargetFile();
+  const references = pendingRefs.map(r => ({ ...r }));
+  const f = openFiles.find(f => f.path === targetFile);
+  if (f && f.dirty) references.unshift({ id: 'draft:' + f.path, title: f.path, file: f.path, content: f.content, draft: true, whole: true });
+  return { project: currentProject, targetFile, references, excludedIds: [...chatExcludedIds], messages: chatHistory.filter(m => m.role !== 'ref').slice(-20) };
+}
+
+async function fetchChatSources(spec, signal) {
+  const r = await fetch('/api/chat/context', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec), signal });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error);
+  return d;
+}
+
+function requestChatSourcePreview() {
+  renderWritingContext();
+  if (!writingBusy) writingTaskChanged();
+  clearTimeout(sourcePreviewTimer);
+  const seq = ++sourcePreviewSeq, project = currentProject;
+  if (!project || writingBusy) return;
+  sourcePreviewTimer = setTimeout(async () => {
+    try {
+      const packet = await fetchChatSources(chatSourceSpec());
+      if (seq !== sourcePreviewSeq || project !== currentProject) return;
+      chatSourcePacket = packet;
+      renderChatSources(packet);
+    } catch (e) {
+      if (seq !== sourcePreviewSeq || project !== currentProject) return;
+      document.getElementById('chatSourceSummary').textContent = '资料加载失败 · 发送时会重试';
+      document.getElementById('refBar').textContent = e.message;
+    }
+  }, 0);
+}
+
+function renderChatSources(packet, sent = false) {
+  const host = document.getElementById('refBar');
+  host.style.display = 'block';
+  host.replaceChildren();
+  const shortened = packet.items.filter(i => i.truncated).length;
+  document.getElementById('chatSourceSummary').textContent = (sent ? '本轮已发送' : '本次资料') + ' · ' + packet.items.length + ' 项 · ' + packet.chars.toLocaleString() + ' 字符' + (shortened ? ' · ' + shortened + ' 项截断' : '');
+  for (const item of packet.items) {
+    const row = document.createElement('details');
+    row.className = 'chatSourceItem' + (item.kind === '手动引用' ? ' refChip' : '');
+    row.innerHTML = '<summary><span class="chatSourceTitle">' + escapeHtml(item.title) + '</span><span class="chatSourceMeta">' + escapeHtml(item.kind) + ' · ' + escapeHtml(item.truncated ? '截断 ' + item.content.length + '/' + item.originalChars : item.mode) + '</span><button title="从后续请求中移除">移除</button></summary><pre></pre>';
+    row.querySelector('pre').textContent = item.content;
+    row.querySelector('button').disabled = writingBusy;
+    row.querySelector('button').onclick = e => { e.preventDefault(); chatExcludedIds.add(item.id); requestChatSourcePreview(); };
+    const ref = pendingRefs.find(r => r.id === item.id);
+    if (ref) {
+      const pin = document.createElement('button'); pin.textContent = ref.pinned ? '已固定' : '固定'; pin.disabled = writingBusy;
+      pin.onclick = e => { e.preventDefault(); ref.pinned = !ref.pinned; requestChatSourcePreview(); };
+      row.querySelector('summary').appendChild(pin);
+    }
+    host.appendChild(row);
+  }
+  for (const item of packet.omitted || []) {
+    const note = document.createElement('div');
+    note.className = 'chatSourceWarning';
+    note.textContent = item.title + ' · ' + item.reason;
+    host.appendChild(note);
+  }
+  const historyNote = document.createElement('div'); historyNote.className = 'chatSourceWarning';
+  historyNote.textContent = '另附最近对话 ' + (packet.historyCount || 0) + ' 条（最多 20 条 / 12000 字符）' + (packet.historyOmitted ? ' · 本轮省略 ' + packet.historyOmitted + ' 条早期消息' : '');
+  host.appendChild(historyNote);
+}
+
+function chatScrollEnd(force = false) {
+  if (force || chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 100) {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    document.getElementById('chatNewReply').hidden = true;
+  } else document.getElementById('chatNewReply').hidden = false;
+}
+
+function addWritingMessage(role, text) {
+  const atEnd = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 100;
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if (role === 'assistant') {
+    const body = document.createElement('div'); body.className = 'chatMessageBody'; body.innerHTML = renderMarkdown(text); div.appendChild(body);
+    const actions = document.createElement('div'); actions.className = 'chatMessageActions';
+    const copy = document.createElement('button'); copy.textContent = '复制'; copy.onclick = () => navigator.clipboard.writeText(text).catch(() => showToast('复制失败，请选中文字复制', 'error'));
+    const quote = document.createElement('button'); quote.textContent = '引用回复'; quote.onclick = () => addSelectionToChat('', 'AI 回复', text, '', '讨论');
+    actions.append(copy, quote); div.appendChild(actions);
+  } else div.textContent = text;
+  chatMessages.appendChild(div);
+  chatScrollEnd(atEnd);
+  return div;
+}
+
+function renderWritingProposals(list) {
+  if (!Array.isArray(list)) return;
+  if (!activeWritingTask) loadWritingTasks();
+  for (const p of list || []) {
+    if (!p || !p.id) continue;
+    if (p.project && p.project !== currentProject) continue;
+    writingProposalCache.set(p.id, p);
+    const store = writingStore();
+    let owner = store.tasks.find(t => t.proposals.some(x => x.id === p.id)) || store.tasks.find(t => t.id === p.taskId);
+    if (!owner && p.taskId) { owner = makeWritingTask(); owner.id = p.taskId; owner.title = p.title || '恢复的修改任务'; store.tasks.unshift(owner); }
+    owner ||= activeWritingTask;
+    if (!owner.proposals.some(x => x.id === p.id)) owner.proposals.push({ id:p.id, file:p.file, title:p.title, kind:p.kind, project:currentProject, state:'pending' });
+    if (owner.state !== 'running') owner.state = 'review';
+    renderedProposalIds.add(p.id);
+  }
+  saveWritingTasks(); renderWritingChanges(); updateWritingTaskHeader();
+}
+
+async function getWritingProposal(id) {
+  // 审阅前读取服务端当前待审清单，避免把已应用或已拒绝的缓存再次展示为待审。
+  const project = currentProject;
+  const data = await fetch('/api/proposals?project=' + encodeURIComponent(project)).then(r => r.json());
+  if (data.error) throw new Error(data.error);
+  if (project !== currentProject) throw new Error('当前小说已切换');
+  const p = data.proposals.find(p => p.id === id);
+  if (!p) { markChatProposal(id,'unavailable'); throw new Error('这项修改已不在待审清单中，请检查文件的当前内容'); }
+  writingProposalCache.set(id,p); return p;
+}
+
+function renderWritingChanges() {
+  const panel = writingChangesPanel, host = panel.querySelector('#chatChangesBody');
+  const changes = activeWritingTask?.proposals || [], pending = changes.filter(p => p.state === 'pending').length;
+  panel.hidden = !changes.length;
+  panel.querySelector('#chatChangesSummary').textContent = '修改清单 · ' + changes.length + ' 项' + (pending ? ' · ' + pending + ' 待审阅' : ' · 已处理');
+  host.replaceChildren();
+  for (const p of changes) {
+    const card = document.createElement('div');
+    card.className = 'chatProposal'; card.id = 'chat-proposal-' + p.id; card.dataset.state = p.state;
+    card.innerHTML = '<div class="chatProposalTitle"></div><div class="chatProposalMeta"></div><div class="chatProposalActions"><button class="review">查看差异</button><button class="adjust">继续调整</button><button class="reject">拒绝</button></div>';
+    card.querySelector('.chatProposalTitle').textContent = ({pending:'待审阅', applied:'已写入', rejected:'已拒绝', unavailable:'已不在待审清单'}[p.state] || '待审阅') + ' · ' + (p.title === p.file ? p.file.split(/[\\/]/).pop() : p.title || p.file);
+    card.title = p.file;
+    card.querySelector('.chatProposalMeta').textContent = p.file + ' · ' + (p.kind === 'create' ? '新增内容' : p.kind === 'delete' ? '删除内容' : '修改内容');
+    card.querySelector('.review').onclick = async () => {
+      if (p.project && p.project !== currentProject) return;
+      try {
+        const proposal = await getWritingProposal(p.id);
+        chatPanel.classList.remove('chat-wide');
+        switchSidebarMode('files');
+        await openFileProposal(proposal);
+      } catch (e) { showToast('无法打开审阅：' + e.message, 'error'); }
+    };
+    card.querySelector('.adjust').onclick = async () => {
+      try {
+        const proposal = writingProposalCache.get(p.id) || await getWritingProposal(p.id);
+        addSelectionToChat(p.file, (p.title || p.file) + '（待审阅方案）', proposal.newContent || proposal.oldContent, '', '提案', true);
+        document.getElementById('chatAllowProposals').checked = true;
+        document.getElementById('chatMode').value = 'agent';
+        chatInput.value = '请继续调整「' + (p.title || p.file) + '」的修改方案：\n'; chatInput.focus(); writingTaskChanged();
+      } catch (e) { showToast(e.message,'error'); }
+    };
+    card.querySelector('.reject').onclick = async () => {
+      try {
+        const d = await fetch('/api/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id }) }).then(r => r.json());
+        if (d.error) throw new Error(d.error);
+        markChatProposal(p.id, 'rejected');
+        if (currentFileProposal?.id === p.id) await dismissFileProposal(p);
+      } catch (e) { showToast('拒绝失败：' + e.message, 'error'); }
+    };
+    if (p.state !== 'pending') card.querySelector('.chatProposalActions').replaceChildren();
+    else card.querySelectorAll('button').forEach(b => b.disabled = writingBusy);
+    host.appendChild(card);
+  }
+  if (pending && !writingBusy) panel.open = true;
+  chatMessages.appendChild(panel);
+}
+
+function markChatProposal(id, state) {
+  for (const [project, store] of writingTaskStores) {
+    const task = store.tasks.find(t => t.proposals.some(p => p.id === id));
+    if (!task) continue;
+    task.proposals.find(p => p.id === id).state = state;
+    if (task.state === 'review' && task.proposals.every(p => p.state !== 'pending')) task.state = 'completed';
+    saveWritingTasks(project);
+  }
+  const card = document.getElementById('chat-proposal-' + id);
+  if (!card) return;
+  card.dataset.state = state;
+  card.querySelector('.chatProposalTitle').textContent = (state === 'applied' ? '已写入' : state === 'rejected' ? '已拒绝' : '已不在待审清单') + ' · ' + card.querySelector('.chatProposalMeta').textContent.split(' · ')[0];
+  card.querySelector('.chatProposalActions').replaceChildren();
+  const changes = activeWritingTask?.proposals || [], pending = changes.filter(p => p.state === 'pending').length;
+  writingChangesPanel.querySelector('#chatChangesSummary').textContent = '修改清单 · ' + changes.length + ' 项' + (pending ? ' · ' + pending + ' 待审阅' : ' · 已处理');
+  updateWritingTaskHeader();
+}
+
+function renderWritingSteps(steps) {
+  if (!steps?.length) return;
+  const group = document.createElement('details'); group.className = 'chatSteps';
+  const summary = document.createElement('summary'); summary.textContent = '本轮查阅与操作 · ' + steps.length + ' 项'; group.appendChild(summary);
+  for (const s of steps) { const line = document.createElement('div'); line.textContent = s.summary || s.tool; group.appendChild(line); }
+  chatMessages.appendChild(group); chatScrollEnd();
+}
+
+function setWritingControls(disabled) {
+  ['chatTask', 'chatTarget', 'chatAllowProposals', 'chatMode', 'newChatBtn', 'chatTaskHistoryBtn', 'chatAttachActive', 'chatRestoreSources'].forEach(id => { document.getElementById(id).disabled = disabled; });
+}
+
+async function sendWritingChat() {
+  const text = chatInput.value.trim();
+  if (!text || writingBusy || chatAbort) return;
+  if (text.length > 12000) { showToast('单次要求超过 12000 字符，请将正文作为参考资料添加', 'error'); return; }
+  loadWritingTasks(); captureWritingTask();
+  const task = activeWritingTask;
+  const project = currentProject, storageKey = chatStorageKey(), history = chatHistory;
+  task.messages = history;
+  const refs = pendingRefs.map(r => ({ ...r }));
+  const spec = chatSourceSpec();
+  spec.messages = history.filter(m => m.role !== 'ref').concat({ role: 'user', content: text }).slice(-20);
+  const role = document.getElementById('chatTask').value;
+  const allowProposals = document.getElementById('chatAllowProposals').checked;
+  const model = document.getElementById('chatModel').value;
+  const turn = { id:crypto.randomUUID(), messageIndex:history.length, request:text, status:'running', phase:'正在准备项目资料', steps:[], started:Date.now() };
+  task.turns.push(turn); task.state = 'running'; task.updated = Date.now();
+  if (task.title === '新任务') task.title = text.split('\n')[0].slice(0,32);
+  history.push({ role:'user', content:text });
+  const welcome = chatMessages.querySelector('.agentWelcome'); if (welcome) welcome.remove();
+  addMsg('user',text); chatMessages.appendChild(renderWritingTurn(turn)); updateWritingTaskHeader(); saveWritingTasks(project);
+  ++sourcePreviewSeq; clearTimeout(sourcePreviewTimer);
+  writingBusy = true; writingPreparing = new AbortController(); setChatBusy(true); setWritingControls(true);
+  let live = null, persistTimer = null;
+  function updateRun() {
+    if (project === currentProject && task.id === activeWritingTask?.id) {
+      const old = chatMessages.querySelector('[data-turn="' + turn.id + '"]'); if (old) old.replaceWith(renderWritingTurn(turn));
+    }
+    clearTimeout(persistTimer); persistTimer = setTimeout(() => saveWritingTasks(project),180);
+  }
+  function executionEvent(event, data) {
+    if (event === 'phase') turn.phase = data.summary;
+    if (event === 'tool_start' || event === 'tool') {
+      const step = { ...data, tool:data.name || data.tool, status:event === 'tool_start' ? 'running' : data.status || 'completed' };
+      const index = turn.steps.findIndex(s => s.stepId === data.stepId);
+      if (index >= 0) turn.steps[index] = step; else turn.steps.push(step);
+      turn.phase = event === 'tool_start' ? data.summary : '正在继续处理任务';
+    }
+    if (event === 'proposal' && data.proposal) {
+      const p = data.proposal; writingProposalCache.set(p.id,p);
+      if (!task.proposals.some(x => x.id === p.id)) task.proposals.push({ id:p.id, file:p.file, title:p.title, kind:p.kind, project, state:'pending' });
+      if (project === currentProject) renderWritingChanges();
+    }
+    if (event !== 'delta') updateRun();
+  }
+  try {
+    const packet = await fetchChatSources(spec, writingPreparing.signal);
+    if (project !== currentProject) { const e = new Error('stopped'); e.stopped = true; throw e; }
+    writingPreparing = null;
+    chatSourcePacket = packet;
+    renderChatSources(packet, true);
+    chatInput.value = '';
+    turn.sources = packet.items.map(i => ({ title:i.title,kind:i.kind,truncated:i.truncated }));
+    if (spec.targetFile && [...document.getElementById('chatTarget').options].some(o => o.value === spec.targetFile)) { document.getElementById('chatTarget').value = spec.targetFile; task.target = spec.targetFile; renderWritingContext(); }
+    turn.phase = '资料已准备，正在执行任务'; updateRun();
+    live = document.createElement('div'); live.className = 'msg assistant'; chatMessages.appendChild(live); chatScrollEnd(true);
+    const result = await chatFetchStream({ project, role, model, workspaceMode:allowProposals ? 'agent' : 'discuss', taskId:task.id, turnId:turn.id, messages: history.filter(m => m.role !== 'ref').slice(-20), contextPacket: packet, allowProposals }, delta => {
+      turn.partial = delta;
+      clearTimeout(persistTimer); persistTimer = setTimeout(() => saveWritingTasks(project),180);
+      if (project !== currentProject || !live.isConnected) return;
+      const atEnd = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 100;
+      live.textContent = delta; live.dataset.partial = delta; chatScrollEnd(atEnd);
+    }, executionEvent);
+    const reply = result.reply || '（无回复）';
+    history.push({ role: 'assistant', content: reply });
+    turn.status = result.outcome === 'limited' ? 'limited' : 'completed'; turn.phase = result.outcome === 'limited' ? '达到本轮执行上限，可继续补充要求' : '本轮处理结束'; delete turn.partial;
+    task.state = turn.status === 'limited' ? 'limited' : task.proposals.some(p => p.state === 'pending') || result.proposals?.length ? 'review' : 'completed';
+    updateRun();
+    try { localStorage.setItem(storageKey, JSON.stringify(history)); } catch (_) {}
+    if (project !== currentProject) return;
+    live.remove(); addMsg('assistant', reply); renderProposals(result.proposals); addUsageNote(result.usage);
+    pendingRefs = pendingRefs.filter(r => !refs.some(sent => sent.id === r.id) || r.pinned);
+  } catch (e) {
+    const partial = live?.dataset.partial || '';
+    const stopped = e.stopped || e.name === 'AbortError';
+    turn.status = stopped ? 'stopped' : 'failed'; task.state = turn.status; turn.phase = stopped ? '已停止，已有结果保留' : e.message;
+    for (const step of turn.steps) if (step.status === 'running') step.status = stopped ? 'stopped' : 'failed';
+    updateRun();
+    if (live || project === currentProject) {
+      const message = partial + (stopped ? '\n\n（已停止生成）' : '\n\n请求失败：' + e.message);
+      history.push({ role: 'assistant', content: message });
+      try { localStorage.setItem(storageKey, JSON.stringify(history)); } catch (_) {}
+      if (project === currentProject) { live?.remove(); addMsg('assistant', message); }
+    }
+    if (project === currentProject) {
+      if (!chatInput.value) chatInput.value = text;
+      showToast(stopped ? '已停止，要求和引用已保留' : '发送失败：' + e.message, stopped ? 'info' : 'error');
+    }
+  } finally {
+    clearTimeout(persistTimer);
+    writingBusy = false; writingPreparing = null; setChatBusy(false); setWritingControls(false);
+    if (project === currentProject) { captureWritingTask(); renderWritingChanges(); renderWritingContext(); updateWritingTaskHeader(); if (chatSourcePacket) renderChatSources(chatSourcePacket, !!live); }
+    saveWritingTasks(project);
+  }
+}
+
+document.getElementById('chatTask').onchange = e => {
+  setCurrentRole(e.target.value);
+  document.getElementById('chatAllowProposals').checked = ['outline', 'writer', 'polish'].includes(e.target.value);
+  document.getElementById('chatMode').value = document.getElementById('chatAllowProposals').checked ? 'agent' : 'discuss';
+  const hints = { general: '讨论冲突、节奏或下一步剧情…', character: '描述人物的目标、动机或关系…', outline: '描述想规划的故事段落…', writer: '说明目标章节、场景及必须保留的信息…', polish: '说明要改的范围、节奏和文风…', reviewer: '说明要检查的设定、时间线或人物状态…' };
+  chatInput.placeholder = hints[e.target.value] + '（Shift+Enter 换行）';
+  writingTaskChanged();
+};
+document.getElementById('chatMode').onchange = e => { document.getElementById('chatAllowProposals').checked = e.target.value === 'agent'; writingTaskChanged(); };
+document.getElementById('chatTarget').onchange = () => { document.getElementById('chatScope').open = false; requestChatSourcePreview(); };
+document.getElementById('chatTaskHistoryBtn').onclick = () => { captureWritingTask(); saveWritingTasks(); renderWritingTaskHistory(); document.getElementById('chatTaskHistory').hidden = false; document.getElementById('chatTaskSearch').focus(); };
+document.getElementById('chatTaskHistoryClose').onclick = () => document.getElementById('chatTaskHistory').hidden = true;
+document.getElementById('chatTaskSearch').oninput = renderWritingTaskHistory;
+document.getElementById('writingToolsBtn').onclick = e => {
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  showMenu(r.left, r.bottom + 4, [
+    { label: '生成下一章', action: runWriteChapter },
+    { label: '人物推进', action: () => runAdvance() },
+    { label: '章节核心', action: runCores },
+    { label: '卷管理', action: runVolumes }
+  ]);
+};
+document.getElementById('chatAttachActive').onclick = () => {
+  const f = openFiles.find(f => f.path === activeFilePath);
+  const n = nodeMap[currentDetailNodeId];
+  if (activeEditorKind === 'file' && f) addSelectionToChat(f.path, f.path, f.content, '', '文件', true);
+  else if (n) addRefToChat(n);
+  else showToast('先打开文件或选中画布节点，再添加资料', 'info');
+};
+document.getElementById('chatRestoreSources').onclick = () => { chatExcludedIds.clear(); requestChatSourcePreview(); };
+document.getElementById('chatNewReply').onclick = () => chatScrollEnd(true);
+document.getElementById('chatWideBtn').onclick = () => { chatPanel.classList.toggle('chat-wide'); document.getElementById('chatWideBtn').textContent = chatPanel.classList.contains('chat-wide') ? '还原' : '⛶'; };
+document.getElementById('detailAiTab').onclick = () => expandChatPanel();
+document.getElementById('chatDetailTab').onclick = () => {
+  if (!isChatCollapsed()) toggleChat();
+  document.getElementById('detail').classList.remove('hidden');
+  document.getElementById('detailResizer').classList.remove('hidden');
+};
+document.getElementById('detailShow').addEventListener('click', () => { if (chatDockNow() === 'right' && !isChatCollapsed()) toggleChat(); });
+document.getElementById('chatStop').addEventListener('click', () => writingPreparing?.abort());
+chatInput.addEventListener('input', () => { chatInput.style.height = 'auto'; chatInput.style.height = Math.min(160, chatInput.scrollHeight) + 'px'; writingTaskChanged(); });
+document.addEventListener('projectDataUpdated', () => refreshChatTargets());
+document.addEventListener('detailNodeChanged', e => { if (!writingBusy) refreshChatTargets(e.detail.file); });
+document.addEventListener('activeFileChanged', () => { if (!writingBusy) requestChatSourcePreview(); });
+document.getElementById('projectSelect').addEventListener('change', () => {
+  if (activeWritingTask) { activeWritingTask.draft = chatInput.value; activeWritingTask.refs = pendingRefs.map(r => ({...r})); saveWritingTasks(writingTaskProject); }
+  writingDrafts.set(sourceProject, chatInput.value);
+  writingPreparing?.abort(); chatAbort?.abort(); ++sourcePreviewSeq;
+  chatExcludedIds.clear(); chatSourcePacket = null; pendingRefs = []; chatHistory = [];
+  chatMessages.replaceChildren();
+  chatInput.value = writingDrafts.get(currentProject) || '';
+  document.getElementById('chatTarget').value = '';
+  document.getElementById('refBar').replaceChildren();
+  document.getElementById('chatSourceSummary').textContent = '正在加载当前项目资料…';
+  activeWritingTask = null; writingTaskProject = ''; document.getElementById('chatTaskHistory').hidden = true; writingChangesPanel.hidden = true; document.getElementById('chatContextTags').replaceChildren();
+});
+refreshChatTargets();
+syncChatPanel();
+if (innerWidth > 980) expandChatPanel();
+
+document.getElementById('workspaceNewNode').onclick = () => openNewNodeModal('role');
+document.getElementById('axisHelpBtn').onclick = e => {
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  showMenu(r.left,r.bottom + 4,[
+    { label:'拖空白平移 · 滚轮缩放', action:() => showToast('拖动画布空白区域平移；在绘图区滚动鼠标滚轮缩放', 'info') },
+    { label:'拖节点调整章号与推进', action:() => showToast('节点横向位置对应章号，纵向位置对应推进；泳道视图按剧情线排列', 'info') },
+    { label:'定位当前节点（恢复可读大小）', action:() => { const n = nodeMap[currentDetailNodeId]; if (n) focusNode(n.id); else showToast('先选中节点', 'info'); } },
+    { label:'查看全图', action:axisFitAll }
+  ]);
+};
+document.querySelectorAll('.workspaceMenu').forEach(menu => {
+  menu.addEventListener('toggle', () => { if (menu.open) document.querySelectorAll('.workspaceMenu').forEach(other => { if (other !== menu) other.open = false; }); });
+  menu.addEventListener('click', e => { if (e.target.closest('button')) menu.open = false; });
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.workspaceMenu')) document.querySelectorAll('.workspaceMenu').forEach(menu => menu.open = false);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.getElementById('chatTaskHistory').hidden = true; document.querySelectorAll('.workspaceMenu,.fileTools,.chatMore,#chatScope').forEach(menu => menu.open = false); } });
+new ResizeObserver(() => updateAxisRulers()).observe(document.getElementById('canvasWrap'));

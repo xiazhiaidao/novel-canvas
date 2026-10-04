@@ -100,6 +100,8 @@ function setCurrentRole(role) {
   try { localStorage.setItem(roleStorageKey(), role || 'general'); } catch (e) {}
 }
 function syncRoleBar(role) {
+  var task = document.getElementById('chatTask');
+  if (task) task.value = role || currentRole();
   var bar = document.getElementById('roleBar');
   if (!bar) return;
   var target = role || currentRole();
@@ -108,8 +110,9 @@ function syncRoleBar(role) {
   });
 }
 function loadChatHistory(showHint) {
+  if (typeof loadWritingTasks === 'function') { loadWritingTasks(); return; }
   var key = chatStorageKey();
-  try { var saved = JSON.parse(localStorage.getItem(key) || "[]"); chatHistory = Array.isArray(saved) ? saved.slice(-20) : []; } catch(e) { chatHistory = []; }
+  try { var saved = JSON.parse(localStorage.getItem(key) || "[]"); chatHistory = Array.isArray(saved) ? saved : []; } catch(e) { chatHistory = []; }
   chatMessages.innerHTML = "";
   if (chatHistory.length) { for (var i=0;i<chatHistory.length;i++) addMsg(chatHistory[i].role, chatHistory[i].content); }
   else if (showHint) { addMsg("ref", "已切换到《" + currentProject + "》，聊天上下文已按项目隔离"); addMsg("assistant", "你好，我可以结合画布上的角色/设定/伏笔帮你聊剧情。"); }
@@ -150,6 +153,7 @@ function expandChatPanel() {
   if (bar) bar.style.display = pendingRefs && pendingRefs.length ? "flex" : "none";
 }
 function renderRefBar() {
+  if (typeof requestChatSourcePreview === 'function') { requestChatSourcePreview(); return; }
   var bar = document.getElementById("refBar");
   if (!bar) return;
   bar.innerHTML = "";
@@ -176,8 +180,8 @@ function removePendingRef(idx) {
   pendingRefs.splice(idx, 1);
   renderRefBar();
 }
-function clearPendingRefs() {
-  pendingRefs = [];
+function clearPendingRefs(keepPinned = false) {
+  pendingRefs = keepPinned ? pendingRefs.filter(r => r.pinned) : [];
   renderRefBar();
 }
 function addSelectionToChat(file, title, content, lineRange, label, whole) {
@@ -190,8 +194,8 @@ function addSelectionToChat(file, title, content, lineRange, label, whole) {
   var short = isFile ? String(name).split('/').pop() : name;
   var chipLabel = (isFile ? "📄 " + (short || "文件") : (kind + " · " + (short || kind))) + (lineRange ? " · 行" + lineRange : "");
   var head = whole ? "引用" : "选中片段";
-  var chatContent = "【" + kind + "】" + (name || "") + " " + head + "：\n" + c.slice(0, 2000);
-  pendingRefs.push({ file: file, title: title, content: c.slice(0, 2000), label: chipLabel, chatContent: chatContent });
+  var chatContent = "【" + kind + "】" + (name || "") + " " + head + "：\n" + c;
+  pendingRefs.push({ id: 'ref:' + crypto.randomUUID(), file: file, title: title, content: c, whole: !!whole, lineRange: lineRange, label: chipLabel, chatContent: chatContent });
   renderRefBar();
   expandChatPanel();
 }

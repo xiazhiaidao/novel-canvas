@@ -7,6 +7,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+function textContrast(foreground, background) {
+  const luminance = color => {
+    const values = (color.match(/[\d.]+/g) || []).slice(0,3).map(Number).map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055,2.4));
+    return .2126 * values[0] + .7152 * values[1] + .0722 * values[2];
+  };
+  const a = luminance(foreground), b = luminance(background);
+  return (Math.max(a,b) + .05) / (Math.min(a,b) + .05);
+}
+
 const root = path.resolve(__dirname, '..');
 // ── 测试隔离（阶段 0）────────────────────────────────────────────
 // 所有「纯 API 写操作用例」一律落到本临时 fixture 项目，绝不碰用户当前项目。
@@ -132,6 +141,10 @@ async function main() {
       return 'EXCEPTION: ' + (res.result.exceptionDetails.exception && res.result.exceptionDetails.exception.description || res.result.exceptionDetails.text);
     }
     return res.result && res.result.result && res.result.result.value;
+  }
+
+  async function writingToolExists(label) {
+    return evalExpr(`(() => { const btn=document.getElementById('writingToolsBtn'); if(!btn)return false; btn.click(); const menu=document.getElementById('contextMenu'); const found=getComputedStyle(menu).display!=='none' && [...menu.querySelectorAll('button')].some(b=>b.textContent===${JSON.stringify(label)}); hideMenu(); return found; })()`);
   }
 
   const results = [];
@@ -271,10 +284,10 @@ async function main() {
     })()`);
     return v === 'dark' ? 'OK' : v;
   });
-  await check('强调文字保持黑色(两主题)', async () => {
+  await check('界面文字在两主题均有可读对比度', async () => {
     const v = await evalExpr(`(async () => {
       const sample = () => {
-        const el = document.querySelector('.toolBtn') || document.getElementById('appTitle');
+        const el = document.getElementById('appTitle');
         return el ? getComputedStyle(el).color : 'no-el';
       };
       const setTheme = (m) => {
@@ -284,16 +297,18 @@ async function main() {
       setTheme('dark');
       await new Promise(r => setTimeout(r, 40));
       const darkColor = sample();
+      const darkContrast = (${textContrast.toString()})(darkColor,getComputedStyle(document.getElementById('topBar')).backgroundColor);
       setTheme('light');
       await new Promise(r => setTimeout(r, 40));
       const lightColor = sample();
+      const lightContrast = (${textContrast.toString()})(lightColor,getComputedStyle(document.getElementById('topBar')).backgroundColor);
       setTheme('dark'); // 还原
       await new Promise(r => setTimeout(r, 40));
-      return JSON.stringify({ ok: darkColor === 'rgb(0, 0, 0)' && lightColor === 'rgb(0, 0, 0)', darkColor, lightColor });
+      return JSON.stringify({ ok: darkContrast >= 4.5 && lightContrast >= 4.5 && darkColor !== lightColor, darkColor, lightColor, darkContrast, lightContrast });
     })()`);
     try {
       const o = JSON.parse(v);
-      return o.ok ? 'OK(浅/深两主题均黑色)' : v;
+      return o.ok ? 'OK(两主题文字对比度均 >= 4.5)' : v;
     } catch (_) { return v; }
   });
   await check('连线颜色主题自适应', async () => {
@@ -615,7 +630,7 @@ async function main() {
       return (o.paneVisible && o.themeHidden && o.okLabel && o.baseFilled) ? 'OK(标签切换/回填/按钮)' : v;
     } catch (_) { return v; }
   });
-  await check('人物推进按钮存在', async () => evalExpr(`!!document.querySelector('.agentCmd[data-agent="advance"]')`));
+  await check('写作菜单：人物推进入口', () => writingToolExists('人物推进'));
   await check('人物推进 API 可访问(参数校验)', async () => {
     // 阶段 0 隔离：本用例以前会发起【真实 LLM 调用】（既慢又烧额度，且稳定因
     // "AI 推进结果无法解析"失败）。冒烟测试不该打真实 AI——改为验证路由可达 +
@@ -876,7 +891,7 @@ async function main() {
     const missing = need.filter(t => !html.includes(t + ':'));
     if (missing.length) return '未定义令牌: ' + missing.join(',');
     const usedRadius = (html.match(/var\(--rad-(sm|md|lg)\)/g) || []).length;
-    const darkMini = /--mini-bg:\s*#1b2230/.test(theme);
+    const darkMini = /--mini-bg:\s*#181d23/.test(theme);
     const up = fs.readFileSync(path.join(root, 'canvas_upgrade.js'), 'utf8');
     const miniToken = /getComputedStyle\(document\.documentElement\)/.test(up) && /--mini-bg/.test(up);
     const v = await evalExpr(`(() => {
@@ -1151,6 +1166,8 @@ async function main() {
       const btn = document.getElementById('detailDeslopBtn');
       const box = document.getElementById('deslopBox');
       if (!btn || !box) return JSON.stringify({ ok: false, why: 'no btn/box' });
+      const originalEditorText = document.getElementById('editContent').value;
+      document.getElementById('editContent').value = '这意味着他终于明白了事情的真相。';
       btn.click();
       for (let i = 0; i < 60; i++) { await sleep(100); if (box.querySelector('.dsHead')) break; }
       const head = box.querySelector('.dsHead');
@@ -1161,6 +1178,7 @@ async function main() {
       let located = false;
       const loc = box.querySelector('.dsLocate');
       if (loc && ta) { loc.click(); located = ta.selectionEnd > ta.selectionStart; }
+      ta.value = originalEditorText;
       return JSON.stringify({ ok: !!head && !!score && hits > 0, hasHead: !!head, score: score ? score.textContent : '', hits, canLocate, located });
     })()`);
     try {
@@ -1190,6 +1208,9 @@ async function main() {
       const ta = document.getElementById('fileContent');
       if (!btn || !box || !ta) return JSON.stringify({ ok: false, why: 'no btn/box/ta', hasBtn: !!btn, hasBox: !!box, hasTa: !!ta });
 
+      // 定位用例必须包含命中句，不能依赖用户正文是否有 AI 味；仅修改 textarea，不触发保存。
+      const savedEditorValue = ta.value;
+      ta.value = '这意味着他终于明白了事情的真相。';
       // 点检测 → 等结果
       btn.click();
       for (let i = 0; i < 60; i++) { await sleep(100); if (box.querySelector('.dsHead')) break; }
@@ -1219,6 +1240,7 @@ async function main() {
           body: JSON.stringify({ project: currentProject, path: chap, content: ta.value }) }).then(j);
         rewriteGuard = String(r.error || '').slice(0, 20);   // 传 path 应当被拒
       }
+      ta.value = savedEditorValue;
       return JSON.stringify({ ok: !!head && !!scoreEl, score: scoreEl ? scoreEl.textContent : '',
         hits, locateBtns, located, locatedInFile, locatedInEdit,
         hasRewrite: !!box.querySelector('.dsRewrite'), nodeFound: !!node, rewriteGuard, failed: /检测失败/.test(box.textContent) });
@@ -1840,7 +1862,7 @@ async function main() {
       return o.ok ? 'OK' : (o.error && (o.error.includes('没有可精修的正文') || o.error.includes('AI 对话未配置')) ? 'OK(路由可达)' : v);
     } catch (_) { return v; }
   });
-  await check('生成下一章按钮存在', async () => evalExpr(`!!document.querySelector('.agentCmd[data-agent="write"]')`));
+  await check('写作菜单：生成下一章入口', () => writingToolExists('生成下一章'));
   await check('生成下一章 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/chapter/write', {
       method: 'POST',
@@ -1875,7 +1897,7 @@ async function main() {
       return o.ok ? 'OK' : v;
     } catch (_) { return v; }
   });
-  await check('卷管理按钮存在', async () => evalExpr(`!!document.querySelector('.agentCmd[data-agent="volumes"]')`));
+  await check('写作菜单：卷管理入口', () => writingToolExists('卷管理'));
   await check('卷管理 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/volumes?project=' + encodeURIComponent(currentProject))
       .then(r => r.json())
@@ -1919,60 +1941,42 @@ async function main() {
       return (o.created && o.rejected && o.gone && o.cleanup) ? 'OK(拒绝后消失+二次拒绝报错)' : v;
     } catch (_) { return v; }
   });
-  await check('角色栏存在+切换持久化+欢迎语', async () => {
+  await check('AI 任务选择：持久化、输入提示及提案开关', async () => {
     const v = await evalExpr(`(async () => {
-      const bar = document.getElementById('roleBar');
-      if (!bar) return JSON.stringify({ ok: false, why: 'no roleBar' });
-      const chips = [...bar.querySelectorAll('.roleChip')];
-      if (chips.length < 5) return JSON.stringify({ ok: false, why: 'chips<5' });
-      const before = localStorage.getItem('novelChatRole_' + encodeURIComponent(currentProject));
-      // 切换到「正文写手」并验证持久化 + 欢迎语
-      const writer = chips.find(c => c.dataset.role === 'writer');
-      if (!writer) return JSON.stringify({ ok: false, why: 'no writer chip' });
-      writer.click();
+      const task = document.getElementById('chatTask');
+      if (!task || task.options.length !== 6) return JSON.stringify({ok:false,why:'任务选择缺失'});
+      const before = currentRole();
+      const count = chatHistory.length;
+      task.value='writer'; task.dispatchEvent(new Event('change'));
       const saved = localStorage.getItem('novelChatRole_' + encodeURIComponent(currentProject));
-      const lastMsg = [...document.querySelectorAll('#chatMessages .msg')].pop();
-      const welcomeOk = lastMsg && /正文写手/.test(lastMsg.textContent);
-      // 还原为 general（若之前有保存值则还原）
-      const prevChip = before ? chips.find(c => c.dataset.role === before) : chips.find(c => c.dataset.role === 'general');
-      if (prevChip) prevChip.click();
-      return JSON.stringify({ ok: saved === 'writer' && welcomeOk, saved, welcomeOk });
+      const hintOk=/目标章节/.test(chatInput.placeholder);
+      const proposalOk=document.getElementById('chatAllowProposals').checked;
+      task.value=before; task.dispatchEvent(new Event('change'));
+      return JSON.stringify({ ok: saved === 'writer' && hintOk && proposalOk && chatHistory.length===count });
     })()`);
-    try { const o = JSON.parse(v); return o.ok ? 'OK(角色切换+持久化+欢迎语)' : v; } catch (_) { return v; }
+    try { const o = JSON.parse(v); return o.ok ? 'OK(统一任务入口，切换不发请求、不污染对话)' : v; } catch (_) { return v; }
   });
 
-  await check('chatToolbar 自动显隐+分隔线(纯CSS :has)', async () => {
+  await check('AI 面板：收起隐藏任务和资料，展开恢复', async () => {
     const v = await evalExpr(`(async () => {
       const tb = document.getElementById('chatToolbar');
-      const rb = document.getElementById('roleBar');
-      const ab = document.getElementById('agentBar');
-      const sep = tb ? tb.querySelector('.toolSep') : null;
-      if (!tb || !rb || !ab || !sep) return JSON.stringify({ ok: false, why: '缺元素' });
+      const sources = document.getElementById('chatSources');
+      if (!tb || !sources) return JSON.stringify({ ok: false, why: '缺元素' });
       const g = (el) => getComputedStyle(el).display;
-      const beforeRb = rb.getAttribute('style'), beforeAb = ab.getAttribute('style');
-      // 1) 双栏都隐藏 → 工具栏隐藏、分隔线隐藏
-      rb.style.display = 'none'; ab.style.display = 'none';
+      if(isChatCollapsed()) toggleChat();
       await new Promise(r => setTimeout(r, 30));
-      const h1 = { tb: g(tb), sep: g(sep) };
-      // 2) 只显示角色栏 → 工具栏显示、分隔线隐藏
-      rb.style.display = 'flex';
+      const shown=g(tb)!=='none'&&g(sources)!=='none';
+      toggleChat();
       await new Promise(r => setTimeout(r, 30));
-      const h2 = { tb: g(tb), sep: g(sep) };
-      // 3) 双栏都显示 → 工具栏显示、分隔线显示
-      ab.style.display = 'flex';
+      const hidden=g(tb)==='none'&&g(sources)==='none';
+      toggleChat();
       await new Promise(r => setTimeout(r, 30));
-      const h3 = { tb: g(tb), sep: g(sep) };
-      // 还原原始状态
-      rb.setAttribute('style', beforeRb || ''); ab.setAttribute('style', beforeAb || '');
-      return JSON.stringify({
-        ok: h1.tb === 'none' && h2.tb === 'flex' && h2.sep === 'none' && h3.tb === 'flex' && h3.sep === 'block',
-        h1, h2, h3
-      });
+      return JSON.stringify({ok:shown&&hidden&&g(tb)!=='none'&&g(sources)!=='none'});
     })()`);
-    try { const o = JSON.parse(v); return o.ok ? 'OK(双栏隐藏→隐藏 / 单栏→显示无分隔 / 双栏→分隔线)' : v; } catch (_) { return v; }
+    try { const o = JSON.parse(v); return o.ok ? 'OK(收起/展开)' : v; } catch (_) { return v; }
   });
 
-  await check('发送按钮黑字可读(两主题)', async () => {
+  await check('发送按钮在两主题均有可读对比度', async () => {
     const v = await evalExpr(`(async () => {
       const cs = document.getElementById('chatSend');
       if (!cs) return JSON.stringify({ ok: false, why: 'no chatSend' });
@@ -1980,14 +1984,16 @@ async function main() {
       setTheme('dark');
       await new Promise(r => setTimeout(r, 40));
       const darkColor = getComputedStyle(cs).color;
+      const darkContrast = (${textContrast.toString()})(darkColor,getComputedStyle(cs).backgroundColor);
       setTheme('light');
       await new Promise(r => setTimeout(r, 40));
       const lightColor = getComputedStyle(cs).color;
+      const lightContrast = (${textContrast.toString()})(lightColor,getComputedStyle(cs).backgroundColor);
       setTheme('dark');
       await new Promise(r => setTimeout(r, 40));
-      return JSON.stringify({ ok: darkColor === 'rgb(0, 0, 0)' && lightColor === 'rgb(0, 0, 0)', darkColor, lightColor });
+      return JSON.stringify({ ok: darkContrast >= 4.5 && lightContrast >= 4.5, darkColor, lightColor, darkContrast, lightContrast });
     })()`);
-    try { const o = JSON.parse(v); return o.ok ? 'OK(浅/深两主题发送按钮均黑字)' : v; } catch (_) { return v; }
+    try { const o = JSON.parse(v); return o.ok ? 'OK(发送按钮两主题对比度均 >= 4.5)' : v; } catch (_) { return v; }
   });
 
   await check('AGENT_ROLES 服务端角色预设完整', async () => {
@@ -2091,7 +2097,7 @@ async function main() {
       return o.outline === 'ok' && o.rename === 'ok' && o.delete === 'ok' ? 'OK' : v;
     } catch (_) { return v; }
   });
-  await check('章节核心按钮存在', async () => evalExpr(`!!document.querySelector('.agentCmd[data-agent="cores"]')`));
+  await check('写作菜单：章节核心入口', () => writingToolExists('章节核心'));
   await check('章节核心 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/chapters/cores?project=' + encodeURIComponent(currentProject))
       .then(r => r.json())
@@ -2121,6 +2127,7 @@ async function main() {
             if (!visible) { resolve(JSON.stringify({ ok: false, why: 'toolbar not visible' })); return; }
             const btn = document.getElementById('selToolbarChat');
             btn.click();
+            await new Promise(r => setTimeout(r, 100));
             const bar = document.getElementById('refBar');
             const chips = bar ? [...bar.querySelectorAll('.refChip')] : [];
             const inp = document.getElementById('chatInput');
@@ -2618,7 +2625,9 @@ async function main() {
 
   await check('未识别节点可提升为正式节点(override)', async () => {
     const v = await evalExpr(`(async () => {
-      const unrec = nodes.find(n => n.unrecognized);
+      // 前面的文件用例会删除临时文件；用最新磁盘节点，避免选中已删除的临时节点。
+      const fresh = await fetch('/api/data?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      const unrec = (fresh.nodes || []).find(n => n.unrecognized);
       if (!unrec) return JSON.stringify({ ok: true, skipped: 'no unrec nodes' });
       const r = await fetch('/api/override', {
         method: 'POST',

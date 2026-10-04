@@ -1,0 +1,292 @@
+// 五项升级修复回归：完整应用副本、小说夹具及 AI 网关均在系统临时目录。
+// node scripts/upgrade-regression-test.js [--smoke]；不读取真实 AI 配置，不复用用户服务。
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const http = require('node:http');
+const { spawn } = require('node:child_process');
+const root = path.resolve(__dirname, '..');
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'novel-canvas-regression-'));
+const app = path.join(temp, 'app'), projects = path.join(temp, 'projects');
+const project = 'RegressionSample', book = path.join(projects, project);
+fs.mkdirSync(app);
+for (const name of fs.readdirSync(root)) {
+  if (/\.(?:js|html|css|json)$/.test(name) && fs.statSync(path.join(root, name)).isFile()) fs.copyFileSync(path.join(root, name), path.join(app, name));
+}
+fs.mkdirSync(path.join(app, 'scripts'));
+fs.copyFileSync(path.join(__dirname, 'smoke-test.js'), path.join(app, 'scripts', 'smoke-test.js'));
+const write = (rel, text) => { const p = path.join(book, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); };
+const sentence = '这意味着他终于明白了事情的真相。';
+const original = '# 第1章 开门\n\n  ' + sentence + '\n\n林舟推开木门。\n\n' + sentence + '\n';
+const chapterFile = '正文/第一卷/第01章 开门.md';
+write('设定.md', '# 世界\n\n## 木门\n木门只能打开一次。\n');
+write('大纲.md', '# 大纲\n\n## 第一卷\n林舟找到旧钥匙。\n');
+write('写作规范.md', '# 写作规范\n简洁自然。\n');
+write('杂记.md', '# 待整理\n\n## 柜上的标记\n还没归类。\n');
+write('追踪/角色状态.md', '# 角色状态\n\n## 林舟\n- 身份：主角\n- 当前状态：寻找钥匙\n');
+write('追踪/伏笔.md', '# 伏笔\n\n| 编号 | 伏笔 | 投放章 | 回收章 | 状态 | 说明 |\n| --- | --- | --- | --- | --- | --- |\n| 1 | 旧钥匙 | 第1章 | 第40章 | 已埋 | 木门 |\n');
+write('novel-canvas.config.json', JSON.stringify({ scan: { chapters: { dirs: ['正文'] } } }));
+for (let i = 1; i <= 35; i++) write(`正文/第一卷/第${String(i).padStart(2, '0')}章 开门.md`, i === 1 ? original : `# 第${i}章 木门\n\n${sentence}\n林舟握住旧钥匙。\n`);
+let reply = '', gatewayCalls = 0, server, edge, ws, passed = 0;
+const upstreamBodies = [], gatewayMessages = [];
+const gateway = http.createServer((req, res) => {
+  let body = ''; req.on('data', c => { body += c; }); req.on('end', () => {
+    gatewayCalls++;
+    const payload = JSON.parse(body); upstreamBodies.push(payload);
+    const message = gatewayMessages.shift() || { role: 'assistant', content: reply };
+    const delayMs = message._delay || 0; delete message._delay;
+    if (payload.stream) {
+      if (message.tool_calls) message.tool_calls = message.tool_calls.map((tool,index) => ({...tool,index}));
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const response = 'data: ' + JSON.stringify({ choices: [{ index: 0, delta: message, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n';
+      if (delayMs) setTimeout(() => res.end(response), delayMs); else res.end(response);
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+  });
+});
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const listen = s => new Promise(r => s.listen(0, '127.0.0.1', r));
+const stop = async child => {
+  if (child && child.exitCode === null) { const exited = new Promise(r => child.once('exit', r)); child.kill(); await exited; }
+};
+const check = (label, fn) => { fn(); passed++; console.log('PASS ' + label); };
+async function availablePort() { const s = http.createServer(); await listen(s); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
+async function until(fn) { for (let i = 0; i < 100; i++) { try { if (await fn()) return; } catch (_) {} await pause(100); } throw new Error('等待服务/页面超时'); }
+
+(async () => {
+  await listen(gateway);
+  fs.mkdirSync(path.join(app, '.data'));
+  const config = path.join(app, '.data', 'ai-config.json');
+  fs.writeFileSync(config, JSON.stringify({ key: 'local-test-only', base: `http://127.0.0.1:${gateway.address().port}/v1`, model: 'local-test' }));
+  const port = await availablePort(), cdpPort = await availablePort(), url = `http://127.0.0.1:${port}`;
+  const env = { ...process.env, PORT: String(port), NOVEL_PROJECTS_ROOT: projects, DEFAULT_PROJECT: project, DEEPSEEK_API_KEY: '', INKPILOT_CONFIG: path.join(temp, 'absent.json') };
+  const startServer = async () => {
+    server = spawn(process.execPath, ['server.js'], { cwd: app, env, windowsHide: true, stdio: 'ignore' });
+    await until(() => fetch(url + '/api/projects').then(r => r.ok));
+  };
+  await startServer();
+  const get = p => fetch(url + p).then(r => r.json());
+  const post = (p, body) => fetch(url + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project, ...body }) }).then(r => r.json());
+  const devices = () => get('/api/plot/devices?project=' + project);
+  const data = await get('/api/data?project=' + project);
+  const node = data.nodes.find(n => n.file === chapterFile);
+  assert(node);
+  const plan = { title: '旧钥匙反锁', trigger: '旧钥匙现身', conflict: '林舟争夺木门', payoff: '打开禁门', risk: '暴露身份', span: '2章', differsFrom: '首案', uses: [{ kind: 'foreshadow', name: '旧钥匙' }] };
+  const plans = [plan, { ...plan, title: '红绳回信' }, { ...plan, title: '守门人归来' }];
+  for (const [name, response] of [['数组', JSON.stringify(plans)], ['围栏', '```json\n' + JSON.stringify(plans) + '\n```'], ['解释文字和字符串括号', '结果如下：\n' + JSON.stringify(plans.map(p => ({ ...p, risk: '检查 "[{}]" 风险' }))) + '\n结束']]) {
+    reply = response;
+    const r = await post('/api/plot/propose', { count: 3 });
+    check('剧情 JSON ' + name, () => { assert.equal(r.ok, true, r.error); assert.equal(r.proposals.length, 3); });
+  }
+  const rewrite = body => post('/api/deslop/rewrite', { nodeId: node.id, content: original, ...body });
+  reply = JSON.stringify([{ id: '2', original: sentence, rewritten: '他攥紧了钥匙。' }]);
+  const rewritten = await rewrite({});
+  const secondStart = original.lastIndexOf(sentence);
+  check('仅替换指定重复句，保留空白与未命中正文', () => {
+    assert.equal(rewritten.ok, true, rewritten.error);
+    assert.equal(rewritten.proposal.newContent, original.slice(0, secondStart) + '他攥紧了钥匙。' + original.slice(secondStart + sentence.length));
+    assert.equal(fs.readFileSync(path.join(book, chapterFile), 'utf8'), original);
+  });
+  for (const [label, arr] of [
+    ['拒绝未命中句', [{ original: '林舟推开木门。', rewritten: '林舟烧掉木门。' }]],
+    ['拒绝混入越界条目', [{ id: '1', original: sentence, rewritten: '他攥紧钥匙。' }, { original: '林舟推开木门。', rewritten: '林舟烧掉木门。' }]],
+    ['拒绝重复条目', [{ id: '1', original: sentence, rewritten: '他握住钥匙。' }, { id: '1', original: sentence, rewritten: '他松开手。' }]],
+    ['拒绝没有编号的歧义重复句', [{ original: sentence, rewritten: '他攥紧钥匙。' }]]
+  ]) {
+    reply = JSON.stringify(arr);
+    const r = await rewrite({});
+    check(label, () => { assert(r.error); assert(!r.proposal); });
+  }
+  reply = JSON.stringify([{ original: sentence, rewritten: '他攥紧了钥匙。' }]);
+  const selected = await rewrite({ hitIndexes: [1] });
+  check('单独选择第二个重复命中', () => assert.equal(selected.proposal?.newContent, rewritten.proposal.newContent, selected.error));
+  const calls = gatewayCalls;
+  const empty = await rewrite({ hitIndexes: [] });
+  check('空选择不调用 AI', () => { assert(empty.error); assert.equal(gatewayCalls, calls); });
+  const applied = await post('/api/apply_proposal', { id: rewritten.proposal.id });
+  check('改写接受成功', () => { assert(applied.ok, applied.error); assert.equal(fs.readFileSync(path.join(book, chapterFile), 'utf8'), rewritten.proposal.newContent); });
+
+  reply = '## 第36章 木门\n\n本章目标：寻找旧钥匙。';
+  const rejected = await post('/api/plot/adopt', { proposal: plan });
+  const before = await devices();
+  check('生成大纲不写文件、不记桥段', () => { assert(rejected.ok, rejected.error); assert.equal(before.devices.length, 0); assert(!fs.existsSync(path.join(book, rejected.target))); });
+  await post('/api/proposals/reject', { id: rejected.proposal.id });
+  check('拒绝大纲无桥段残留', () => assert.equal(fs.existsSync(path.join(app, '.data', 'plot-devices-' + project + '.json')), false));
+  const conflicting = await post('/api/plot/adopt', { proposal: plan });
+  write(conflicting.target, '作者已另写大纲');
+  const conflict = await post('/api/apply_proposal', { id: conflicting.proposal.id });
+  const afterConflict = await devices();
+  check('写盘冲突不记桥段', () => { assert(conflict.conflict); assert.equal(afterConflict.devices.length, 0); });
+  const accepted = await post('/api/plot/adopt', { proposal: { ...plan, title: '另一把旧钥匙' } });
+  await stop(server);
+  await startServer();
+  const saved = await post('/api/apply_proposal', { id: accepted.proposal.id });
+  const acceptedDevices = await devices();
+  check('重启后接受才记桥段，标为已采纳大纲', () => { assert(saved.ok, saved.error); assert.equal(acceptedDevices.devices.length, 1); assert.equal(acceptedDevices.devices[0].state, 'planned'); assert(fs.existsSync(path.join(book, accepted.target))); });
+  await post('/api/apply_proposal', { id: accepted.proposal.id });
+  check('重复接受不重复记桥段', () => assert.equal(JSON.parse(fs.readFileSync(path.join(app, '.data', 'plot-devices-' + project + '.json'))).devices.length, 1));
+
+  const longRef = '原文快照'.repeat(750);
+  const packet = await post('/api/chat/context', { targetFile: chapterFile, references: [{ id: 'manual:1', title: '作者片段', content: longRef }], excludedIds: ['project:角色档案'], messages: [{ role: 'user', content: '检查引用' }] });
+  check('资料预览保留超过2000字的手动引用，支持移除自动资料', () => { assert(packet.ok, packet.error); assert.equal(packet.items.find(i => i.id === 'manual:1').content, longRef); assert(!packet.items.some(i => i.id === 'project:角色档案')); assert.equal(packet.historyCount, 1); });
+  const shortened = await post('/api/chat/context', { references: [{ id: 'too-long', title: '长篇引用', content: '字'.repeat(25000) }] });
+  check('容量裁剪明确返回原长度和省略清单', () => { assert.equal(shortened.chars, 24000); assert(shortened.items[0].truncated); assert.equal(shortened.items[0].originalChars, 25000); assert(shortened.omitted.length); });
+  const draftPacket = await post('/api/chat/context', { targetFile: chapterFile, references: [{ id: 'draft', file: chapterFile, title: chapterFile, draft: true, whole: true, content: '未保存的新正文' }] });
+  check('目标有草稿时使用草稿，避免同时注入旧磁盘全文', () => { assert(!draftPacket.items.some(i => i.kind === '当前目标')); assert.equal(draftPacket.items[0].kind, '未保存草稿'); });
+  const invalid = await post('/api/chat/context', { targetFile: '../escape.md' });
+  check('资料预览拒绝越界目标', () => assert(invalid.error));
+  const callCount = gatewayCalls;
+  const oversize = await post('/api/chat', { contextPacket: { items: [{ title: '超量', content: '字'.repeat(24001) }] }, messages: [{ role: 'user', content: '讨论' }] });
+  check('发送拒绝超量资料，不调用模型', () => { assert(oversize.error); assert.equal(gatewayCalls, callCount); });
+  const prohibited = '大纲/不该写入.md';
+  gatewayMessages.push({ role: 'assistant', content: null, tool_calls: [{ id: 'call-denied', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: prohibited, content: '# 越权' }) } }] }, { role: 'assistant', content: '只讨论，没有修改。' });
+  const readOnly = await post('/api/chat', { contextPacket: packet, allowProposals: false, role: 'writer', messages: [{ role: 'user', content: '讨论剧情' }] });
+  check('讨论模式服务端拒绝模型越权创建提案', () => { assert.equal(readOnly.proposals.length, 0); assert(readOnly.steps[0].summary.includes('未允许')); assert(!fs.existsSync(path.join(book, prohibited))); assert(upstreamBodies.at(-2).tools.every(t => !t.function.name.startsWith('edit'))); });
+  gatewayMessages.push({ role:'assistant', content:null, tool_calls:[{id:'discuss-denied',type:'function',function:{name:'edit_file',arguments:JSON.stringify({path:prohibited,content:'# 越权'})}}]}, {role:'assistant',content:'仅讨论。'});
+  const explicitDiscuss = await post('/api/chat', { workspaceMode:'discuss', allowProposals:true, messages:[{role:'user',content:'讨论'}] });
+  check('只读讨论即使混入允许提案参数也不能修改', () => { assert.equal(explicitDiscuss.proposals.length,0); assert(explicitDiscuss.steps[0].summary.includes('未允许')); });
+
+  const edgePath = ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find(p => fs.existsSync(p));
+  if (!edgePath) throw new Error('UI 回归需要 Microsoft Edge');
+  edge = spawn(edgePath, ['--headless', '--disable-gpu', '--remote-debugging-port=' + cdpPort, '--user-data-dir=' + path.join(temp, 'edge'), 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+  let target;
+  await until(async () => { target = (await fetch(`http://127.0.0.1:${cdpPort}/json/list`).then(r => r.json())).find(t => t.type === 'page'); return target; });
+  ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise(r => ws.addEventListener('open', r, { once: true }));
+  let seq = 0; const pending = new Map(); const exceptions = [];
+  ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.text); };
+  const send = (method, params = {}) => new Promise(r => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+  const run = async expression => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails)); return r.result?.result?.value; };
+  await send('Runtime.enable');
+  await send('Page.enable');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.monitorTicks=[];const originalInterval=window.setInterval;window.setInterval=(fn,ms,...args)=>{if(ms===60000)window.monitorTicks.push(fn);return originalInterval(fn,ms,...args);};' });
+  await send('Page.navigate', { url });
+  await until(() => run('typeof nodes !== "undefined" && nodes.length > 0 && viewStateReady'));
+  await pause(300);
+  const rulers = await run(`(()=>{renderAxisView();axisJumpTo(1);const view=document.getElementById('axisView'),rail=document.getElementById('axisXLabels'),yr=document.getElementById('axisYLabels');const label=[...rail.children].find(e=>!e.hidden);const before={font:getComputedStyle(label).fontSize,top:rail.getBoundingClientRect().top};const mx=96+(view.clientWidth-96)/2,my=36+(view.clientHeight-78)/2;const anchor={x:(mx-axisViewT.x)/axisViewT.scale,y:(my-axisViewT.y)/axisViewT.scale};document.getElementById('axisZoomIn').click();const aligned=[...rail.children].filter(e=>!e.hidden).every(e=>Math.abs(e.getBoundingClientRect().left+e.getBoundingClientRect().width/2-(view.getBoundingClientRect().left+axisViewT.x+Number(e.dataset.coord)*axisViewT.scale))<1);return {outside:rail.parentElement===view&&yr.parentElement===view,font:before.font===getComputedStyle(label).fontSize,fixed:before.top===rail.getBoundingClientRect().top,aligned,anchor:Math.abs(anchor.x-(mx-axisViewT.x)/axisViewT.scale)<.001&&Math.abs(anchor.y-(my-axisViewT.y)/axisViewT.scale)<.001,yVisible:[...yr.children].some(e=>!e.hidden),height:rail.getBoundingClientRect().height};})()`);
+  check('坐标尺固定、字号稳定、刻度与内容对齐，缩放中心不漂移', () => { assert(rulers.outside && rulers.font && rulers.fixed && rulers.aligned && rulers.anchor && rulers.yVisible); assert.equal(rulers.height,36); });
+  const grouped = await run(`(()=>{const sel=document.getElementById('axisSegSel');sel.value='5';sel.dispatchEvent(new Event('change'));const g=axisGeom;const separate=g.items.filter(p=>p.effCh!=null).every(p=>axisChapterFromX(g.chapterStart[p.effCh]+10)===p.effCh);const ordered=Array.from({length:g.maxChapter-1},(_,i)=>g.chapterStart[i+2]>=g.chapterStart[i+1]+g.chapterW[i+1]).every(Boolean);axisJumpTo(1);const el=[...document.querySelectorAll('#axisNodes .node')].find(e=>e.querySelector('.nstats').textContent.startsWith('第1章'));const fit=el.querySelector('.nmeta').getBoundingClientRect().bottom<=el.getBoundingClientRect().bottom;sel.value='0';sel.dispatchEvent(new Event('change'));return {separate,ordered,fit};})()`);
+  check('合并章段保留独立章节槽位，卡片摘要与页脚完整显示', () => assert(grouped.separate && grouped.ordered && grouped.fit));
+  const drag = await run(`(()=>{const n=nodes.find(n=>n.label==='章节'),oldAxis=structuredClone(layoutAxis),oldProgress={...axisProgress};const el=document.querySelector('#axisNodes .node[data-id="'+n.id+'"]');const l=parseFloat(el.style.left),t=parseFloat(el.style.top);axisViewT.scale=.8;applyAxisTransform();const dx=axisGeom.chapterStart[2]+10-l,dy=yForProgress(30)-axisCardH/2-t;el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:300,clientY:300}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:300+dx*.8,clientY:300+dy*.8}));window.dispatchEvent(new MouseEvent('mouseup'));const moved=layoutAxis[n.id]?.chapter===2&&axisProgress[2]===30;const cards=[...document.querySelectorAll('#axisNodes .node')].filter(e=>e.querySelector('.nstats').textContent.startsWith('第2章'));const xs=cards.map(e=>parseFloat(e.style.left)).sort((a,b)=>a-b);const separate=xs.every((x,i)=>!i||x-xs[i-1]>=axisCardW);clearTimeout(layoutTimer);layoutAxis=oldAxis;axisProgress=oldProgress;renderAxisView();return {moved,separate};})()`);
+  check('缩放后拖动准确换算章号与推进，落点同章卡片重新排布', () => assert(drag.moved && drag.separate));
+  const focus = await run(`(()=>{const c=nodes.find(n=>n.label==='章节');nodes.forEach(n=>n.lane=n===c?'主线':'支线');laneMode=true;hiddenLanes=new Set(['主线']);renderAxisView();focusNode(c.id);return {hidden:hiddenLanes.has('主线'),shown:!!document.querySelector('#axisNodes .node[data-id="'+c.id+'"]')};})()`);
+  check('跳转自动揭开隐藏泳道', () => { assert.equal(focus.hidden, false); assert(focus.shown); });
+  const laneDrag = await run(`(()=>{const n=nodes.find(n=>n.label==='章节'),oldAxis=structuredClone(layoutAxis),oldProgress=JSON.stringify(axisProgress);const g=axisGeom,target=g.lanes.find(l=>l!==laneOf(n)),el=document.querySelector('#axisNodes .node[data-id="'+n.id+'"]');const dy=g.laneYOf(target)+8-parseFloat(el.style.top);el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:300,clientY:300}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:300,clientY:300+dy*axisViewT.scale}));window.dispatchEvent(new MouseEvent('mouseup'));const changed=laneOf(n)===target,untouched=JSON.stringify(axisProgress)===oldProgress;clearTimeout(layoutTimer);layoutAxis=oldAxis;renderAxisView();return {changed,untouched};})()`);
+  check('泳道拖动变更剧情线并保留章节推进值', () => assert(laneDrag.changed && laneDrag.untouched));
+  const monitor = await run(`(async()=>{await loadData();await openFile(${JSON.stringify(chapterFile)});analysisTab='health';await loadHealth();const f=openFiles.find(x=>x.path===activeFilePath);const ta=document.getElementById('fileContent');f.content+='额外计数字数';f.dirty=true;ta.value=f.content;axisViewT={x:123,y:456,scale:.7};activeCats.delete('角色');const oldTa=ta;await saveFile(f);const h=await fetchHealth();return {sameEditor:oldTa===document.getElementById('fileContent'),pan:axisViewT,filterOff:!activeCats.has('角色'),words:nodes.filter(n=>n.label==='章节').reduce((s,n)=>s+stripWords(n.content),0),serverWords:h.progress.totalWords,status:document.getElementById('statusWords').textContent,healthUpdated:healthSnapshot.progress.totalWords===h.progress.totalWords,drill:healthSnapshot.chapters.length};})()`);
+  check('保存立即刷新节点、状态栏和监控，保留编辑器/视图/过滤', () => { assert(monitor.sameEditor); assert.deepEqual(monitor.pan, { x: 123, y: 456, scale: .7 }); assert(monitor.filterOff); assert.equal(monitor.words, monitor.serverWords); assert(monitor.status.includes(monitor.serverWords.toLocaleString('zh-CN'))); assert(monitor.healthUpdated); assert.equal(monitor.drill, 35); });
+  write('正文/第一卷/第36章 外部新增.md', '# 第36章 外部新增\n\n林舟再次见到沈青。');
+  const periodic = await run(`(async()=>{if(monitorTicks.length!==1)throw new Error('缺少60秒监控轮询');monitorTicks[0]();for(let i=0;i<50;i++){if(nodes.filter(n=>n.label==='章节').length===36)break;await new Promise(r=>setTimeout(r,100));}return {count:nodes.filter(n=>n.label==='章节').length,drill:healthSnapshot.chapters.length,sameCard:healthSnapshot.progress.chapterCount};})()`);
+  check('定时刷新发现外部新增，卡片与下钻同步', () => { assert.equal(periodic.count, 36); assert.equal(periodic.drill, 36); assert.equal(periodic.sameCard, 36); });
+  const race = await run(`(async()=>{const nativeFetch=window.fetch;let release;window.fetch=async(...args)=>{const r=await nativeFetch(...args);if(args[0]==='/api/file/save')await new Promise(resolve=>release=resolve);return r;};const f=openFiles.find(x=>x.path===activeFilePath);f.content+='第一次';f.dirty=true;const saving=saveFile(f);while(!release)await new Promise(r=>setTimeout(r,20));f.content+='后续草稿';release();await saving;window.fetch=nativeFetch;return {dirty:f.dirty,saved:f.savedContent.endsWith('第一次'),draft:f.content.endsWith('后续草稿')};})()`);
+  check('保存等待期间的新输入仍为未保存草稿', () => { assert(race.dirty); assert(race.saved); assert(race.draft); });
+  const virtual = await run(`(async()=>{const p={id:'test-virtual',file:'大纲/待审阅.md',oldContent:'',newContent:'# 提案',title:'待审阅'};await openFileProposal(p);const f=openFiles.find(f=>f.path===p.file);await saveFile(f);const r=await fetch('/api/file?project='+currentProject+'&path='+encodeURIComponent(p.file)).then(r=>r.json());await openFile(${JSON.stringify(chapterFile)});await openFile(p.file);return {pending:f.pendingCreate,readonly:document.getElementById('fileContent').readOnly,review:!!document.querySelector('#fileProposalBox .accept'),notCreated:!!r.error};})()`);
+  check('新大纲可审阅，切标签仍保留提案，普通保存不创建', () => { assert(virtual.pending); assert(virtual.readonly); assert(virtual.review); assert(virtual.notCreated); });
+  const uiRejected = await post('/api/plot/adopt', { proposal: { ...plan, title: '界面拒绝方案' } });
+  const rejection = await run(`(async()=>{await openFileProposal(${JSON.stringify(uiRejected.proposal)});document.querySelector('#fileProposalBox .reject').click();for(let i=0;i<50;i++){if(!openFiles.some(f=>f.path===${JSON.stringify(uiRejected.target)}))break;await new Promise(r=>setTimeout(r,20));}return !openFiles.some(f=>f.path===${JSON.stringify(uiRejected.target)});})()`);
+  const afterRejection = await devices();
+  check('界面拒绝新大纲关闭临时标签，不记桥段', () => { assert(rejection); assert.equal(afterRejection.devices.length, 1); assert(!fs.existsSync(path.join(book, uiRejected.target))); });
+  const uiAccepted = await post('/api/plot/adopt', { proposal: { ...plan, title: '界面接受方案' } });
+  const acceptance = await run(`(async()=>{await openFileProposal(${JSON.stringify(uiAccepted.proposal)});await acceptFileProposal(currentFileProposal.id);const f=openFiles.find(f=>f.path===${JSON.stringify(uiAccepted.target)});return {pending:!!f.pendingCreate,content:f.content,reviewClosed:currentFileProposal===null};})()`);
+  const afterAcceptance = await devices();
+  check('界面接受新大纲写盘、记桥段并退出临时状态', () => { assert(!acceptance.pending); assert(acceptance.reviewClosed); assert.equal(acceptance.content, uiAccepted.proposal.newContent); assert.equal(afterAcceptance.devices.length, 2); });
+  const stale = await run(`(async()=>{const originalFetch=window.fetch;let release;window.fetch=async(...args)=>{const r=await originalFetch(...args);if(String(args[0]).startsWith('/api/health'))await new Promise(resolve=>release=resolve);return r;};const project=currentProject,oldNodes=nodes,oldHealth=healthSnapshot;const refreshing=refreshProjectMonitor();while(!release)await new Promise(r=>setTimeout(r,20));currentProject='OtherProject';release();await refreshing;const untouched=nodes===oldNodes&&healthSnapshot===oldHealth;currentProject=project;window.fetch=originalFetch;return untouched;})()`);
+  check('切换项目后，旧监控请求不覆盖新项目', () => assert(stale));
+  const shared = await run(`(()=>{localStorage.removeItem('novelCanvasChatDock');syncChatPanel();expandChatPanel();const opened=getComputedStyle(chatPanel).display!=='none'&&document.getElementById('detail').classList.contains('hidden');document.getElementById('chatDetailTab').click();const closed=isChatCollapsed()&&!document.getElementById('detail').classList.contains('hidden');expandChatPanel();return {dock:chatDockNow(),opened,closed,width:chatPanel.getBoundingClientRect().width};})()`);
+  check('默认右侧，AI与详情共用空间', () => { assert.equal(shared.dock, 'right'); assert(shared.opened && shared.closed); assert.equal(shared.width, 460); });
+  const task = await run(`(()=>{const select=document.getElementById('chatTask');const count=chatHistory.length;select.value='polish';select.dispatchEvent(new Event('change'));return {role:currentRole(),allowed:document.getElementById('chatAllowProposals').checked,quiet:chatHistory.length===count,oldButtons:document.querySelectorAll('.roleChip,.agentCmd').length};})()`);
+  check('统一任务入口，切换不调用AI或插入欢迎消息', () => { assert.equal(task.role, 'polish'); assert(task.allowed && task.quiet); assert.equal(task.oldButtons, 0); });
+  const reviewProposal = await post('/api/propose_file_edit', { path: chapterFile, content: '# 第1章 改写\n\n林舟攥紧钥匙。' });
+  assert(reviewProposal.ok, reviewProposal.error);
+  const adjustment = await run(`(()=>{renderProposals([${JSON.stringify(reviewProposal.proposal)}]);document.getElementById('chat-proposal-'+${JSON.stringify(reviewProposal.proposal.id)}).querySelector('.adjust').click();return {content:pendingRefs.at(-1)?.content,allowed:document.getElementById('chatAllowProposals').checked,prompt:chatInput.value};})()`);
+  check('继续调整带上待审方案并启用提案', () => { assert.equal(adjustment.content, reviewProposal.proposal.newContent); assert(adjustment.allowed); assert(adjustment.prompt.includes('请继续调整')); });
+  const review = await run(`(async()=>{const f=openFiles.find(f=>f.path===${JSON.stringify(chapterFile)});if(f){f.content=f.savedContent;f.dirty=false;}renderProposals([${JSON.stringify(reviewProposal.proposal)}]);const card=document.getElementById('chat-proposal-'+${JSON.stringify(reviewProposal.proposal?.id)});card.querySelector('.review').click();for(let i=0;i<50;i++){if(currentFileProposal?.id===${JSON.stringify(reviewProposal.proposal?.id)})break;await new Promise(r=>setTimeout(r,20));}return {compact:!card.querySelector('pre'),reviewing:!!document.querySelector('#fileProposalBox .fileReviewChanges'),locate:!!document.querySelector('#fileProposalBox .locateOriginal')};})()`);
+  check('聊天紧凑卡片可进入编辑器差异审阅', () => { assert(review.compact && review.reviewing && review.locate); });
+  const returnReview = await run(`(()=>{const ta=document.getElementById('fileContent'),buffer=ta.value;const hidden=getComputedStyle(ta).display==='none';const grid=getComputedStyle(document.querySelector('.fileReviewChanges')).gridTemplateColumns.split(' ').length===2;document.querySelector('#fileProposalBox .return').click();const retained=ta===document.getElementById('fileContent')&&ta.value===buffer&&getComputedStyle(ta).display!=='none'&&currentFileProposal?.id===${JSON.stringify(reviewProposal.proposal.id)};renderFileProposal(currentFileProposal);return {hidden,grid,retained};})()`);
+  check('审阅占用主编辑区，返回正文保留原编辑器与待审提案', () => assert(returnReview.hidden && returnReview.grid && returnReview.retained));
+  const acceptedReview = await run(`(async()=>{await acceptFileProposal(${JSON.stringify(reviewProposal.proposal?.id)});return document.getElementById('chat-proposal-'+${JSON.stringify(reviewProposal.proposal?.id)}).dataset.state;})()`);
+  check('编辑器接受后聊天卡片显示已写入', () => assert.equal(acceptedReview, 'applied'));
+  const draftProposal = await post('/api/propose_file_edit', { path: chapterFile, content: '# 第1章 再改\n\n林舟敲门。' });
+  const duringAccept = await run(`(async()=>{await openFileProposal(${JSON.stringify(draftProposal.proposal)});const f=openFiles.find(f=>f.path===activeFilePath);const native=window.fetch;let release;window.fetch=async(...args)=>{const r=await native(...args);if(args[0]==='/api/apply_proposal')await new Promise(resolve=>release=resolve);return r;};const applying=acceptFileProposal(currentFileProposal.id);while(!release)await new Promise(r=>setTimeout(r,20));f.content+='等待期间的新草稿';release();await applying;window.fetch=native;return {dirty:f.dirty,draft:f.content.endsWith('等待期间的新草稿'),saved:f.savedContent===${JSON.stringify(draftProposal.proposal.newContent)}};})()`);
+  check('提案接受等待期间的新输入不被读盘覆盖', () => { assert(duringAccept.dirty && duringAccept.draft && duringAccept.saved); });
+  reply = '# 冲突建议\n\n**保留钥匙**，让林舟先敲门。\n\n<img src=x onerror=alert(1)>';
+  const bodiesBefore = upstreamBodies.length;
+  const chat = await run(`(async()=>{pendingRefs=[];chatHistory=[];const task=document.getElementById('chatTask');task.value='general';task.dispatchEvent(new Event('change'));chatExcludedIds.clear();addSelectionToChat('', '作者指定片段', ${JSON.stringify(longRef)}, '', '讨论');document.getElementById('chatTarget').value='';chatInput.value='讨论下一步冲突';await sendChat();return {reply:chatHistory.at(-1)?.content,heading:!!document.querySelector('#chatMessages .chatMessageBody h1'),unsafe:!!document.querySelector('#chatMessages img'),sent:document.getElementById('chatSourceSummary').textContent,refs:pendingRefs.length};})()`);
+  check('真实流式对话成功，显示Markdown且转义用户HTML', () => { assert.equal(chat.reply, reply); assert(chat.heading); assert(!chat.unsafe); assert.equal(chat.refs, 0); assert(chat.sent.includes('本轮已发送')); });
+  check('发送给模型的资料与预览快照一致', () => { assert(upstreamBodies[bodiesBefore].messages[0].content.includes(longRef)); assert(upstreamBodies[bodiesBefore].tools.every(t => !/edit|create|delete/.test(t.function.name))); });
+  const fail = await run(`(async()=>{const native=window.fetch;window.fetch=async(...args)=>{if(args[0]==='/api/chat')throw new Error('模拟断连');return native(...args);};addSelectionToChat('', '失败保留引用', '应保留的片段', '', '讨论');chatInput.value='请求失败后重试';await sendChat();window.fetch=native;return {draft:chatInput.value,retained:pendingRefs.some(r=>r.title==='失败保留引用'),busy:writingBusy};})()`);
+  check('请求失败保留要求和引用并恢复发送状态', () => { assert.equal(fail.draft, '请求失败后重试'); assert(fail.retained); assert(!fail.busy); });
+  const stopped = await run(`(async()=>{const native=chatFetchStream;chatFetchStream=async(p,onDelta)=>{onDelta('已经生成的半段正文');const e=new Error('stopped');e.stopped=true;throw e;};chatInput.value='停止测试';await sendChat();chatFetchStream=native;return chatHistory.at(-1).content;})()`);
+  check('停止后保留已生成的正文', () => assert(stopped.includes('已经生成的半段正文')));
+  const pinned = await run(`(async()=>{pendingRefs=[];addSelectionToChat('', '固定资料', '后续请求仍需参考', '', '讨论');pendingRefs[0].pinned=true;chatInput.value='使用固定资料讨论';await sendChat();return pendingRefs.length===1&&pendingRefs[0].pinned;})()`);
+  check('固定资料在发送成功后保留', () => assert(pinned));
+  const editorContext = await run(`(async()=>{newWritingTask();await openFile(${JSON.stringify(chapterFile)});const spec=chatSourceSpec();return {target:spec.targetFile,draft:spec.references.some(r=>r.draft&&r.file===spec.targetFile),visible:document.getElementById('chatContextTags').textContent};})()`);
+  check('Agent 自动识别正在编辑的文件，并使用未保存草稿', () => { assert.equal(editorContext.target,chapterFile); assert(editorContext.draft); assert(editorContext.visible.includes('正在编辑')); });
+  const isolatedTasks = await run(`(()=>{const first=activeWritingTask.id;chatInput.value='任务 A 的未发送草稿';pendingRefs=[{id:'task-ref',title:'A 的资料',content:'只给任务 A 的片段'}];document.getElementById('chatTarget').value=${JSON.stringify(chapterFile)};chatExcludedIds.add('excluded-A');writingTaskChanged();newWritingTask();const second=activeWritingTask.id,clean=chatHistory.length===0&&pendingRefs.length===0&&chatInput.value===''&&document.getElementById('chatTarget').value===''&&document.getElementById('chatAllowProposals').checked;chatHistory.push({role:'user',content:'任务 B 的独立消息'});captureWritingTask();saveWritingTasks();activateWritingTask(first);return {first,second,clean,draft:chatInput.value,ref:pendingRefs[0]?.id,target:document.getElementById('chatTarget').value,excluded:chatExcludedIds.has('excluded-A'),noOther:!chatHistory.some(m=>m.content==='任务 B 的独立消息')};})()`);
+  check('新任务不清空历史，切换隔离对话、草稿、参考与重点文件', () => { assert(isolatedTasks.first!==isolatedTasks.second); assert(isolatedTasks.clean&&isolatedTasks.excluded&&isolatedTasks.noOther); assert.equal(isolatedTasks.draft,'任务 A 的未发送草稿'); assert.equal(isolatedTasks.ref,'task-ref'); assert.equal(isolatedTasks.target,chapterFile); });
+  const reloadedTasks = await run(`(()=>{captureWritingTask();saveWritingTasks();writingTaskStores.clear();writingTaskProject='';sourceProject='';activeWritingTask=null;loadWritingTasks();return {id:activeWritingTask.id,draft:chatInput.value,ref:pendingRefs[0]?.id,excluded:chatExcludedIds.has('excluded-A'),count:writingStore().tasks.length};})()`);
+  check('任务记录重新加载后恢复活动任务、未发送资料与排除项', () => { assert.equal(reloadedTasks.id,isolatedTasks.first); assert.equal(reloadedTasks.draft,isolatedTasks.draft); assert.equal(reloadedTasks.ref,'task-ref'); assert(reloadedTasks.excluded); assert(reloadedTasks.count>=2); });
+  const refreshedTask = await run(`(async()=>{await loadData();return {id:activeWritingTask.id,ref:pendingRefs[0]?.id,excluded:chatExcludedIds.has('excluded-A'),draft:chatInput.value};})()`);
+  check('刷新项目数据保留当前任务引用、排除项与输入草稿', () => { assert.equal(refreshedTask.id,isolatedTasks.first); assert.equal(refreshedTask.ref,'task-ref'); assert(refreshedTask.excluded); assert.equal(refreshedTask.draft,isolatedTasks.draft); });
+  const interruptedTask = await run(`(()=>{newWritingTask();const task=activeWritingTask;task.state='running';task.messages.push({role:'user',content:'中断任务'});task.turns.push({id:'interrupted-turn',messageIndex:0,status:'running',phase:'正在查阅',steps:[{stepId:'pending',status:'running',summary:'读取正文'}],partial:'尚未完成的正文片段'});saveWritingTasks();writingTaskStores.clear();writingTaskProject='';activeWritingTask=null;loadWritingTasks();return {state:activeWritingTask.state,turn:activeWritingTask.turns[0].status,step:activeWritingTask.turns[0].steps[0].status,partial:chatHistory.at(-1).content};})()`);
+  check('执行中重新加载标记中断，保留部分产出且不假称完成', () => { assert.equal(interruptedTask.state,'interrupted'); assert.equal(interruptedTask.turn,'interrupted'); assert.equal(interruptedTask.step,'interrupted'); assert(interruptedTask.partial.includes('尚未完成的正文片段')); });
+  const toolCall = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+  const diskBeforeAgent = fs.readFileSync(path.join(book,chapterFile),'utf8');
+  const agentBodiesBefore = upstreamBodies.length;
+  gatewayMessages.push({role:'assistant',content:null,tool_calls:[toolCall('read','read_file',{path:chapterFile}),toolCall('lookup','search',{query:'木门'})]}, {role:'assistant',content:null,tool_calls:[toolCall('chapter-edit','edit_file',{path:chapterFile,content:'# 第1章 门前的冲突\n\n林舟没有交出钥匙。'}),toolCall('role-edit','edit_file',{path:'追踪/角色状态.md',content:'# 角色状态\n\n## 林舟\n- 当前状态：保留钥匙，追查守门人'})]}, {role:'assistant',content:'已生成正文与人物状态的两项待审修改。',_delay:300});
+  const multiAgent = await run(`(async()=>{newWritingTask();document.getElementById('chatTask').value='reviewer';chatInput.value='加强第一章冲突，并更新人物状态';const running=sendChat();let seen=false;for(let i=0;i<120;i++){if(activeWritingTask.proposals.length===2&&activeWritingTask.turns[0]?.status==='running'){seen=true;break;}await new Promise(r=>setTimeout(r,10));}const liveSteps=activeWritingTask.turns[0]?.steps.length;await running;return {seen,liveSteps,id:activeWritingTask.id,state:activeWritingTask.state,steps:activeWritingTask.turns[0].steps,changes:activeWritingTask.proposals.length,cards:document.querySelectorAll('#chatChangesBody .chatProposal').length,prompt:document.getElementById('agentTaskTitle').textContent};})()`);
+  check('Agent 实际查阅与搜索，实时展示过程并统一收集多文件修改', () => { assert(multiAgent.seen,JSON.stringify(multiAgent)); assert.equal(multiAgent.liveSteps,4); assert.equal(multiAgent.state,'review'); assert(multiAgent.steps.every(s=>s.status==='completed')); assert.equal(multiAgent.changes,2); assert.equal(multiAgent.cards,2); assert(multiAgent.prompt.includes('加强第一章')); assert.equal(fs.readFileSync(path.join(book,chapterFile),'utf8'),diskBeforeAgent); });
+  check('Agent 根据任务具备读写提案能力，角色侧重不裁掉必要工具', () => { const request=upstreamBodies[agentBodiesBefore]; assert(request.tools.some(t=>t.function.name==='edit_file')); assert(request.tools.some(t=>t.function.name==='search')); assert(!request.tools.some(t=>t.function.name==='move_node')); });
+  const taskProposals = (await get('/api/proposals?project='+project)).proposals.filter(p=>p.taskId===multiAgent.id);
+  check('多文件待审提案关联任务与执行轮次', () => { assert.equal(taskProposals.length,2); assert(taskProposals.every(p=>p.turnId)); });
+  await stop(server); await startServer();
+  const afterTaskRestart = (await get('/api/proposals?project='+project)).proposals.filter(p=>p.taskId===multiAgent.id);
+  check('服务重启后任务关联的待审修改仍可审阅', () => assert.equal(afterTaskRestart.length,2));
+  const taskReplay = await run(`(()=>{const id=activeWritingTask.id;newWritingTask();activateWritingTask(id);return {steps:document.querySelectorAll('.agentRun .agentStep').length,cards:document.querySelectorAll('#chatChangesBody .chatProposal').length};})()`);
+  check('切回任务恢复执行记录与统一修改清单', () => { assert.equal(taskReplay.steps,4); assert.equal(taskReplay.cards,2); });
+  gatewayMessages.push({role:'assistant',content:null,tool_calls:[toolCall('stop-edit','edit_file',{path:'大纲/停止时保留.md',content:'# 停止前的待审方案'})]}, {role:'assistant',content:'尚未完成的结果',_delay:600});
+  const stoppedAgent = await run(`(async()=>{newWritingTask();chatInput.value='生成一份待审大纲，停止测试';const pending=sendChat();for(let i=0;i<100;i++){if(activeWritingTask.proposals.length)break;await new Promise(r=>setTimeout(r,10));}document.getElementById('chatStop').click();await pending;return {state:activeWritingTask.state,changes:activeWritingTask.proposals.length,draft:chatInput.value,enabled:!document.getElementById('chatSend').disabled};})()`);
+  check('停止执行保留已生成提案、原要求与可继续的任务状态', () => { assert.equal(stoppedAgent.state,'stopped'); assert.equal(stoppedAgent.changes,1); assert(stoppedAgent.draft.includes('停止测试')); assert(!fs.existsSync(path.join(book,'大纲/停止时保留.md'))); });
+  for(let i=0;i<10;i++)gatewayMessages.push({role:'assistant',content:null,tool_calls:[toolCall('limit-'+i,'list_nodes',{})]});
+  const limitedAgent = await run(`(async()=>{newWritingTask();chatInput.value='执行上限测试';await sendChat();return {state:activeWritingTask.state,turn:activeWritingTask.turns[0].status,reply:chatHistory.at(-1).content};})()`);
+  check('达到执行上限明确标记待继续，不假称任务已完成', () => { assert.equal(limitedAgent.state,'limited'); assert.equal(limitedAgent.turn,'limited'); assert(limitedAgent.reply.includes('尚未完成')); });
+  const droppedStream = await run(`(async()=>{newWritingTask();const native=window.fetch;window.fetch=async(...args)=>args[0]==='/api/chat'?new Response(${JSON.stringify('event: delta\ndata: {"text":"已生成一部分"}\n\n')},{headers:{'Content-Type':'text/event-stream'}}):native(...args);chatInput.value='模拟流中途断开';await sendChat();window.fetch=native;return {state:activeWritingTask.state,reply:chatHistory.at(-1).content};})()`);
+  check('无完成事件的流断连显示失败并保留部分回复', () => { assert.equal(droppedStream.state,'failed'); assert(droppedStream.reply.includes('已生成一部分')); assert(droppedStream.reply.includes('中断')); });
+  const scrolling = await run(`(()=>{for(let i=0;i<16;i++)addMsg('assistant','长回复。'.repeat(120));chatMessages.scrollTop=0;addMsg('assistant','最后的新回复');return {top:chatMessages.scrollTop,notice:!document.getElementById('chatNewReply').hidden,editable:!!document.querySelector('#chatMessages [contenteditable="true"]')};})()`);
+  check('阅读历史时不抢滚动位置，消息不可伪编辑', () => { assert.equal(scrolling.top, 0); assert(scrolling.notice); assert(!scrolling.editable); });
+  await run(`chatMessages.replaceChildren();addMsg('assistant',${JSON.stringify('# 第36章 · 冲突讨论\n\n**保留人物动机**，把冲突落到行动。\n\n- 林舟必须先交出钥匙。\n- 门外的敲击声提前出现。\n\n修改建议可进入编辑器审阅。')});chatInput.value='让这一章的冲突更具体，保留原有设定。';document.getElementById('chatSources').open=true;requestChatSourcePreview();`);
+  await pause(100);
+  for (const mode of ['light', 'dark']) {
+    await run(`applyTheme({mode:${JSON.stringify(mode)},accent:'#315c72'});chatScrollEnd(true);`);
+    await pause(250);
+    const shot = await send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(temp, 'chat-' + mode + '.png'), Buffer.from(shot.result.data, 'base64'));
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 700, deviceScaleFactor: 1, mobile: false });
+  const narrow = await run(`(()=>{const r=chatPanel.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.width>=400;})()`);
+  check('窄窗口右侧面板不越界', () => assert(narrow));
+  const narrowControls = await run(`(()=>{const left=document.querySelector('.topBarLeft').getBoundingClientRect(),nav=document.getElementById('activityBar').getBoundingClientRect(),right=document.querySelector('.topBarRight').getBoundingClientRect(),composer=document.getElementById('chatComposer').getBoundingClientRect(),attach=document.getElementById('chatAttachActive').getBoundingClientRect(),toolbar=document.getElementById('chatToolbar').getBoundingClientRect();return left.right<=nav.left&&nav.right<=right.left&&composer.left>=0&&composer.right<=innerWidth&&document.documentElement.scrollWidth===innerWidth&&Math.abs(attach.left-toolbar.left)<2&&toolbar.width>=composer.width-30;})()`);
+  check('窄窗口顶部导航不重叠，输入区完整且页面无横向溢出', () => assert(narrowControls));
+  const isolation = await run(`(()=>{chatInput.value='这本书的草稿';pendingRefs=[{id:'old-ref',content:'旧书资料'}];chatHistory=[{role:'user',content:'旧书对话'}];const select=document.getElementById('projectSelect');select.append(new Option('OtherProject','OtherProject'));select.value='OtherProject';select.dispatchEvent(new Event('change'));return {refs:pendingRefs.length,messages:chatHistory.length,input:chatInput.value};})()`);
+  check('切换小说立即隔离引用、对话和输入草稿', () => { assert.equal(isolation.refs, 0); assert.equal(isolation.messages, 0); assert.equal(isolation.input, ''); });
+  check('浏览器无未捕获异常', () => assert.deepEqual(exceptions, []));
+  ws.close(); ws = null;
+  await stop(edge); edge = null;
+  await stop(server); server = null;
+  if (process.argv.includes('--smoke')) {
+    fs.writeFileSync(config, JSON.stringify({ key: '', base: 'http://127.0.0.1:1/v1', model: 'local-test' }));
+    const child = spawn(process.execPath, ['scripts/smoke-test.js'], { cwd: app, env: { ...env, CDP_PORT: String(cdpPort) }, windowsHide: true, stdio: 'inherit' });
+    const code = await new Promise(r => child.once('exit', r));
+    assert.equal(code, 0, '隔离冒烟测试失败');
+  }
+  console.log(`\n${passed} 项修复回归通过；隔离目录：${temp}`);
+})().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => {
+  if (ws) ws.close();
+  await stop(edge); await stop(server);
+  gateway.close();
+  console.log('所有测试数据仅保存在：' + temp);
+});
