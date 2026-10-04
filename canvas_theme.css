@@ -16,7 +16,13 @@
   --shadow-lg: 0 24px 70px rgba(0,0,0,.65);
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   --glass: rgba(255, 255, 255, .045);
-  --edge-auto: rgba(163,178,200,.95);   /* 自动连线（虚线）：深色主题亮灰蓝，清晰可见 */
+  --edge-auto: rgba(163,178,200,.95);
+  --edge-entity: rgba(96,165,250,.95);  /* 实体关联：亮蓝 */
+  --edge-title: rgba(45,212,191,.95);   /* 标题匹配：亮青 */
+  --edge-chapter: rgba(251,191,36,.9);  /* 章节聚焦：亮黄 */
+  /* 小地图深色（canvas 2D 经 getComputedStyle 读取） */
+  --mini-bg: #1b2230; --mini-dot: #8b98ad; --mini-view: #ffb454;
+  --mini-role: #a68cff; --mini-faction: #4ac7b6; --mini-setting: #f0a955; --mini-foreshadow: #f87171; --mini-volume: #60a5fa;   /* 自动连线（虚线）：深色主题亮灰蓝，清晰可见 */
   --edge-manual: #ffb454;               /* 手动连线（实线）：深色主题亮琥珀 */
 }
  html[data-theme="dark"] *{ scrollbar-color: #2a3342 transparent; }
@@ -1040,3 +1046,14 @@ html[data-theme="dark"] #roleBar .roleChip.active {
   border-radius: 1px;
 }
 
+
+/* 泳道（侧栏）深色 */
+html[data-theme="dark"] .laneModeBtn:hover{ border-color: var(--accent); color: var(--accent); }
+html[data-theme="dark"] #laneBar{ border-top-color: rgba(255,255,255,.10); }
+
+/* 连线语义化（v1.25）深色覆盖：必须排在 .autoEdge/.customEdge 的深色规则之后 */
+html[data-theme="dark"] #edges .linkEdge.kind-entity, html[data-theme="dark"] #axisEdges .linkEdge.kind-entity{ stroke: var(--edge-entity); stroke-width: 1.8; stroke-dasharray: none; }
+html[data-theme="dark"] #edges .linkEdge.kind-title, html[data-theme="dark"] #axisEdges .linkEdge.kind-title{ stroke: var(--edge-title); stroke-width: 1.6; stroke-dasharray: 9 6; }
+html[data-theme="dark"] #edges .linkEdge.kind-chapter, html[data-theme="dark"] #axisEdges .linkEdge.kind-chapter{ stroke: var(--edge-chapter); stroke-width: 1.5; stroke-dasharray: 2 5; }
+html[data-theme="dark"] #edges .linkEdge.kind-manual, html[data-theme="dark"] #axisEdges .linkEdge.kind-manual{ stroke: var(--edge-manual); stroke-width: 2.4; stroke-dasharray: none; }
+html[data-theme="dark"] #legend .legendRow:hover{ background: rgba(255,255,255,.07); }

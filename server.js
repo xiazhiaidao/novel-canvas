@@ -3703,6 +3703,8 @@ const server = http.createServer(async (req, res) => {
         overrides: layout.overrides || {},
         timelineNodes: (layout.timelineNodes || []).map(n => ({ id: String(n.id), title: String(n.title || ''), chapter: n.chapter != null ? Number(n.chapter) : null, note: String(n.note || ''), progress: n.progress != null ? Number(n.progress) : null })),
         unrecognized: (layout.unrecognized || []).map(String),
+        // 视图记忆（缩放/平移/泳道/折叠）：必须在这里透出，否则前端存了也读不回来（漏了这一步就白存）
+        view: layout.view || null,
       },
     });
   }
@@ -4526,10 +4528,13 @@ const api = getApiConfig();
   if (pathname === '/api/layout' && req.method === 'POST') {
     try {
       const body = await readBody(req);
-      const positions = body.nodes || {};
-      const customLinks = Array.isArray(body.customLinks) ? body.customLinks : [];
       const root = resolveProjectRoot(body.project || defaultProjectName());
       const prev = loadLayout(root);
+      // ⚠️ 每个字段都必须能回退到「已有布局」：前端会发**只带 view 的局部更新**
+      // （视图记忆：缩放/平移/泳道），若这里写成 `body.nodes || {}`，
+      // 一次视图保存就会把所有节点坐标清空——这是会造成真实数据丢失的写法。
+      const positions = body.nodes || prev.nodes || {};
+      const customLinks = Array.isArray(body.customLinks) ? body.customLinks : (prev.customLinks || []);
       snapshotLayoutThrottled(root, body.project || defaultProjectName());
       saveLayout({
         nodes: positions,
@@ -4545,6 +4550,8 @@ const api = getApiConfig();
         overrides: body.overrides || prev.overrides || {},
         timelineNodes: body.timelineNodes !== undefined ? body.timelineNodes : (prev.timelineNodes || []),
         unrecognized: body.unrecognized || prev.unrecognized || [],
+        // 视图记忆（可选字段，向后兼容：老布局文件没有 view 也能正常读）
+        view: body.view !== undefined ? body.view : (prev.view || null),
       }, root);
       return sendJson(res, { ok: true });
     } catch (e) {

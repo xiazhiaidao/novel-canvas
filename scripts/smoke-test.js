@@ -712,6 +712,190 @@ async function main() {
     return ok ? 'OK(5列=25, 6列=1, 无章号=null)' : ('解析结果 ' + a + ',' + b + ',' + c);
   });
 
+  // ── 阶段 5：泳道 / 连线语义化 / 视图记忆 ─────────────────────────
+  await check('画布泳道：按泳道分行 + 侧栏开关 + 隐藏筛选', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const chs = nodes.filter(n => n.label === '章节');
+      if (chs.length < 3) return JSON.stringify({ ok: false, why: '章节太少' });
+      chs.slice(0, 2).forEach(n => { layoutAxis[n.id] = { chapter: nodeAxisData(n).chapter, level: null, lane: '主线' }; });
+      chs.slice(2, 3).forEach(n => { layoutAxis[n.id] = { chapter: nodeAxisData(n).chapter, level: null, lane: '支线' }; });
+      renderFilters();
+      const rows = document.querySelectorAll('#laneBar .laneRow').length;
+      const btn = document.getElementById('laneModeBtn');
+      if (!btn) return JSON.stringify({ ok: false, why: '无泳道开关' });
+      if (!laneMode) btn.click();
+      await sleep(250);
+      const laneOn = !!(axisGeom && axisGeom.laneOn);
+      const labels = document.querySelectorAll('#axisYLabels .axisLaneLabel').length;
+      const sameLane = Array.from(document.querySelectorAll('#axisNodes .node[data-lane="主线"]'));
+      const distinctY = new Set(sameLane.map(el => el.style.top)).size;
+      const cnt = () => document.querySelectorAll('#axisNodes .node').length;
+      const before = cnt();
+      const eye = document.querySelector('#laneBar .laneEye[data-lane="支线"]');
+      if (!eye) return JSON.stringify({ ok: false, why: '无支线开关', rows });
+      eye.click();
+      await sleep(250);
+      const after = cnt();
+      const hid = hiddenLanes.has('支线');
+      document.querySelector('#laneBar .laneEye[data-lane="支线"]').click();
+      await sleep(200);
+      const restored = cnt();
+      if (laneMode) { document.getElementById('laneModeBtn').click(); await sleep(150); }
+      return JSON.stringify({ ok: rows >= 2 && laneOn && labels >= 2 && distinctY === 1 && after === before - 1 && hid && restored === before,
+        rows, laneOn, labels, distinctY, before, after, hid, restored });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(' + o.rows + ' 条泳道, 同泳道 Y 一致, 隐藏 ' + o.before + '→' + o.after + ')') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('连线语义化：四类线型 + 图例独立开关', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const n = nodes.find(x => x.label === '章节') || nodes[0];
+      setEgoNode(n.id); // 连线只在聚焦节点时显示（既有行为）
+      await sleep(350);
+      if (!document.getElementById('legend').classList.contains('show')) toggleLegend();
+      await sleep(250);
+      const sel = '#axisEdges path.linkEdge, #edges path.linkEdge';
+      const cnt = () => document.querySelectorAll(sel).length;
+      const kinds = {};
+      document.querySelectorAll(sel).forEach(p => { const m = (p.getAttribute('class') || '').match(/kind-(\\w+)/); if (m) kinds[m[1]] = (kinds[m[1]] || 0) + 1; });
+      const rows = document.querySelectorAll('#legend .legendRow').length;
+      const styled = Array.from(document.querySelectorAll(sel)).every(p => {
+        const cs = getComputedStyle(p);
+        return cs.strokeWidth && cs.stroke && cs.stroke !== 'none';
+      });
+      const before = cnt();
+      const row = document.querySelector('#legend .legendRow[data-kind="entity"]');
+      if (!row) return JSON.stringify({ ok: false, why: '无图例行' });
+      row.click();
+      await sleep(250);
+      const after = cnt();
+      const markedOff = document.querySelectorAll('#legend .legendRow.off').length;
+      document.querySelector('#legend .legendRow[data-kind="entity"]').click();
+      await sleep(250);
+      const back = cnt();
+      if (typeof clearEgo === 'function') clearEgo();
+      return JSON.stringify({ ok: rows === 4 && Object.keys(kinds).length >= 1 && styled && before > 0 && after === 0 && markedOff === 1 && back === before,
+        rows, kinds, styled, before, after, markedOff, back });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(4 类图例 · 实测 ' + JSON.stringify(o.kinds) + ' · 关→' + o.after + ' 再开→' + o.back + ')') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('视图记忆：局部保存不丢节点 + 缩放/平移/泳道可恢复', async () => {
+    const v = await evalExpr(`(async () => {
+      const P = '_nc_smoke_project';
+      const post = b => fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ project: P }, b)) }).then(r => r.json());
+      await post({ nodes: { 'seed:a': { x: 11, y: 22 } }, customLinks: [['seed:a', 'seed:b']], version: 3 });
+      await post({ view: { scale: 1.7, x: 42, y: -13, laneMode: true, hiddenLanes: ['X'], collapsedGroups: ['角色'] } });
+      const after = await fetch('/api/data?project=' + P).then(r => r.json());
+      const keptNodes = !!(after.layout && after.layout.nodes && after.layout.nodes['seed:a'] && after.layout.nodes['seed:a'].x === 11);
+      const keptLinks = !!(after.layout && Array.isArray(after.layout.customLinks) && after.layout.customLinks.length === 1);
+      const savedView = !!(after.layout && after.layout.view && after.layout.view.scale === 1.7);
+      const bak = { t: Object.assign({}, axisViewT), m: laneMode, h: [...hiddenLanes], c: [...collapsedGroups] };
+      restoreViewState(after.layout.view);
+      const restored = axisViewT.scale === 1.7 && axisViewT.x === 42 && laneMode === true && hiddenLanes.has('X') && collapsedGroups.has('角色');
+      axisViewT = bak.t; laneMode = bak.m; hiddenLanes = new Set(bak.h); collapsedGroups = new Set(bak.c);
+      if (typeof renderFilters === 'function') renderFilters();
+      applyAxisTransform();
+      return JSON.stringify({ ok: keptNodes && keptLinks && savedView && restored, keptNodes, keptLinks, savedView, restored });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? 'OK(view 局部保存未清空 nodes/customLinks · 恢复生效)' : v;
+    } catch (_) { return v; }
+  });
+
+  await check('画布性能：1000 章布局不回归', async () => {
+    const v = await evalExpr(`(() => {
+      const bak = nodes;
+      const fake = [];
+      for (let i = 0; i < 1000; i++) fake.push({ id: 'fake:' + i, type: 'chapter', label: '章节', title: '第' + (i + 1) + '章', chapter: i + 1, content: 'x'.repeat(200), file: '正文/第' + (i + 1) + '章.md' });
+      nodes = fake;
+      nodeMap = {}; fake.forEach(n => nodeMap[n.id] = n);
+      const t0 = performance.now();
+      computeAxisLayout();
+      const t1 = performance.now();
+      const items = axisGeom ? axisGeom.items.length : -1;
+      nodes = bak;
+      nodeMap = {}; nodes.forEach(n => nodeMap[n.id] = n);
+      computeAxisLayout(); renderAxisView();
+      return JSON.stringify({ ms: Math.round((t1 - t0) * 10) / 10, items });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return (o.items === 1000 && o.ms < 400) ? ('OK(1000 章布局 ' + o.ms + 'ms)') : ('布局 ' + o.ms + 'ms / items=' + o.items);
+    } catch (_) { return v; }
+  });
+
+  // ── 阶段 6：设计令牌 + 反馈收口 ─────────────────────────────────
+  await check('反馈收口：无残留 prompt()/alert()，输入弹窗可用', async () => {
+    const files = ['app.js', 'file_editor.js', 'canvas_upgrade.js'];
+    const leftovers = [];
+    for (const f of files) {
+      const src = fs.readFileSync(path.join(root, f), 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|\*)/.test(line)) return;                 // 注释不算
+        if (/[^.\w]prompt\(/.test(line) && !/promptDialog/.test(line)) leftovers.push(f + ':' + (i + 1) + ' prompt');
+        if (/[^.\w]alert\(/.test(line)) leftovers.push(f + ':' + (i + 1) + ' alert');
+      });
+    }
+    if (leftovers.length) return '残留原生弹窗: ' + leftovers.join(', ');
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const p = promptDialog('冒烟：输入', { value: '预填' });
+      await sleep(120);
+      const shown = document.getElementById('promptModal').classList.contains('show');
+      const prefill = document.getElementById('promptInput').value;
+      document.getElementById('promptInput').value = '改过';
+      document.getElementById('promptOkBtn').click();
+      const okVal = await p;
+      const p2 = promptDialog('冒烟：取消');
+      await sleep(80);
+      document.getElementById('promptCancelBtn').click();
+      const cancelVal = await p2;
+      return JSON.stringify({ shown, prefill, okVal, cancelVal, closed: !document.getElementById('promptModal').classList.contains('show') });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      const ok = o.shown && o.prefill === '预填' && o.okVal === '改过' && o.cancelVal === null && o.closed;
+      return ok ? 'OK(无原生弹窗残留 · 确定/取消语义正确)' : v;
+    } catch (_) { return v; }
+  });
+
+  await check('设计令牌：已定义并用于高频样式 + 小地图随主题', async () => {
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const theme = fs.readFileSync(path.join(root, 'canvas_theme.css'), 'utf8');
+    const need = ['--sp-1', '--sp-4', '--rad-sm', '--rad-md', '--rad-lg', '--fs-sm', '--dur', '--shadow-md', '--mini-bg', '--edge-entity'];
+    const missing = need.filter(t => !html.includes(t + ':'));
+    if (missing.length) return '未定义令牌: ' + missing.join(',');
+    const usedRadius = (html.match(/var\(--rad-(sm|md|lg)\)/g) || []).length;
+    const darkMini = /--mini-bg:\s*#1b2230/.test(theme);
+    const up = fs.readFileSync(path.join(root, 'canvas_upgrade.js'), 'utf8');
+    const miniToken = /getComputedStyle\(document\.documentElement\)/.test(up) && /--mini-bg/.test(up);
+    const v = await evalExpr(`(() => {
+      const read = () => { const c = document.getElementById('mapCanvas'); const ctx = c.getContext('2d'); const d = ctx.getImageData(2, 2, 1, 1).data; return d[0] + ',' + d[1] + ',' + d[2]; };
+      const cur = document.documentElement.getAttribute('data-theme');
+      document.documentElement.setAttribute('data-theme', 'light'); drawMinimap();
+      const light = read();
+      document.documentElement.setAttribute('data-theme', 'dark'); drawMinimap();
+      const dark = read();
+      document.documentElement.setAttribute('data-theme', cur); drawMinimap();
+      return JSON.stringify({ light, dark, differs: light !== dark });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      const ok = usedRadius >= 50 && darkMini && miniToken && o.differs;
+      return ok ? ('OK(' + usedRadius + ' 处圆角用令牌 · 小地图 ' + o.light + '→' + o.dark + ')') : JSON.stringify({ usedRadius, darkMini, miniToken, o });
+    } catch (_) { return v; }
+  });
+
   // ── 阶段 4：剧情创意提案器（结构化 + 引用核验，AI 调用不参与冒烟）────
   await check('AI 错误如实转述：余额不足不再伪装成「解析失败」', async () => {
     // 回归守卫：实测本项目用的网关在余额不足时返回 HTTP 402

@@ -13,6 +13,22 @@
     --text-strong: #000; /* 用户硬约束：所有强调文字一律黑色（token 化，见 canvas_theme.css force-black 块） */
     --edge-auto: rgba(100,116,139,.95);   /* 自动连线（虚线）：浅色主题石板灰 */
     --edge-manual: rgba(180,83,9,.95);    /* 手动连线（实线）：浅色主题琥珀 */
+    /* 连线语义化（v1.25）：三类自动连线各有颜色，与手动连线区分 */
+    --edge-entity: rgba(37,99,235,.85);   /* 实体关联：蓝 */
+    --edge-title: rgba(13,148,136,.85);   /* 标题匹配：青 */
+    --edge-chapter: rgba(202,138,4,.80);  /* 章节聚焦：黄 */
+    /* ── 设计令牌（v1.25 / 阶段 6）：间距 · 圆角 · 字号 · 阴影 · 动效时长 ──
+       收敛的是**反复出现的同一语义值**；一次性/特例尺寸保持字面量（强行令牌化只会增加跳转成本）。
+       深色覆盖在 canvas_theme.css，遵守「强调文字一律黑色」硬约束。 */
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px;
+    --rad-sm: 8px; --rad-md: 10px; --rad-lg: 14px;
+    --fs-xs: 10.5px; --fs-sm: 11.5px; --fs-md: 12.5px; --fs-lg: 14px;
+    --dur-fast: .15s; --dur: .18s; --dur-slow: .3s;
+    --shadow-sm: 0 2px 8px rgba(15,23,42,.08);
+    --shadow-md: 0 4px 14px rgba(15,23,42,.12);
+    /* 小地图（canvas 2D 读不到 CSS 变量，运行时经 getComputedStyle 取，见 canvas_upgrade.js） */
+    --mini-bg: #f4f6fb; --mini-dot: #667085; --mini-view: #b45309;
+    --mini-role: #7c5cff; --mini-faction: #2f9e8f; --mini-setting: #d97706; --mini-foreshadow: #dc2626; --mini-volume: #2563eb;
     --muted: #667085;
     --accent: #b45309;
     --accent2: #7c5cff;
@@ -64,7 +80,7 @@
     font-size: 18px;
     cursor: pointer;
     border-left: 2px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -148,7 +164,7 @@
     width: 28px;
     height: 60px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     background: rgba(255,255,255,.85);
     color: var(--accent);
     font-size: 14px;
@@ -157,7 +173,7 @@
     display: none;
   }
   #sidebarShow { left: 48px; border-radius: 0 8px 8px 0; }
-  #detailShow { right: 0; border-radius: 8px 0 0 8px; }
+  #detailShow { right: 0; border-radius: var(--rad-sm) 0 0 8px; }
   #sidebarShow.show, #detailShow.show { display: block; }
   /* 专注模式：隐藏顶栏/侧栏/详情/状态栏/聊天，仅留活动栏 + 画布/编辑器 */
   body.focus-mode #topBar,
@@ -181,7 +197,7 @@
   #searchWrap { padding: 10px 12px 8px; flex: none; }
   #search {
     width: 100%; padding: 9px 12px; background: rgba(15,23,42,.05);
-    border: 1px solid var(--panel-border); border-radius: 10px;
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md);
     color: var(--text); outline: none; transition: border .2s;
   }
   #search:focus { border-color: rgba(245,197,107,.5); }
@@ -189,7 +205,7 @@
   .filterChip {
     padding: 4px 11px; border-radius: 20px; border: 1px solid var(--panel-border);
     background: transparent; color: var(--muted); font-size: 11.5px;
-    cursor: pointer; user-select: none; transition: all .18s;
+    cursor: pointer; user-select: none; transition: all var(--dur);
     letter-spacing: .2px;
   }
   .filterChip:hover { color: var(--text); background: rgba(15,23,42,.05); border-color: rgba(15,23,42,.16); }
@@ -209,7 +225,7 @@
   }
   .item {
     display: block; width: 100%; text-align: left; padding: 8px 12px; border: none;
-    background: transparent; color: var(--text); border-radius: 10px; cursor: pointer;
+    background: transparent; color: var(--text); border-radius: var(--rad-md); cursor: pointer;
     font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     transition: background .15s, color .15s, transform .1s;
   }
@@ -218,7 +234,7 @@
   .volGroup { margin: 2px 0; }
   .volTitle {
     cursor: pointer; padding: 6px 10px; font-size: 12px; color: #3f4756;
-    border-radius: 8px; background: rgba(15,23,42,.04); margin: 4px 0;
+    border-radius: var(--rad-sm); background: rgba(15,23,42,.04); margin: 4px 0;
     user-select: none; font-weight: 600;
   }
   .volTitle:hover { background: rgba(15,23,42,.08); }
@@ -273,12 +289,32 @@
   }
   #edges .customEdge { pointer-events: stroke; cursor: pointer; }
   #edges .customEdge:hover { stroke: var(--edge-manual); stroke-width: 2.6; filter: brightness(1.2); }
+  /* ── 连线语义化（v1.25）：四类连线各自线型/粗细/颜色 ──
+     必须放在 .autoEdge/.customEdge 规则之后，靠「更长的选择器」压过它们；
+     深色覆盖同步在 canvas_theme.css（两处历史高优先级覆盖都要照顾到）。 */
+  #edges .linkEdge.kind-entity, #axisEdges .linkEdge.kind-entity { stroke: var(--edge-entity); stroke-width: 1.8; stroke-dasharray: none; }
+  #edges .linkEdge.kind-title, #axisEdges .linkEdge.kind-title { stroke: var(--edge-title); stroke-width: 1.6; stroke-dasharray: 9 6; }
+  #edges .linkEdge.kind-chapter, #axisEdges .linkEdge.kind-chapter { stroke: var(--edge-chapter); stroke-width: 1.5; stroke-dasharray: 2 5; }
+  #edges .linkEdge.kind-manual, #axisEdges .linkEdge.kind-manual { stroke: var(--edge-manual); stroke-width: 2.4; stroke-dasharray: none; }
+  /* 图例（四类连线独立开关） */
+  #legend .legendRow { cursor: pointer; border-radius: 6px; padding: 3px 4px; }
+  #legend .legendRow:hover { background: rgba(15,23,42,.06); }
+  #legend .legendRow.off { opacity: .38; }
+  #legend .legendRow.off .l-label { text-decoration: line-through; }
+  #legend .l-line { width: 26px; flex: 0 0 auto; }
+  #legend .l-line.kind-entity { border-top: 1.8px solid var(--edge-entity); }
+  #legend .l-line.kind-title { border-top: 1.6px dashed var(--edge-title); }
+  #legend .l-line.kind-chapter { border-top: 1.5px dotted var(--edge-chapter); }
+  #legend .l-line.kind-manual { border-top: 2.4px solid var(--edge-manual); }
+  #legend .l-label { flex: 1 1 auto; }
+  #legend .l-count { flex: 0 0 auto; opacity: .7; }
+  #legend .legendHint { font-size: 10px; opacity: .72; padding-top: 4px; border-top: 1px dashed var(--panel-border); margin-top: 5px; }
   .node {
     position: absolute;
     width: 200px;
     min-height: 70px;
     padding: 14px 16px 12px;
-    border-radius: 14px;
+    border-radius: var(--rad-lg);
     border: 1px solid rgba(15,23,42,.10);
     background: linear-gradient(145deg, rgba(255,255,255,.94), rgba(255,255,255,.78));
     box-shadow: var(--shadow-sm);
@@ -482,7 +518,7 @@
   #axisNodes { position: absolute; inset: 0; z-index: 1; }
   #axisNodes .node {
     position: absolute; width: 130px; min-height: 24px; cursor: pointer;
-    font-size: 11px; padding: 3px 8px 3px 12px; border-radius: 8px;
+    font-size: 11px; padding: 3px 8px 3px 12px; border-radius: var(--rad-sm);
   }
   #axisNodes .node .ntitle { font-size: 11px; line-height: 1.25; margin-bottom: 0; }
   #axisNodes .node .ndesc { display: none; } /* 轴内紧凑卡片：不显示描述 */
@@ -509,7 +545,7 @@
   #axisTimeline .tlPin {
     position: absolute; pointer-events: auto; cursor: grab; user-select: none;
     display: flex; align-items: center; gap: 3px; padding: 1px 6px 1px 4px;
-    border-radius: 10px; border: 1.5px solid var(--accent); color: var(--accent);
+    border-radius: var(--rad-md); border: 1.5px solid var(--accent); color: var(--accent);
     background: color-mix(in srgb, var(--panel) 88%, transparent);
     font-size: 10px; font-weight: 600; white-space: nowrap; max-width: 150px; overflow: hidden;
     box-shadow: 0 1px 4px rgba(0,0,0,.18); line-height: 1.3;
@@ -524,7 +560,7 @@
   #axisView .axisHint {
     position: absolute; right: 12px; top: 10px; font-size: 11px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--panel-border);
-    padding: 4px 10px; border-radius: 8px; z-index: 3; pointer-events: none;
+    padding: 4px 10px; border-radius: var(--rad-sm); z-index: 3; pointer-events: none;
   }
   /* 空项目引导：轴视图无任何可显示内容时的居中提示 */
   #axisView .axisEmpty {
@@ -536,7 +572,7 @@
   #axisView .axisEmpty .axisEmptyText { font-size: 12px; color: var(--muted); line-height: 1.7; }
   #axisView .axisEmpty code { background: rgba(15,23,42,.07); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
   #axisView .axisEmpty .axisEmptyBtn {
-    margin-top: 12px; padding: 7px 16px; border: 1px solid var(--panel-border); border-radius: 10px;
+    margin-top: 12px; padding: 7px 16px; border: 1px solid var(--panel-border); border-radius: var(--rad-md);
     background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; pointer-events: auto;
   }
   #axisView .axisEmpty .axisEmptyBtn:hover { border-color: var(--accent); color: var(--accent); }
@@ -552,14 +588,14 @@
   #axisBar .barLabel { white-space: nowrap; color: #94a3b8; }
   #axisBar input#axisJump {
     width: 62px; height: 28px; border: 1px solid rgba(255,255,255,.22);
-    background: rgba(0,0,0,.35); color: #fff; border-radius: 8px; padding: 0 8px; font-size: 12px;
+    background: rgba(0,0,0,.35); color: #fff; border-radius: var(--rad-sm); padding: 0 8px; font-size: 12px;
     outline: none; transition: border-color .18s, box-shadow .18s;
   }
   #axisBar input#axisJump:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,197,107,.2); }
   html[data-theme="light"] #axisBar input#axisJump { background: #fff; color: #111; border-color: #cbd5e1; }
   #axisBar .barBtn {
     height: 28px; padding: 0 13px; border: 1px solid rgba(255,255,255,.22);
-    background: rgba(255,255,255,.08); color: inherit; border-radius: 8px; cursor: pointer; font-size: 12px;
+    background: rgba(255,255,255,.08); color: inherit; border-radius: var(--rad-sm); cursor: pointer; font-size: 12px;
     transition: background .18s, border-color .18s, transform .1s;
   }
   #axisBar .barBtn:hover { background: rgba(255,255,255,.18); border-color: rgba(245,197,107,.5); }
@@ -630,7 +666,7 @@
     border: 1px solid var(--panel-border); background: var(--panel); color: var(--text);
   }
   .recSusp button, .recUnrec .promoteBtn {
-    margin-left: auto; padding: 2px 10px; border-radius: 8px; font-size: 11px; cursor: pointer;
+    margin-left: auto; padding: 2px 10px; border-radius: var(--rad-sm); font-size: 11px; cursor: pointer;
     background: linear-gradient(135deg, #e7e9f0, #d6dae6); border: none; color: var(--text-strong);
     white-space: nowrap; flex-shrink: 0;
   }
@@ -650,9 +686,9 @@
   }
   .recSaved { font-size: 12px; color: var(--muted); }
   .recSaved b { color: var(--text-strong); }
-  #recAiBtn { padding: 6px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+  #recAiBtn { padding: 6px 12px; border-radius: var(--rad-sm); font-size: 12px; cursor: pointer; }
   .recFileBadge {
-    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
+    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--rad-sm);
     font-size: 10px; color: #fff; background: #6b7280; vertical-align: 1px;
   }
   .fileTreeItem .recFileBadge { background: #6b7280; color: #fff; font-weight: 700; }
@@ -685,13 +721,13 @@
   #detail .propRow { display: flex; flex-direction: column; gap: 3px; }
   #detail .propRow label { margin: 0; font-size: 10px; }
   #detail .propRow select, #detail .propRow input {
-    padding: 4px 8px; border-radius: 8px; font-size: 12px;
+    padding: 4px 8px; border-radius: var(--rad-sm); font-size: 12px;
     border: 1px solid var(--panel-border); background: var(--panel); color: var(--text);
     min-width: 84px; outline: none;
   }
   #detail .propRow input[type="number"] { min-width: 70px; width: 70px; }
   #detail .propRow button {
-    flex: 0; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
+    flex: 0; padding: 6px 12px; border-radius: var(--rad-sm); font-size: 12px; font-weight: 600;
     background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--text-strong);
     border: 1px solid var(--panel-border); cursor: pointer;
   }
@@ -704,9 +740,9 @@
   #detail textarea:focus { border-color: rgba(245,197,107,.45); }
   #detail .btnRow { display: flex; gap: 8px; margin-top: 14px; }
   #detail button {
-    flex: 1; padding: 10px; border: none; border-radius: 10px;
+    flex: 1; padding: 10px; border: none; border-radius: var(--rad-md);
     background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--accent);
-    font-size: 13px; font-weight: 600; cursor: pointer; transition: all .18s;
+    font-size: 13px; font-weight: 600; cursor: pointer; transition: all var(--dur);
   }
   #detail button:hover { background: linear-gradient(135deg, #d6dae6, #c2c9d6); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.3); }
   /* 收起按钮保持小号文字样式（#detail button 选择器会误伤它，需更高优先级覆盖） */
@@ -760,7 +796,7 @@
     max-width: 220px;
     padding: 6px 12px;
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border-radius: var(--rad-md);
     background: var(--surface-2);
     color: var(--text);
     font-size: 13px;
@@ -773,7 +809,7 @@
     padding: 6px 14px;
     min-width: auto;
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border-radius: var(--rad-md);
     background: var(--surface-2);
     color: var(--accent);
     font-size: 12.5px;
@@ -934,7 +970,7 @@
   #chatMessages .msg {
     max-width: 88%;
     padding: 9px 14px;
-    border-radius: 14px;
+    border-radius: var(--rad-lg);
     font-size: 13px;
     line-height: 1.65;
     white-space: pre-wrap;
@@ -969,7 +1005,7 @@
     border: 1px solid var(--panel-border);
     color: var(--muted);
     font-size: 11.5px;
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     padding: 2px 6px;
     max-width: 110px;
     cursor: pointer;
@@ -983,7 +1019,7 @@
     font-size: 12px;
     color: var(--muted);
     border: 1px solid var(--panel-border);
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     padding: 3px 10px;
     transition: all .15s;
     background: transparent;
@@ -1010,7 +1046,7 @@
   .proposal .diffBox pre {
     background: rgba(15,23,42,.04);
     border: 1px solid var(--panel-border);
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     padding: 8px;
     font-size: 12px;
     line-height: 1.5;
@@ -1027,7 +1063,7 @@
     flex: 1;
     padding: 7px 10px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--rad-sm);
     font-size: 13px;
     cursor: pointer;
     font-weight: 600;
@@ -1134,7 +1170,7 @@
     align-items: center;
     gap: 2px;
     padding: 4px;
-    border-radius: 10px;
+    border-radius: var(--rad-md);
     background: rgba(24,32,48,.94);
     box-shadow: 0 6px 20px rgba(0,0,0,.35);
     backdrop-filter: blur(6px);
@@ -1161,7 +1197,7 @@
     min-width: 160px;
     background: rgba(255,255,255,.95);
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border-radius: var(--rad-md);
     box-shadow: 0 8px 30px rgba(0,0,0,.2);
     padding: 6px;
     display: none;
@@ -1207,17 +1243,33 @@
   #minimap.show { display: block; }
   #legend {
     position: absolute; left: 14px; bottom: 76px; background: rgba(255,255,255,.86);
-    border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 12px;
-    z-index: 7; font-size: 11px; color: var(--muted); display: none; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 8px 12px;
+    z-index: 7; font-size: 11px; color: var(--muted); display: none; box-shadow: var(--shadow-md);
   }
   #legend.show { display: block; }
   #legend .row { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
   #legend .l-auto { width: 26px; border-top: 2px dashed var(--edge-auto); }
   #legend .l-manual { width: 26px; border-top: 2.5px solid var(--edge-manual); }
+  /* ── 泳道（侧栏）── */
+  #laneBar { margin-top: 8px; border-top: 1px solid var(--panel-border); padding-top: 7px; }
+  .laneHead { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+  .laneModeBtn { padding: 2px 9px; font-size: 10.5px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: transparent; color: var(--muted); cursor: pointer; }
+  .laneModeBtn.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .laneRow { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11.5px; }
+  .laneRow.off { opacity: .42; }
+  .laneRow.off .laneName { text-decoration: line-through; }
+  .laneDot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
+  .laneName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .laneCnt { flex: 0 0 auto; color: var(--muted); font-size: 10.5px; }
+  .laneEye { flex: 0 0 auto; padding: 1px 7px; font-size: 10px; border: 1px solid var(--panel-border); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+  .laneEye:hover { color: var(--accent); border-color: var(--accent); }
+  .laneEmpty { font-size: 10.5px; color: var(--muted); line-height: 1.55; }
+  #axisYLabels .axisLaneLabel { display: flex; align-items: center; gap: 6px; padding-left: 6px; font-weight: 600; }
+  #axisYLabels .axisLaneLabel b { font-weight: 400; opacity: .7; }
   .toolBtn {
-    padding: 8px 16px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--surface-2);
+    padding: 8px 16px; border: 1px solid var(--panel-border); border-radius: var(--rad-md); background: var(--surface-2);
     color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer;
-    box-shadow: var(--shadow-sm); transition: all .18s;
+    box-shadow: var(--shadow-sm); transition: all var(--dur);
   }
   .toolBtn:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: var(--shadow-md); }
   .toolBtn.on { background: linear-gradient(135deg,#fdf0d5,#fde68a); border-color: rgba(245,197,107,.4); }
@@ -1281,13 +1333,13 @@
   .ftHeadRow { display: flex; align-items: stretch; gap: 8px; }
   #ftInput {
     flex: 1; min-width: 0; padding: 9px 12px; font-size: 13px;
-    border: 1px solid var(--panel-border); border-radius: 10px;
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md);
     background: rgba(15,23,42,.04); color: var(--text); outline: none;
   }
   #ftInput:focus { border-color: var(--accent); background: rgba(255,255,255,.9); }
   .ftToggle {
     flex: none; cursor: pointer; padding: 0 11px; font-size: 11px; font-family: var(--font-mono);
-    border: 1px solid var(--panel-border); border-radius: 10px;
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md);
     background: linear-gradient(180deg,#ffffff,#f5f4ef); color: var(--muted);
   }
   .ftToggle.on { color: #000; border-color: rgba(180,120,40,.5); background: var(--accent-soft); }
@@ -1401,7 +1453,7 @@
   .modalClose {
     width: 30px; height: 30px; flex: none;
     display: flex; align-items: center; justify-content: center;
-    border: none; border-radius: 8px;
+    border: none; border-radius: var(--rad-sm);
     background: transparent; color: var(--muted); font-size: 14px; cursor: pointer;
     transition: background .15s, color .15s;
   }
@@ -1413,7 +1465,7 @@
     display: flex; flex-direction: column; gap: 8px; pointer-events: none; max-width: 340px;
   }
   .toast {
-    padding: 10px 14px; border-radius: 10px;
+    padding: 10px 14px; border-radius: var(--rad-md);
     background: var(--panel); backdrop-filter: blur(14px) saturate(1.1);
     border: 1px solid var(--panel-border);
     box-shadow: var(--shadow-md);
@@ -1428,14 +1480,14 @@
   @keyframes toastOut { to { opacity: 0; transform: translateY(6px) scale(.98); } }
   .modal label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
   .modal input[type=text], .modal input[type=password], .modal select, .modal textarea {
-    width: 100%; padding: 9px 12px; border: 1px solid var(--panel-border); border-radius: 10px;
+    width: 100%; padding: 9px 12px; border: 1px solid var(--panel-border); border-radius: var(--rad-md);
     background: rgba(15,23,42,.04); color: var(--text); font-size: 13px; outline: none; font-family: inherit;
   }
   .modal textarea { min-height: 90px; resize: vertical; line-height: 1.6; }
   .modal .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .modal .row { display: flex; gap: 8px; margin-top: 16px; }
   .modal .row button {
-    flex: 1; padding: 10px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer;
+    flex: 1; padding: 10px; border: none; border-radius: var(--rad-md); font-size: 13px; font-weight: 600; cursor: pointer;
   }
   .modal .row .primary { background: linear-gradient(135deg,#f59e0b,#d97706); color: #fff; }
   .modal .row .cancel { background: #eceef3; color: var(--muted); }
@@ -1444,7 +1496,7 @@
   .axisYOptions { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
   .axisYOpt {
     display: flex; align-items: center; gap: 10px; cursor: pointer;
-    border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 12px;
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 9px 12px;
     background: rgba(15,23,42,.03); transition: border-color .15s, background .15s;
   }
   html[data-theme="dark"] .axisYOpt { background: rgba(255,255,255,.04); }
@@ -1461,7 +1513,7 @@
   .matrixTabs, .auditTabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .matrixTab, .auditTab {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 7px 14px; border-radius: 10px;
+    padding: 7px 14px; border-radius: var(--rad-md);
     border: 1px solid transparent;
     background: transparent; color: var(--muted); cursor: pointer; font-size: 13px;
     transition: background .15s, color .15s, border-color .15s;
@@ -1515,7 +1567,7 @@
   .settingsTitleMain { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.15; letter-spacing: .3px; }
   .settingsTitleSub { font-size: 9.5px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
   .settingsClose {
-    width: 30px; height: 30px; border: none; border-radius: 8px;
+    width: 30px; height: 30px; border: none; border-radius: var(--rad-sm);
     background: transparent; color: var(--muted); font-size: 14px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: background .15s, color .15s;
@@ -1532,7 +1584,7 @@
     display: flex; align-items: center; gap: 10px;
     padding: 9px 12px;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: var(--rad-md);
     background: transparent;
     color: var(--muted);
     font-size: 13px;
@@ -1555,7 +1607,7 @@
     flex: none;
   }
   .settingsDrawerFoot .cancel, .settingsDrawerFoot .primary {
-    flex: 1; padding: 10px; border: none; border-radius: 10px;
+    flex: 1; padding: 10px; border: none; border-radius: var(--rad-md);
     font-size: 13px; font-weight: 600; cursor: pointer;
   }
   .settingsDrawerFoot .cancel { background: #eceef3; color: var(--muted); }
@@ -1572,7 +1624,7 @@
   .usageRange.on { background: linear-gradient(135deg, rgba(245,197,107,.2), rgba(139,123,255,.12)); color: var(--text); border-color: rgba(245,197,107,.45); font-weight: 600; }
   .usageCardGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .usageCard {
-    border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 10px;
+    border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 8px 10px;
     background: rgba(255,255,255,.5); min-width: 0;
   }
   .usageCard .k { font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -1591,7 +1643,7 @@
   .usageRecentRow .m { color: var(--text); font-weight: 600; flex: none; }
   .usageRecentRow .u { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
   .usageEmpty { color: var(--muted); font-size: 12px; padding: 8px 0; }
-  .usageChartWrap { border: 1px solid var(--panel-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .usageChartWrap { border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 10px 12px; margin-bottom: 10px; }
   .usageChartWrap + .usageChartWrap { margin-left: 0; }
   .usageSectionTitle { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
   .usageDonutRow { display: flex; align-items: center; gap: 14px; }
@@ -1656,9 +1708,9 @@
   .statusBadge.draft { background: rgba(251,191,36,.15); color: #b45309; }
   .statusBadge.empty { background: rgba(148,163,184,.15); color: #64748b; }
   /* 历史 / 回滚 */
-  .backupRow { border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: rgba(15,23,42,.03); }
+  .backupRow { border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 8px 10px; margin-bottom: 8px; background: rgba(15,23,42,.03); }
   .backupRow .meta { font-size: 12px; color: var(--text); font-weight: 600; }
-  .backupRow .restoreBtn { margin-top: 6px; padding: 5px 12px; border: 1px solid var(--panel-border); border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer; font-size: 12px; }
+  .backupRow .restoreBtn { margin-top: 6px; padding: 5px 12px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: transparent; color: var(--accent); cursor: pointer; font-size: 12px; }
   .backupRow .restoreBtn:hover { border-color: var(--accent); }
   /* 全书统计 */
   /* .bookStatsModal 宽度已由 [data-pane="stats"] 接管 */
@@ -1681,7 +1733,7 @@
   .barFill.green { background: #34d399; }
   .barPct { width: 44px; flex: 0 0 auto; text-align: right; color: var(--muted); }
   .catChips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .catChip { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 14px; font-size: 12px; background: rgba(15,23,42,.04); }
+  .catChip { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-lg); font-size: 12px; background: rgba(15,23,42,.04); }
   /* ── 监控中心（ProjectHealth：进度 / 角色 / 伏笔 / 一致性 一份数据渲染）── */
   .healthBody { overflow-y: auto; flex: 1; min-height: 0; }
   .healthGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
@@ -1693,7 +1745,7 @@
   .healthCard.static:hover { transform: none; border-color: var(--panel-border); }
   .healthSection { margin-bottom: 14px; }
   .healthSection h4 { margin: 0 0 8px; font-size: 13px; color: var(--text); }
-  .healthAlert { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--panel-border); margin-bottom: 6px; font-size: 12.5px; line-height: 1.55; }
+  .healthAlert { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--rad-md); border: 1px solid var(--panel-border); margin-bottom: 6px; font-size: 12.5px; line-height: 1.55; }
   .healthAlert.warn { background: rgba(251,191,36,.12); border-color: rgba(180,83,9,.35); }
   .healthAlert.info { background: rgba(15,23,42,.04); }
   .healthAlert .haIcon { flex: 0 0 auto; }
@@ -1713,9 +1765,9 @@
   .dsBad { color: #ef4444; }
   .dsLevel { font-size: 12px; font-weight: 600; color: var(--text); }
   .dsMeta { font-size: 11px; color: var(--muted); }
-  .dsRebuild { margin-left: auto; padding: 3px 9px; font-size: 11px; border: 1px solid var(--panel-border); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+  .dsRebuild { margin-left: auto; padding: 3px 9px; font-size: 11px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: transparent; color: var(--muted); cursor: pointer; }
   .dsRebuild:hover { color: var(--accent); border-color: var(--accent); }
-  .dsRewrite { padding: 3px 10px; font-size: 11px; border: 1px solid var(--accent); border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer; }
+  .dsRewrite { padding: 3px 10px; font-size: 11px; border: 1px solid var(--accent); border-radius: var(--rad-sm); background: transparent; color: var(--accent); cursor: pointer; }
   .dsRewrite:hover { background: rgba(180,83,9,.10); }
   .dsRewrite:disabled { opacity: .55; cursor: default; }
   .dsBaseline { font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.55; }
@@ -1747,7 +1799,7 @@
   .plotField b { flex: 0 0 auto; color: var(--muted); font-weight: 600; min-width: 74px; }
   .plotField span { flex: 1; min-width: 0; color: var(--text); }
   .plotUses { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-  .plotRef { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(15,23,42,.04); }
+  .plotRef { font-size: 11px; padding: 2px 8px; border-radius: var(--rad-md); border: 1px solid var(--panel-border); background: rgba(15,23,42,.04); }
   .plotRef.bad { border-color: rgba(239,68,68,.5); color: #ef4444; background: rgba(239,68,68,.08); }
   .plotFoot { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
   .plotWarn { font-size: 11px; color: #ef4444; }
@@ -1756,21 +1808,21 @@
   /* 时间线（作者手动维护的重要节点） */
   /* .timelineModal 宽度已由 [data-pane="timeline"] 接管 */
   .timelineBody { overflow-x: auto; padding-bottom: 4px; }
-  .tlHint { font-size: 12px; color: var(--muted); background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 12px; margin: 10px 0 12px; line-height: 1.6; }
+  .tlHint { font-size: 12px; color: var(--muted); background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 9px 12px; margin: 10px 0 12px; line-height: 1.6; }
   .tlForm { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
   .tlForm .tlInput { width: auto; flex: 1 1 0; min-width: 0; }
   .tlForm .tlSelect { flex: 0 0 220px; }
   .tlForm .tlProgressInput { flex: 0 0 110px; }
   .tlForm .toolBtn { flex: 0 0 auto; }
   .tlList { display: flex; flex-direction: column; gap: 8px; }
-  .tlRow { display: flex; align-items: center; gap: 10px; border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 12px; cursor: pointer; background: rgba(15,23,42,.03); transition: border-color .15s, box-shadow .15s; }
+  .tlRow { display: flex; align-items: center; gap: 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 9px 12px; cursor: pointer; background: rgba(15,23,42,.03); transition: border-color .15s, box-shadow .15s; }
   .tlRow:hover { border-color: var(--accent); box-shadow: var(--shadow-md); }
   .tlBadge { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: #fff; background: var(--accent); padding: 3px 9px; border-radius: 12px; white-space: nowrap; }
   .tlBadge.tlProg { background: rgba(15,23,42,.45); }
   .tlTitle { flex: 0 0 220px; font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tlNote { flex: 1 1 auto; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tlActions { flex: 0 0 auto; display: flex; gap: 6px; }
-  .tlEdit, .tlDel, .tlSave, .tlCancel { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: rgba(15,23,42,.04); color: var(--text); font-size: 11px; cursor: pointer; transition: border-color .15s, color .15s; }
+  .tlEdit, .tlDel, .tlSave, .tlCancel { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: rgba(15,23,42,.04); color: var(--text); font-size: 11px; cursor: pointer; transition: border-color .15s, color .15s; }
   .tlEdit:hover, .tlSave:hover { border-color: var(--accent); color: var(--accent); }
   .tlDel:hover { border-color: rgba(220,38,38,.55); color: #dc2626; }
   .tlCancel:hover { color: var(--muted); }
@@ -1783,18 +1835,18 @@
   .diffBody { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; min-height: 0; }
   .diffCol { display: flex; flex-direction: column; min-height: 0; }
   .diffCol .diffTitle { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  .diffPre { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.7; background: rgba(255,255,255,.4); }
+  .diffPre { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.7; background: rgba(255,255,255,.4); }
   .diffPre.old { background: rgba(220,38,38,.04); }
   .diffPre.new { background: rgba(5,150,105,.05); }
   .diffActions { margin-top: 10px; }
   /* .linkModal 宽度已由 [data-pane="link"] 接管 */
   .linkOptions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
   .linkCreate { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-  .linkSel { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 12px; }
+  .linkSel { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: var(--surface-2); color: var(--text); font-size: 12px; }
   .linkArrowBig { color: var(--muted); font-size: 15px; flex-shrink: 0; }
   .linkCheck { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; }
   .linkCheck input { accent-color: var(--accent); width: 16px; height: 16px; }
-  .linkOptions .danger { padding: 6px 14px; border: 1px solid rgba(220,38,38,.35); border-radius: 10px; background: rgba(220,38,38,.08); color: #b91c1c; font-size: 12px; cursor: pointer; transition: all .15s; }
+  .linkOptions .danger { padding: 6px 14px; border: 1px solid rgba(220,38,38,.35); border-radius: var(--rad-md); background: rgba(220,38,38,.08); color: #b91c1c; font-size: 12px; cursor: pointer; transition: all .15s; }
   .linkOptions .danger:hover { background: rgba(220,38,38,.15); }
   /* 连线列表：滚动交给外层 pane（#analysisPaneLink），这里不再自带 max-height，
      否则会出现内外两层滚动条 */
@@ -1802,7 +1854,7 @@
   .linkRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(255,255,255,.5); }
   .linkRow .linkNames { font-size: 13px; color: var(--text); word-break: break-all; line-height: 1.4; }
   .linkRow .linkArrow { color: var(--accent); margin: 0 6px; }
-  .linkDelete { padding: 4px 12px; border: 1px solid rgba(220,38,38,.35); border-radius: 8px; background: transparent; color: #b91c1c; font-size: 12px; cursor: pointer; flex: none; }
+  .linkDelete { padding: 4px 12px; border: 1px solid rgba(220,38,38,.35); border-radius: var(--rad-sm); background: transparent; color: #b91c1c; font-size: 12px; cursor: pointer; flex: none; }
   .linkDelete:hover { background: rgba(220,38,38,.12); }
   .linkEmpty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 13px; }
   .auditModal { width: min(860px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
@@ -1822,19 +1874,19 @@
   .auditSection { margin-top: 14px; }
   .auditSection h4 { color: var(--accent); font-size: 14px; margin-bottom: 8px; }
   .auditDims { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .auditDim { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 12px; font-size: 13px; background: rgba(255,255,255,.4); }
+  .auditDim { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 8px 12px; font-size: 13px; background: rgba(255,255,255,.4); }
   .auditDim .score { font-weight: 700; }
   .auditDim.pass .score { color: #047857; }
   .auditDim.warn .score { color: #b45309; }
   .auditDim.fail .score { color: #b91c1c; }
-  .auditRule { display: flex; justify-content: space-between; border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px 12px; font-size: 13px; margin-bottom: 6px; background: rgba(255,255,255,.4); }
+  .auditRule { display: flex; justify-content: space-between; border: 1px solid var(--panel-border); border-radius: var(--rad-md); padding: 8px 12px; font-size: 13px; margin-bottom: 6px; background: rgba(255,255,255,.4); }
   .auditRule.pass .ruleStatus { color: #047857; }
   .auditRule.fail .ruleStatus { color: #b91c1c; }
   .auditIssues { margin: 0; padding: 0; list-style: none; }
   .auditIssues li { margin: 4px 0 4px 18px; font-size: 13px; line-height: 1.6; color: var(--text); list-style: disc; }
   .auditLoading { text-align: center; color: var(--muted); padding: 40px 0; }
   .auditActions { margin-top: 0; }
-  .auditActions .primary { padding: 8px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg,#b45309,#92400e); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-sm); transition: all .15s; }
+  .auditActions .primary { padding: 8px 18px; border: none; border-radius: var(--rad-md); background: linear-gradient(135deg,#b45309,#92400e); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-sm); transition: all .15s; }
   .auditActions .primary:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
   .auditActions .primary:disabled { opacity: .6; cursor: not-allowed; transform: none; }
   .statsSummary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -1856,15 +1908,15 @@
   .trendVal { width: 30px; text-align: right; font-weight: 700; }
   .trendVal.pass { color: #047857; } .trendVal.warn { color: #b45309; } .trendVal.fail { color: #b91c1c; }
   .volumeForm { display: flex; gap: 8px; margin-bottom: 12px; }
-  .volumeForm input { flex: 1; padding: 8px 12px; border: 1px solid var(--panel-border); border-radius: 10px; background: rgba(255,255,255,.6); color: var(--text); }
-  .volumeForm .primary { padding: 8px 18px; border: none; border-radius: 10px; background: linear-gradient(135deg,#b45309,#92400e); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-sm); }
-  .volBtn { padding: 3px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: rgba(255,255,255,.4); color: var(--text); cursor: pointer; font-size: 12px; }
+  .volumeForm input { flex: 1; padding: 8px 12px; border: 1px solid var(--panel-border); border-radius: var(--rad-md); background: rgba(255,255,255,.6); color: var(--text); }
+  .volumeForm .primary { padding: 8px 18px; border: none; border-radius: var(--rad-md); background: linear-gradient(135deg,#b45309,#92400e); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-sm); }
+  .volBtn { padding: 3px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: rgba(255,255,255,.4); color: var(--text); cursor: pointer; font-size: 12px; }
   .volBtn:hover { border-color: var(--accent); color: var(--accent); }
   .coresToolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
   .coresFilter { display: flex; align-items: center; gap: 5px; }
   .coresRow { display: grid; grid-template-columns: 220px 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
   .coresRow .coresMeta { font-size: 12px; line-height: 1.4; word-break: break-word; }
-  .coresRow input { width: 100%; padding: 6px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: rgba(255,255,255,.6); color: var(--text); }
+  .coresRow input { width: 100%; padding: 6px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-sm); background: rgba(255,255,255,.6); color: var(--text); }
   #previewBox {
     border: 1px solid var(--panel-border); border-radius: 12px; padding: 12px 14px;
     background: rgba(255,255,255,.6); font-size: 13px; line-height: 1.8; display: none;
@@ -1952,19 +2004,19 @@
   .fileToolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .filePath { font-size: 12px; color: var(--muted); word-break: break-all; }
   .fileActions { display: flex; gap: 6px; flex-wrap: wrap; }
-  #fileEditorBody button { padding: 7px 12px; border: none; border-radius: 8px; background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s; }
+  #fileEditorBody button { padding: 7px 12px; border: none; border-radius: var(--rad-sm); background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s; }
   #fileEditorBody button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.2); }
   #fileEditorBody button.danger { background: linear-gradient(135deg, #fde8e8, #f8cfcf); color: #b91c1c; }
   #fileEditorBody button.danger:hover { background: linear-gradient(135deg, #fbd5d5, #f5baba); }
   #fileEditorBody button.fileChatBtn { background: linear-gradient(135deg, #fef3c7, #fde68a); color: #92400e; }
   #fileEditorBody button.fileChatBtn:hover { background: linear-gradient(135deg, #fde68a, #fcd34d); }
-  #fileContent { width: 100%; min-height: 420px; flex: 1; padding: 12px; background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: 10px; color: var(--text); font-size: 13px; line-height: 1.7; resize: none; outline: none; font-family: inherit; }
+  #fileContent { width: 100%; min-height: 420px; flex: 1; padding: 12px; background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: var(--rad-md); color: var(--text); font-size: 13px; line-height: 1.7; resize: none; outline: none; font-family: inherit; }
   #fileContent:focus { border-color: rgba(245,197,107,.45); }
-  #filePreviewBox { padding: 12px; background: rgba(255,255,255,.6); border: 1px solid var(--panel-border); border-radius: 10px; font-size: 13px; line-height: 1.8; word-break: break-word; }
+  #filePreviewBox { padding: 12px; background: rgba(255,255,255,.6); border: 1px solid var(--panel-border); border-radius: var(--rad-md); font-size: 13px; line-height: 1.8; word-break: break-word; }
   .fileStatus { font-size: 12px; color: var(--muted); min-height: 16px; }
   .fileEditorEmpty { margin-top: 60px; text-align: center; color: var(--muted); font-size: 14px; line-height: 2; }
   /* 查找/替换栏：默认隐藏，Ctrl+F / Ctrl+H 唤出 */
-  .fileFindBar { display: none; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--surface); }
+  .fileFindBar { display: none; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: var(--rad-md); background: var(--surface); }
   .fileFindBar.show { display: flex; }
   .fileFindRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .fileFindRow input[type="text"] { flex: 1; min-width: 140px; padding: 6px 9px; font-size: 12px; border: 1px solid var(--panel-border); border-radius: 7px; background: rgba(255,255,255,.75); color: var(--text); outline: none; font-family: inherit; }
@@ -1977,7 +2029,7 @@
   .fileDiffBox { border: 1px solid var(--panel-border); border-radius: 12px; padding: 12px; background: #fff; }
   .fileDiffBox h4 { margin: 0 0 8px; color: var(--accent); font-size: 14px; }
   .fileDiffCols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .fileDiffCols pre { max-height: 220px; overflow: auto; padding: 8px; border-radius: 8px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 0; background: rgba(15,23,42,.04); }
+  .fileDiffCols pre { max-height: 220px; overflow: auto; padding: 8px; border-radius: var(--rad-sm); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 0; background: rgba(15,23,42,.04); }
   .fileDiffLabel { font-size: 11px; margin-bottom: 4px; }
   .fileDiffLabel.old { color: #b91c1c; }
   .fileDiffLabel.new { color: #047857; }
@@ -2050,6 +2102,7 @@
       <div id="canvasPanel">
         <div id="searchWrap"><input id="search" placeholder="搜索节点..."></div>
         <div id="filters"></div>
+        <div id="laneBar"></div>
         <div id="categoryList"></div>
       </div>
       <div id="filePanel" style="display: none">
@@ -2477,6 +2530,26 @@
       <div class="modalFoot">
         <button class="cancel" id="confirmCancelBtn">取消</button>
         <button class="primary" id="confirmOkBtn">确定</button>
+      </div>
+    </div>
+  </div>
+  <div id="promptModal" class="modal-mask">
+    <div class="modal promptModal">
+      <div class="modalHead">
+        <div class="modalTitle">
+          <div class="modalTitleMain">请输入</div>
+          <div class="modalTitleSub">INPUT</div>
+        </div>
+        <button class="modalClose" id="promptClose" title="取消">✕</button>
+      </div>
+      <div class="modalBody">
+        <div id="promptText"></div>
+        <input id="promptInput" type="text">
+        <div id="promptHint"></div>
+      </div>
+      <div class="modalFoot">
+        <button class="cancel" id="promptCancelBtn">取消</button>
+        <button class="primary" id="promptOkBtn">确定</button>
       </div>
     </div>
   </div>

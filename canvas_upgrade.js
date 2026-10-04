@@ -27,6 +27,8 @@ function fitView() {
 }function toggleLegend() {
   var lg = document.getElementById('legend');
   lg.classList.toggle('show');
+  // 打开时刷新一次：连线各类计数要跟当前画布一致（v1.25 连线语义化）
+  if (lg.classList.contains('show') && typeof renderLegend === 'function') renderLegend();
 }
 function toggleAutoLink() {
   autoLinkEnabled = !autoLinkEnabled;
@@ -45,7 +47,11 @@ function drawMinimap() {
   if (!c) return;
   var ctx = c.getContext('2d');
   c.width = 380; c.height = 300;
-  ctx.fillStyle = '#f4f6fb'; ctx.fillRect(0,0,380,300);
+  // 小地图是 canvas 2D，用不了 CSS 变量 → 从计算样式读 token，
+  // 否则深色主题下小地图永远是一块浅色底（v1.25 修）
+  var cs = getComputedStyle(document.documentElement);
+  var tok = function (name, fallback) { var v = cs.getPropertyValue(name); return (v && v.trim()) ? v.trim() : fallback; };
+  ctx.fillStyle = tok('--mini-bg', '#f4f6fb'); ctx.fillRect(0,0,380,300);
 var ids=nodes.map(function(n){return n.id;});
   var isHidden=function(id){var el=document.querySelector('.node[data-id="'+id+'"]');return el && el.closest('.nodeBoard.collapsed');};
   var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
@@ -55,11 +61,11 @@ var ids=nodes.map(function(n){return n.id;});
   var pad=30,w=maxX-minX+pad*2,h=maxY-minY+pad*2;
   var s=Math.min(360/w,280/h);
   var ox=10-minX*s, oy=10-minY*s;
-  var color={role:'#7c5cff',faction:'#2f9e8f',setting:'#d97706',foreshadow:'#dc2626',volume:'#2563eb'};
+  var color={role:tok('--mini-role','#7c5cff'),faction:tok('--mini-faction','#2f9e8f'),setting:tok('--mini-setting','#d97706'),foreshadow:tok('--mini-foreshadow','#dc2626'),volume:tok('--mini-volume','#2563eb')};
   ids.forEach(function(id){if(isHidden(id))return;var n=nodeMap[id];if(!n)return;
     var p=positions[id],x=ox+p.x*s,y=oy+p.y*s;
-    ctx.fillStyle=color[n.type]||'#667085';ctx.beginPath();ctx.arc(x,y,4,0,6.283);ctx.fill();});
-  ctx.strokeStyle='#b45309';ctx.lineWidth=1.5;
+    ctx.fillStyle=color[n.type]||tok('--mini-dot','#667085');ctx.beginPath();ctx.arc(x,y,4,0,6.283);ctx.fill();});
+  ctx.strokeStyle=tok('--mini-view','#b45309');ctx.lineWidth=1.5;
   if(view.scale){var r=canvasWrap.getBoundingClientRect();
     var vx=ox+(-view.x/view.scale)*s,vy=oy+(-view.y/view.scale)*s;
     ctx.strokeRect(vx,vy,(r.width/view.scale)*s,(r.height/view.scale)*s);}
@@ -286,20 +292,20 @@ function parseForeshadowStatus(n) {
   return "";
 }
 async function createChapter() {
-  const title = prompt('新章节标题（如：新的开始）');
+  const title = await promptDialog('新章节标题（如：新的开始）');
   if (!title || !title.trim()) return;
   const res = await fetch('/api/chapter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: currentProject, title: title.trim() }) });
   const data = await res.json();
-  if (data.error) return alert(data.error);
+  if (data.error) return showToast(data.error, 'error');
   await loadData();
   if (data.node && data.node.id) focusNode(data.node.id);
 }
 async function renameChapter(n) {
-  const title = prompt('章节新标题：', n.title);
+  const title = await promptDialog('章节新标题：', { value: n.title });
   if (!title || !title.trim() || title.trim() === n.title) return;
   const res = await fetch('/api/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: n.id, project: currentProject, title: title.trim() }) });
   const data = await res.json();
-  if (data.error) return alert(data.error);
+  if (data.error) return showToast(data.error, 'error');
   await loadData();
   if (data.node && data.node.id) focusNode(data.node.id);
 }

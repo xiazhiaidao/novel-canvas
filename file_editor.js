@@ -721,9 +721,9 @@ function refreshFileTreeActive() {
   });
 }
 
-function createFile(dirPath) {
+async function createFile(dirPath) {
   const prefix = dirPath ? String(dirPath).replace(/\/+$/, '') + '/' : '';
-  const name = prompt('新建 Markdown 文件（相对项目根目录，可含子目录）：', prefix + '新文件.md');
+  const name = await promptDialog('新建 Markdown 文件（相对项目根目录，可含子目录）：', { value: prefix + '新文件.md' });
   if (!name || !name.trim()) return;
   const rel = name.trim();
   if (!rel.toLowerCase().endsWith('.md')) {
@@ -762,8 +762,8 @@ async function deleteFile(path) {
     .catch(e => showToast('删除失败：' + e.message, 'error'));
 }
 
-function renameFile(path) {
-  const newPath = prompt('新路径（相对项目根目录，以 .md 结尾）：', path);
+async function renameFile(path) {
+  const newPath = await promptDialog('新路径（相对项目根目录，以 .md 结尾）：', { value: path });
   if (!newPath || !newPath.trim() || newPath.trim() === path) return;
   const rel = newPath.trim();
   if (!rel.toLowerCase().endsWith('.md')) {
@@ -796,7 +796,7 @@ function renameFile(path) {
 async function aiEditFile(mode) {
   const f = openFiles.find(x => x.path === activeFilePath);
   if (!f) return;
-  const instruction = prompt(mode === 'continue' ? 'AI 续写要求（可空）：' : 'AI 改写要求：');
+  const instruction = await promptDialog(mode === 'continue' ? 'AI 续写要求（可空）：' : 'AI 改写要求：');
   if (instruction === null) return;
   const ta = document.getElementById('fileContent');
   if (ta && ta.value !== f.content) f.content = ta.value;

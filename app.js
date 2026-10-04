@@ -234,9 +234,12 @@ function buildLinks() {
   if (autoLinkMode === 'off') return [];
   const out = [];
   const seen = new Set();
-  const add = (a, b) => {
+  // 连线语义：记住每条边是「哪一类」产生的，渲染时按类别给不同线型/颜色，图例可独立开关
+  linkKinds = {};
+  const add = (a, b, kind) => {
     const k = a < b ? a + '|' + b : b + '|' + a;
     if (!seen.has(k)) { seen.add(k); out.push([a, b]); }
+    if (!linkKinds[k]) linkKinds[k] = kind || 'entity';
   };
   const entityNodes = nodes.filter(n => !isGlobalBoardNode(n) && isEntityNode(n));
 
@@ -250,7 +253,7 @@ function buildLinks() {
         if (a.id === b.id) continue;
         const aliases = entityAliases(b.title);
         if (aliases.some(al => al.length >= 2 && text.includes(al))) {
-          add(a.id, b.id);
+          add(a.id, b.id, autoLinkMode === 'chapter' ? 'chapter' : 'entity');
           if (++count >= 8) break;
         }
       }
@@ -265,7 +268,7 @@ function buildLinks() {
         if (a.id === b.id || isGlobalBoardNode(b)) continue;
         if (isChapterNode(a) && isChapterNode(b)) continue;
         if (b.content && b.content.includes(key) && count < 4) {
-          add(a.id, b.id);
+          add(a.id, b.id, 'title');
           count++;
         }
       }
@@ -385,6 +388,50 @@ function renderFilters() {
     filtersEl.appendChild(chip);
     filterChips[label] = chip;
   }
+  renderLaneBar();
+}
+
+// 泳道开关（侧栏）：泳道视图总开关 + 逐条显示/隐藏 + 节点数 + 色标
+function renderLaneBar() {
+  const el = document.getElementById('laneBar');
+  if (!el) return;
+  const lanes = laneList();
+  const defined = lanes.filter(l => l !== NO_LANE);
+  if (defined.length < 1) {
+    el.innerHTML = '<div class="laneEmpty">泳道：节点属性里填「泳道」即可按剧情线分行（如 主线 / 支线 / 反派线）</div>';
+    return;
+  }
+  el.innerHTML =
+    '<div class="laneHead"><span>泳道</span>' +
+      '<button class="laneModeBtn' + (laneMode ? ' on' : '') + '" id="laneModeBtn" title="按泳道分行显示（关掉则回到按剧情推进的 Y 轴）">' +
+        (laneMode ? '已开启' : '开启') + '</button>' +
+    '</div>' +
+    lanes.map((l, i) => {
+      const off = hiddenLanes.has(l);
+      const c = l === NO_LANE ? '#6b7280' : LANE_COLORS[lanes.filter(x => x !== NO_LANE).indexOf(l) % LANE_COLORS.length];
+      return '<div class="laneRow' + (off ? ' off' : '') + '" data-lane="' + escapeHtml(l) + '">' +
+        '<span class="laneDot" style="background:' + c + '"></span>' +
+        '<span class="laneName">' + escapeHtml(l) + '</span>' +
+        '<span class="laneCnt">' + laneCountOf(l) + '</span>' +
+        '<button class="laneEye" data-lane="' + escapeHtml(l) + '" title="' + (off ? '显示这条泳道' : '隐藏这条泳道') + '">' + (off ? '显示' : '隐藏') + '</button>' +
+      '</div>';
+    }).join('');
+
+  const modeBtn = document.getElementById('laneModeBtn');
+  if (modeBtn) modeBtn.addEventListener('click', () => {
+    laneMode = !laneMode;
+    renderLaneBar();
+    renderAxisView();
+    saveViewState();
+    showToast(laneMode ? '泳道视图：已开启（Y 轴按泳道分行）' : '泳道视图：已关闭（Y 轴回到剧情推进）', 'info');
+  });
+  el.querySelectorAll('.laneEye').forEach(btn => btn.addEventListener('click', () => {
+    const l = btn.dataset.lane;
+    if (hiddenLanes.has(l)) hiddenLanes.delete(l); else hiddenLanes.add(l);
+    renderLaneBar();
+    renderAxisView();
+    saveViewState();
+  }));
 }
 
 function applyFilters() {
@@ -682,6 +729,7 @@ function toggleGroup(key) {
   if (collapsedGroups.has(key)) collapsedGroups.delete(key);
   else collapsedGroups.add(key);
   try { localStorage.setItem('canvasCollapsedGroups', JSON.stringify([...collapsedGroups])); } catch (e) {}
+  saveViewStateDebounced();
   renderNodes();
   redrawEdges();
   // 展开/收起会改变板块尺寸，可能挤压邻居 → 自动体检，有重叠/蔓延就地修复
@@ -1119,6 +1167,43 @@ function flushRedrawEdges() {
   redrawEdges();
 }
 
+// ── v1.25 连线语义化：四类连线各有线型/粗细/颜色，图例可独立开关 ──
+// entity=实体关联（自动，实线）· title=标题匹配（自动，长虚线）· chapter=章节聚焦（自动，点线）· manual=手动（实线加粗）
+let linkKinds = {};
+let hiddenLinkKinds = new Set();
+const LINK_KIND_META = [
+  { key: 'entity', label: '实体关联', hint: '章节/设定正文里出现了角色名（自动）' },
+  { key: 'title', label: '标题匹配', hint: '一个节点的标题出现在另一个节点正文里（自动）' },
+  { key: 'chapter', label: '章节聚焦', hint: '只看章节与其他实体的关联（自动）' },
+  { key: 'manual', label: '手动连线', hint: '你手动创建的连线，点击线可删除' }
+];
+function linkKey(a, b) { return a < b ? a + "|" + b : b + "|" + a; }
+function linkKindOf(a, b, fallback) { return linkKinds[linkKey(a, b)] || fallback || 'entity'; }
+function linkKindHidden(kind) { return hiddenLinkKinds.has(kind); }
+
+// 图例（含四类连线的独立开关，点击行切换显隐）
+function renderLegend() {
+  const el = document.getElementById('legend');
+  if (!el) return;
+  const counts = { entity: 0, title: 0, chapter: 0, manual: 0 };
+  for (const k in linkKinds) counts[linkKinds[k]] = (counts[linkKinds[k]] || 0) + 1;
+  counts.manual = (customLinks || []).length;
+  el.innerHTML = LINK_KIND_META.map(m =>
+    '<div class="row legendRow' + (hiddenLinkKinds.has(m.key) ? ' off' : '') + '" data-kind="' + m.key + '" title="' + escapeHtml(m.hint) + '（点击隐藏/显示这类连线）">' +
+      '<span class="l-line kind-' + m.key + '"></span>' +
+      '<span class="l-label">' + m.label + '</span>' +
+      '<span class="l-count">' + (counts[m.key] || 0) + '</span>' +
+    '</div>').join('') +
+    '<div class="legendHint">点击某行可单独隐藏/显示这类连线</div>';
+  el.querySelectorAll('.legendRow').forEach(row => row.addEventListener('click', () => {
+    const k = row.dataset.kind;
+    if (hiddenLinkKinds.has(k)) hiddenLinkKinds.delete(k); else hiddenLinkKinds.add(k);
+    renderLegend();
+    redrawEdges();
+    redrawAxisEdges();
+  }));
+}
+
 function redrawEdges() {
   let svg = '<path d="M0 0" style="display:none"/>';
   // 节点元素缓存：原先每条边做 2 次属性选择器查询（复杂度 O(2E·n)），改为一次遍历建表（O(n)）后 O(1) 命中
@@ -1135,9 +1220,11 @@ function redrawEdges() {
       const elA = elCache.get(a);
       const elB = elCache.get(b);
       if (isHidden(elA) || isHidden(elB)) continue;
+      const kind = linkKindOf(a, b, autoLinkMode === "chapter" ? "chapter" : "entity");
+      if (linkKindHidden(kind)) continue;
       const left = pa.x <= pb.x ? [pa, pb] : [pb, pa];
       const d = edgeD(left[0].x + 190, left[0].y + 32, left[1].x, left[1].y + 32);
-      svg += `<path class="autoEdge" d="${d}"></path>`;
+      svg += `<path class="linkEdge kind-${kind} autoEdge" d="${d}"></path>`;
     }
   }
   if (egoNodeId || showAllCustomLinks) {
@@ -1147,8 +1234,9 @@ function redrawEdges() {
       if (!na || !nb || isGlobalBoardNode(na) || isGlobalBoardNode(nb)) continue;
       const pa = getPortWorldPos(a, 'out') || { x: (positions[na.id] || { x: 0 }).x + 190, y: (positions[na.id] || { y: 0 }).y + 32 };
       const pb = getPortWorldPos(b, 'in') || { x: (positions[nb.id] || { x: 0 }).x, y: (positions[nb.id] || { y: 0 }).y + 32 };
+      if (linkKindHidden("manual")) continue;
       const d = edgeD(pa.x, pa.y, pb.x, pb.y);
-      svg += `<path class="customEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
+      svg += `<path class="linkEdge kind-manual customEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
     }
   }
   edgesSvg.innerHTML = svg;
@@ -1193,8 +1281,10 @@ function redrawAxisEdges() {
       const elA = document.querySelector(`#axisNodes .node[data-id="${a}"]`);
       const elB = document.querySelector(`#axisNodes .node[data-id="${b}"]`);
       if (isHidden(elA) || isHidden(elB)) continue;
+      const kind = linkKindOf(a, b, autoLinkMode === "chapter" ? "chapter" : "entity");
+      if (linkKindHidden(kind)) continue;
       const d = axisEdgeD(a, b);
-      if (d) out += `<path class="autoEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
+      if (d) out += `<path class="linkEdge kind-${kind} autoEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
     }
   }
   if (egoNodeId || showAllCustomLinks) {
@@ -1202,8 +1292,9 @@ function redrawAxisEdges() {
       if (!showAllCustomLinks && a !== egoNodeId && b !== egoNodeId) continue;
       const na = nodeMap[a], nb = nodeMap[b];
       if (!na || !nb || isGlobalBoardNode(na) || isGlobalBoardNode(nb)) continue;
+      if (linkKindHidden("manual")) continue;
       const d = axisEdgeD(a, b);
-      if (d) out += `<path class="customEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
+      if (d) out += `<path class="linkEdge kind-manual customEdge" data-a="${a}" data-b="${b}" d="${d}"></path>`;
     }
   }
   svg.innerHTML = out;
@@ -1532,6 +1623,7 @@ function postLayout() {
       axisSegSize,
       overrides: layoutOverrides,
       timelineNodes,
+      view: viewStateReady ? { scale: axisViewT.scale, x: axisViewT.x, y: axisViewT.y, laneMode, hiddenLanes: [...hiddenLanes], collapsedGroups: [...collapsedGroups] } : undefined,
       project: currentProject
     })
   }).catch(() => {});
@@ -1847,6 +1939,76 @@ const axisPadB = 100;   // 底部：X 章号标签 + 底部导航条(38px)留白
 // 轴视图的平移/缩放状态（与自由视图独立）：屏幕 = 内容 * scale + (x, y)
 let axisViewT = { x: 0, y: 0, scale: 1 };
 let axisPanning = false, axisPanStartX = 0, axisPanStartY = 0;
+
+// ── v1.25 泳道（消费 front matter 的 `lane`）与视图记忆 ──
+// lane 的语义：这是「这条剧情属于哪条线」（主线/支线/反派…），由作者在节点属性里填，
+// 与自动排布用的横向槽位无关（那个是匿名的内部游标）。留空 = 未分泳道。
+let laneMode = false;
+let hiddenLanes = new Set();
+const NO_LANE = '未分泳道';
+const LANE_COLORS = ['#e07a5f', '#3d8bfd', '#2fa87a', '#c6a15b', '#8b6bd6', '#d4577a', '#4aa3c7', '#9a7b4f'];
+let viewStateReady = false;
+
+function laneOf(n) {
+  const l = nodeAxisData(n).lane;
+  const s = l == null ? '' : String(l).trim();
+  return s || NO_LANE;
+}
+// 泳道顺序：项目里首次出现的顺序；「未分泳道」永远排最后
+function laneList() {
+  const seen = new Set(), out = [];
+  let hasNone = false;
+  for (const n of nodes) {
+    if (isGlobalBoardNode(n)) continue;
+    const l = laneOf(n);
+    if (l === NO_LANE) { hasNone = true; continue; }
+    if (seen.has(l)) continue;
+    seen.add(l);
+    out.push(l);
+  }
+  if (hasNone) out.push(NO_LANE);
+  return out;
+}
+function laneViewActive() { return laneMode && laneList().length >= 2; }
+function laneIndexOf(n) { return laneList().indexOf(laneOf(n)); }
+function laneColorOf(n) { const i = laneIndexOf(n); return i < 0 ? '#6b7280' : LANE_COLORS[i % LANE_COLORS.length]; }
+function laneCountOf(lane) {
+  let c = 0;
+  for (const n of nodes) if (!isGlobalBoardNode(n) && laneOf(n) === lane) c++;
+  return c;
+}
+// 视图记忆：缩放/平移/泳道开关与隐藏/分组折叠 → 写进布局文件（可选字段，向后兼容）
+function saveViewState() {
+  if (!viewStateReady) return; // 别把「刚加载、还没恢复」的空状态覆盖用户存好的视图
+  fetch('/api/layout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project: currentProject,
+      view: {
+        scale: axisViewT.scale, x: axisViewT.x, y: axisViewT.y,
+        laneMode, hiddenLanes: [...hiddenLanes],
+        collapsedGroups: [...collapsedGroups]
+      }
+    })
+  }).catch(() => {});
+}
+// 平移/缩放会连续触发，必须防抖——每一下都 POST 会打满请求（v1.18 性能教训）
+let viewSaveTimer = null;
+function saveViewStateDebounced() {
+  clearTimeout(viewSaveTimer);
+  viewSaveTimer = setTimeout(saveViewState, 500);
+}
+function restoreViewState(v) {
+  if (!v || typeof v !== 'object') return;
+  if (typeof v.scale === 'number' && v.scale > 0) axisViewT.scale = Math.min(2.5, Math.max(0.2, v.scale));
+  if (typeof v.x === 'number') axisViewT.x = v.x;
+  if (typeof v.y === 'number') axisViewT.y = v.y;
+  laneMode = !!v.laneMode;
+  hiddenLanes = new Set(Array.isArray(v.hiddenLanes) ? v.hiddenLanes : []);
+  if (Array.isArray(v.collapsedGroups) && v.collapsedGroups.length) collapsedGroups = new Set(v.collapsedGroups);
+}
+
 // 最近一次轴布局几何（渲染时计算，fit/拖动反算复用）
 let axisGeom = null;
 
@@ -1946,6 +2108,7 @@ function computeAxisLayout() {
   let maxChapter = 1;
   for (const n of nodes) {
     if (isGlobalBoardNode(n)) continue;
+    if (hiddenLanes.has(laneOf(n))) continue; // 被隐藏的泳道整体不参与布局
     const a = nodeAxisData(n);
     if (a.chapter) maxChapter = Math.max(maxChapter, Number(a.chapter));
     items.push({ n, a });
@@ -2070,7 +2233,18 @@ function computeAxisLayout() {
     }
   }
 
-  axisGeom = { levels, maxChapter, chapterW, chapterStart, bandH, plotTop, plotH, levelY, contentBottom, bw, bh, items: all, bands, bandMode, bandLabelY, bandBoundaryY, bandHpx, segSize, nSegs, segOf, segW, segStart };
+  // ── 泳道（front matter `lane`）几何：把绘图区按泳道切成等高横带 ──
+  // 只在「泳道视图」打开且项目里真的定义了 ≥2 条泳道时才生效，否则完全走原来的
+  // 「Y=剧情推进」布局——保证不打开开关时渲染结果与之前逐像素一致。
+  const lanes = laneList();
+  const laneOn = laneViewActive() && lanes.length >= 2;
+  const laneBandH = laneOn ? plotH / lanes.length : 0;
+  const laneYOf = (name) => {
+    const i = Math.max(0, lanes.indexOf(name));
+    return plotTop + i * laneBandH; // 带顶边（i=0 在顶部，与 Y 轴从上到下的阅读顺序一致）
+  };
+
+  axisGeom = { levels, maxChapter, chapterW, chapterStart, bandH, plotTop, plotH, levelY, contentBottom, bw, bh, items: all, bands, bandMode, bandLabelY, bandBoundaryY, bandHpx, segSize, nSegs, segOf, segW, segStart, lanes, laneOn, laneBandH, laneYOf };
   return axisGeom;
 }
 
@@ -2364,6 +2538,7 @@ function axisWheelZoom(e) {
   axisViewT.y = my - cy * next;
   axisViewT.scale = next;
   applyAxisTransform();
+  saveViewStateDebounced();
 }
 
 function nodeAxisData(n) {
@@ -2401,6 +2576,8 @@ function renderAxisView() {
   const geom = computeAxisLayout();
   const levels = geom.levels;
   const { maxChapter, bandH, chapterW, chapterStart, plotTop, plotH, levelY, contentBottom, segSize, nSegs, segOf, segW, segStart } = geom;
+  const laneOn = !!geom.laneOn;
+  const lanes = geom.lanes || [];
   const bandTop = axisBandTop();
   const cardW = axisCardW;
   // 网格背景：垂直列线（每章一列）
@@ -2411,50 +2588,62 @@ function renderAxisView() {
     grid.querySelectorAll('.axisLevelLine,.axisDiagLine,.axisPctLine,.axisBandLine,.axisFrameLine').forEach(el => el.remove());
   }
 
-  // Y 轴：分段模式（卷/境界/剧情节点）或 细刻度+层级参考网格 模式
+  // Y 轴：分段模式（卷/境界/剧情节点）或 细刻度+层级参考网格 模式；泳道模式则按泳道切横带
   const banded = geom.bands && geom.bands.length > 0;
   if (grid) {
     const plotLeft = axisPadL, plotRight = Math.max(plotLeft + 40, geom.bw - axisPadR);
-    // 细网格：每 10% 一条淡点线（y 轴细化刻度，任何规模项目统一生效）
-    for (let pp = 0; pp <= 100; pp += 10) {
-      const line = document.createElement('div');
-      line.className = 'axisPctLine';
-      line.style.top = yForProgress(pp) + 'px';
-      line.style.left = plotLeft + 'px';
-      line.style.width = (plotRight - plotLeft) + 'px';
-      grid.appendChild(line);
-    }
-    if (banded) {
-      // 分段分界线：每卷/每境界/每节点一条强调虚线
-      for (const k in geom.bandBoundaryY) {
+    if (laneOn) {
+      // 泳道模式：Y 轴不再是剧情推进，画泳道横带分隔线即可（不画百分比网格与对角线，否则语义打架）
+      for (let i = 1; i < lanes.length; i++) {
         const line = document.createElement('div');
         line.className = 'axisBandLine';
-        line.style.top = geom.bandBoundaryY[k] + 'px';
+        line.style.top = geom.laneYOf(lanes[i]) + 'px';
         line.style.left = plotLeft + 'px';
         line.style.width = (plotRight - plotLeft) + 'px';
         grid.appendChild(line);
       }
     } else {
-      for (let i = 0; i < levels.length; i++) {
+      // 细网格：每 10% 一条淡点线（y 轴细化刻度，任何规模项目统一生效）
+      for (let pp = 0; pp <= 100; pp += 10) {
         const line = document.createElement('div');
-        line.className = 'axisLevelLine';
-        line.style.top = levelY[i] + 'px';
+        line.className = 'axisPctLine';
+        line.style.top = yForProgress(pp) + 'px';
         line.style.left = plotLeft + 'px';
         line.style.width = (plotRight - plotLeft) + 'px';
         grid.appendChild(line);
       }
-      // y=x 对角线：起点(第1章/开端) → 终点(第N章/结局)，呼应"剧情随章节推进而抬升"
-      const diag = document.createElement('div');
-      diag.className = 'axisDiagLine';
-      const dx = plotRight - plotLeft, dy = plotTop - (plotTop + plotH);
-      const len = Math.sqrt(dx * dx + dy * dy);
-      const ang = Math.atan2(dy, dx) * 180 / Math.PI;
-      diag.style.left = plotLeft + 'px';
-      diag.style.top = (plotTop + plotH) + 'px';
-      diag.style.width = len + 'px';
-      diag.style.transform = 'rotate(' + ang + 'deg)';
-      diag.style.transformOrigin = 'left center';
-      grid.appendChild(diag);
+      if (banded) {
+        // 分段分界线：每卷/每境界/每节点一条强调虚线
+        for (const k in geom.bandBoundaryY) {
+          const line = document.createElement('div');
+          line.className = 'axisBandLine';
+          line.style.top = geom.bandBoundaryY[k] + 'px';
+          line.style.left = plotLeft + 'px';
+          line.style.width = (plotRight - plotLeft) + 'px';
+          grid.appendChild(line);
+        }
+      } else {
+        for (let i = 0; i < levels.length; i++) {
+          const line = document.createElement('div');
+          line.className = 'axisLevelLine';
+          line.style.top = levelY[i] + 'px';
+          line.style.left = plotLeft + 'px';
+          line.style.width = (plotRight - plotLeft) + 'px';
+          grid.appendChild(line);
+        }
+        // y=x 对角线：起点(第1章/开端) → 终点(第N章/结局)，呼应"剧情随章节推进而抬升"
+        const diag = document.createElement('div');
+        diag.className = 'axisDiagLine';
+        const dx = plotRight - plotLeft, dy = plotTop - (plotTop + plotH);
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+        diag.style.left = plotLeft + 'px';
+        diag.style.top = (plotTop + plotH) + 'px';
+        diag.style.width = len + 'px';
+        diag.style.transform = 'rotate(' + ang + 'deg)';
+        diag.style.transformOrigin = 'left center';
+        grid.appendChild(diag);
+      }
     }
     // X/Y 轴线：黑色实线（X = 底部基线，Y = 左侧基线）
     const frameX = document.createElement('div');
@@ -2471,7 +2660,22 @@ function renderAxisView() {
     grid.appendChild(frameY);
   }
 
-  if (banded) {
+  if (laneOn) {
+    // 泳道标签：每条带一个，带色条 + 节点数
+    for (let i = 0; i < lanes.length; i++) {
+      const el = document.createElement('div');
+      el.className = 'axisYLabel axisLaneLabel';
+      el.style.top = (geom.laneYOf(lanes[i]) + 10) + 'px';
+      el.style.borderLeft = '3px solid ' + LANE_COLORS[i % LANE_COLORS.length];
+      const inner = document.createElement('span');
+      inner.textContent = lanes[i];
+      const cnt = document.createElement('b');
+      cnt.textContent = ' ' + laneCountOf(lanes[i]);
+      el.appendChild(inner);
+      el.appendChild(cnt);
+      yEl.appendChild(el);
+    }
+  } else if (banded) {
     // Y 轴分段标签：每段中心显示卷/境界/节点名 + 章范围
     for (let i = 0; i < geom.bands.length; i++) {
       const el = document.createElement('div');
@@ -2549,12 +2753,23 @@ function renderAxisView() {
   // 无章号 → 顶部未分类带横向 lane（全局连续，不按章）
   const chLaneCursor = {}; // 章号 -> 已放卡片数（lane）
   let bandLane = 0;        // 未分类带全局 lane
+  const laneCursor = {};   // 泳道模式：章号|泳道 -> 横向槽位
   for (const { n, a, effCh, progress } of geom.items) {
     const el = document.createElement('div');
     el.className = 'node type-' + n.type;
     el.dataset.id = n.id;
     let x, y;
-    if (effCh != null) {
+    if (laneOn) {
+      // 泳道模式：Y 由泳道决定（不再用剧情推进），章列内仍做横向槽位展开
+      const lane = laneOf(n);
+      const key = (effCh != null ? effCh : 'band') + '|' + lane;
+      const slot = laneCursor[key] || 0;
+      laneCursor[key] = slot + 1;
+      x = (effCh != null ? segStart[segOf(effCh)] + 10 : axisPadL + 10) + slot * axisLaneStep;
+      y = geom.laneYOf(lane) + 8;
+      el.dataset.lane = lane;
+      el.style.borderLeft = '3px solid ' + laneColorOf(n);
+    } else if (effCh != null) {
       const lane = chLaneCursor[effCh] || 0;
       chLaneCursor[effCh] = lane + 1;
       x = segStart[segOf(effCh)] + 10 + lane * axisLaneStep;
@@ -2954,6 +3169,10 @@ async function loadData() {
   healthCacheKey = ''; // 同上：监控中心缓存失效
   unrecognizedFiles = new Set(nodes.filter(n => n.unrecognized).map(n => n.file));
   enterAxisView(false);
+  // 视图记忆：enterAxisView 内部会 fitAxisView() 自适应一次，所以保存的视图必须**在它之后**恢复，
+  // 否则会被 fit 冲掉。折叠分组要在 renderSidebar 之前恢复，泳道开关要在 renderFilters 之前。
+  const savedView = (data.layout && data.layout.view) || null;
+  restoreViewState(savedView);
 
   // 新出现的组套默认开合（章节卷收起 / 内容分类展开），老组尊重用户手动开合
   markSeenGroups();
@@ -2963,11 +3182,14 @@ async function loadData() {
   if (layoutVersion < 3) { computeAutoLayout(); changed = true; } // v3：一次性升级为确定性精确尺寸布局
   if (changed) saveLayout();
   links = buildLinks();
+  renderLegend();
   renderSidebar();
   renderFilters();
   renderNodes();
   applyFilters();
   redrawEdges();
+  if (savedView) applyAxisTransform(); // 恢复平移/缩放（在渲染完成后应用）
+  viewStateReady = true;               // 此后才允许把视图状态写回盘
   detailBody.innerHTML = '<div class="empty">点击节点查看完整内容</div>';
   clearPendingRefs();
   loadChatHistory(chatJustSwitched); chatJustSwitched = false;
@@ -3179,7 +3401,7 @@ function buildBatchMenu() {
     {
       label: `批量标题加前缀（${count}）...`,
       action: async () => {
-        const prefix = prompt('输入要添加到标题前面的文字：');
+        const prefix = await promptDialog('输入要添加到标题前面的文字：');
         if (!prefix) return;
         for (const n of selectedNodes) {
           await fetch('/api/rename', {
@@ -3195,7 +3417,7 @@ function buildBatchMenu() {
     {
       label: `批量标题加后缀（${count}）...`,
       action: async () => {
-        const suffix = prompt('输入要添加到标题后面的文字：');
+        const suffix = await promptDialog('输入要添加到标题后面的文字：');
         if (!suffix) return;
         for (const n of selectedNodes) {
           await fetch('/api/rename', {
@@ -4068,7 +4290,7 @@ async function volumeOpenOutline(rel, file) {
 }
 
 async function volumeRename(rel, oldName) {
-  const name = prompt('输入新的卷名：', oldName);
+  const name = await promptDialog('输入新的卷名：', { value: oldName });
   if (name === null) return;
   const n = name.trim();
   if (!n) return;
@@ -5063,6 +5285,54 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && document.getElementById('confirmModal').classList.contains('show')) __resolveConfirm(false);
 });
 
+// 输入弹窗（对齐 confirmDialog 的风格与交互），替代原生 prompt()。
+// 语义刻意保持一致：确定 → 返回字符串（未输入则空串）；取消/关闭/Esc → 返回 null。
+let __promptResolve = null;
+function promptDialog(message, opts = {}) {
+  return new Promise(resolve => {
+    const txt = document.getElementById('promptText');
+    const input = document.getElementById('promptInput');
+    const ok = document.getElementById('promptOkBtn');
+    const cancel = document.getElementById('promptCancelBtn');
+    const hint = document.getElementById('promptHint');
+    if (!txt || !input || !ok || !cancel) { resolve(null); return; }
+    txt.textContent = message || '';
+    input.value = opts.value != null ? String(opts.value) : '';
+    input.placeholder = opts.placeholder || '';
+    ok.textContent = opts.okText || '确定';
+    cancel.textContent = opts.cancelText || '取消';
+    if (hint) hint.textContent = opts.hint || '';
+    __promptResolve = resolve;
+    document.getElementById('promptModal').classList.add('show');
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+  });
+}
+function __resolvePrompt(val) {
+  document.getElementById('promptModal').classList.remove('show');
+  const r = __promptResolve; __promptResolve = null;
+  if (!r) return;
+  const input = document.getElementById('promptInput');
+  r(val ? String(input.value) : null);
+}
+{
+  const pOk = document.getElementById('promptOkBtn');
+  const pCancel = document.getElementById('promptCancelBtn');
+  const pClose = document.getElementById('promptClose');
+  const pMask = document.getElementById('promptModal');
+  const pInput = document.getElementById('promptInput');
+  if (pOk) pOk.addEventListener('click', () => __resolvePrompt(true));
+  if (pCancel) pCancel.addEventListener('click', () => __resolvePrompt(false));
+  if (pClose) pClose.addEventListener('click', () => __resolvePrompt(false));
+  if (pMask) pMask.addEventListener('click', (e) => { if (e.target === e.currentTarget) __resolvePrompt(false); });
+  if (pInput) pInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); __resolvePrompt(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); __resolvePrompt(false); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && pMask && pMask.classList.contains('show')) __resolvePrompt(false);
+  });
+}
+
 // ── v1.9 Y 轴划分方式弹窗（axisYModal：按境界/按关键节点/按进度）──
 (function () {
   const modal = document.getElementById('axisYModal');
@@ -5416,7 +5686,7 @@ async function exportUsageCsv() {
   } catch (e) {
     btn.textContent = '导出失败';
     setTimeout(() => { btn.textContent = orig; }, 1800);
-    alert('导出失败：' + e.message);
+    showToast('导出失败：' + e.message, 'error');
   }
 }
 
