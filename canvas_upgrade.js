@@ -272,9 +272,17 @@ function hookSelToolbar(el, isTextarea, makeCtx) {
     }
   });
 })();
+// 伏笔状态：唯一口径在服务端（buildNodes 已按「状态词表精确匹配」解析好 n.foreshadowStatus，
+// 能兼容 5 列/6 列等不同项目格式）。前端优先用它；仅当节点来自本地临时构造（无该字段）时
+// 才退回旧的按行解析，保证任何调用点都不会拿到空。
+var FORESHADOW_STATUS_WORDS = ['已回收','断线','废弃','搁置','取消','已放弃','已埋','计划回收','待回收','推进中','回收中','进行中','已铺垫'];
 function parseForeshadowStatus(n) {
+  if (!n) return "";
+  if (n.foreshadowStatus) return n.foreshadowStatus;
   var cells = String(n.content || "").split("|").map(function(s){ return s.trim(); }).filter(Boolean);
-  if (cells.length >= 5) { var st = cells[4]; if (st) return st; }
+  for (var i = 0; i < cells.length; i++) {
+    if (FORESHADOW_STATUS_WORDS.indexOf(cells[i]) !== -1) return cells[i];
+  }
   return "";
 }
 async function createChapter() {

@@ -56,12 +56,21 @@ function projectNameOfRoot(root) {
   return path.basename(root);
 }
 
+// 项目目录是否可被列为「小说项目」。
+// 以下划线/点开头的目录属临时或隐藏用途（如测试残留 _nc_test_residue、
+// 冒烟夹具 _nc_smoke_project、.data 之类），即便恰好含 设定.md 也不应
+// 出现在项目下拉里、更不该被 defaultProjectName() 选中当默认项目。
+function isListableProjectName(name) {
+  return !!name && !name.startsWith('_') && !name.startsWith('.');
+}
+
 function defaultProjectName() {
   if (process.env.DEFAULT_PROJECT) return process.env.DEFAULT_PROJECT;
   try {
     const names = fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })
       .filter(e => e.isDirectory())
       .map(e => e.name)
+      .filter(isListableProjectName)
       .filter(name => ['设定.md','大纲.md','角色设定汇总.md','写作规范.md'].some(f => fs.existsSync(path.join(PROJECTS_ROOT, name, f))))
       .sort();
     if (names.length) return names[0];
@@ -285,6 +294,9 @@ function writeText(file, text, root) {
   const bak = full + '.bak';
   try { fs.copyFileSync(full, bak); } catch (_) {}
   fs.writeFileSync(full, text, 'utf8');
+  // 写盘即失效：改动 front matter 后，节点扫描必须立刻看到新 type/label/chapter/level/lane，
+  // 否则界面会一直显示旧属性直到重启服务（与「实时监控」目标直接冲突）。
+  invalidateFmCache(root || ROOT);
 }
 
 function findDefByType(type) {
@@ -706,16 +718,30 @@ function walkMdFiles(root, junkDirs) {
 }
 
 // 读取文件的 front matter 缓存（避免反复读盘）
+// 缓存值带 mtimeMs：文件被改动后 mtime 变化即自动失效（statSync 远便宜于 readFileSync）。
+// 另有 invalidateFmCache() 供写盘路径显式清理，双保险——这样「实时监控」不会读到旧属性。
 const fmCache = new Map();
 function fileFrontMatter(file, root) {
   const key = root + '|' + file;
-  if (fmCache.has(key)) return fmCache.get(key);
+  const full = path.join(root, file);
+  let mtimeMs = -1;
+  try { mtimeMs = fs.statSync(full).mtimeMs; } catch (_) { mtimeMs = -1; }
+  const hit = fmCache.get(key);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.fm;
   let fm = {};
-  try { fm = parseFrontMatter(fs.readFileSync(path.join(root, file), 'utf8')).fm; } catch (_) {}
-  fmCache.set(key, fm);
+  try { fm = parseFrontMatter(fs.readFileSync(full, 'utf8')).fm; } catch (_) {}
+  fmCache.set(key, { mtimeMs, fm });
   return fm;
 }
-function invalidateFmCache(root) { for (const k of fmCache.keys()) if (k.startsWith(root + '|')) fmCache.delete(k); }
+function invalidateFmCache(root, file) {
+  // 用 try 包住：writeText 的位置早于 fmCache 的 const 声明，
+  // 若真在模块初始化阶段被调用也只是跳过（不会因 TDZ 抛错）。
+  try {
+    if (!root) { fmCache.clear(); return; }
+    if (file !== undefined) { fmCache.delete(root + '|' + file); return; }
+    for (const k of fmCache.keys()) if (k.startsWith(root + '|')) fmCache.delete(k);
+  } catch (_) { /* fmCache 尚未初始化：无需失效 */ }
+}
 
 // 缺文件提示去重：同一项目同一文件缺失只在进程内提示一次，避免每次加载刷屏
 const warnedMissingScanFiles = new Set();
@@ -844,6 +870,12 @@ function buildNodes(root) {
     n.recognizedBy = 'manual';
     // 人工指定为非未识别类型 → 脱离未识别池（灰色移除）
     if (ov.type && ov.type !== 'unrecognized') n.unrecognized = false;
+  }
+
+  // 卷归属 + 伏笔状态：所有节点统一带上，前端直接消费（唯一口径，不再各自算）
+  for (const n of nodes) {
+    n.volume = volumeGroupOf(n.file);
+    if (n.label === '伏笔') n.foreshadowStatus = foreshadowStatusOf(n);
   }
 
   return nodes;
@@ -1180,27 +1212,74 @@ function chapterCoreList(root) {
       nodeId: n.id,
       title: n.title,
       file: n.file,
-      volume: volumeKeyOfNode(n),
+      volume: volumeGroupOf(n.file),
       core: extractChapterCore(n.content)
     }));
 }
 
+// ── 伏笔状态：全应用唯一解析 ──────────────────────────────────────
+// 关键坑：不同项目的 追踪/伏笔.md 列序不一样，**不能写死第 5 列**——
+//   · 《从0开始的天灾生活》6 列：| 编号 | 伏笔 | 投放章 | 回收章 | 状态 | 说明 |  → 状态在第 5 格
+//   · 《房车求生》        5 列：| # | 伏笔 | 埋设位置 | 状态 | 回收预期 |        → 状态在第 4 格
+// 旧实现固定取 cells[4]：6 列项目正确，5 列项目读到的是「回收预期」整列（例如把
+// "Ch40 查证→拾骨人…" 当状态），于是统计/看板里的伏笔状态全是错的。
+// 修法：在整行的单元格里按状态词表**精确匹配**，取第一个命中的单元格（与列序无关）。
+const FORESHADOW_CLOSED_STATES = ['已回收', '断线', '废弃', '搁置', '取消', '已放弃'];
+const FORESHADOW_OPEN_STATES = ['已埋', '计划回收', '待回收', '推进中', '回收中', '进行中', '已铺垫'];
+const FORESHADOW_STATUS_VOCAB = FORESHADOW_OPEN_STATES.concat(FORESHADOW_CLOSED_STATES);
+
 function foreshadowStatusOf(node) {
   if (!node || node.label !== '伏笔') return '';
   const cells = String(node.content || '').split('|').map(s => s.trim()).filter(Boolean);
-  return cells.length >= 5 ? cells[4] : '';
+  for (const c of cells) if (FORESHADOW_STATUS_VOCAB.includes(c)) return c;
+  // 容错：形如「已回收（第12章）」这种带后缀的写法——只对关闭态做包含判断（保守，避免把
+  // 说明列里的叙述文字误判成状态）。
+  for (const c of cells) for (const w of FORESHADOW_CLOSED_STATES) if (c.includes(w)) return w;
+  return '';
 }
 
-function volumeKeyOfNode(node) {
+// 「未回收伏笔」的唯一判定：只要有状态、且不是关闭态，就算未回收。
+//   · 6 列项目：已埋 / 计划回收 → 未回收；已回收 / 断线 → 已了结
+//   · 5 列项目：已埋 / 推进中   → 未回收；已回收        → 已了结
+// 未标记或无法识别的行（表头、分隔行、"—"）一律不计入，避免虚高。
+function isForeshadowOpen(state) {
+  const s = String(state || '').trim();
+  if (!s) return false;
+  return !FORESHADOW_CLOSED_STATES.includes(s);
+}
+
+// ── 卷归属：全应用唯一实现（前后端共用语义）────────────────────────
+// 规则（同时兼容「分卷」与「不分卷」两种项目布局）：
+//   1) 沿文件的目录链取【最深的、名字含「卷」的目录段】——兼容 第一卷/、第三卷·源能回廊/，
+//      也兼容 正文/第一卷/ 这类多一层容器的结构；
+//   2) 没有含「卷」的目录时，取【紧邻的父目录名】——支持按场景/地域给卷目录命名（如 冰霜之地/）；
+//      但若该父目录只是通用容器名（正文/章节/chapters…）或文件就在项目根，则视为「未分卷」；
+//   3) 兜底 '未分卷'（弃用前端旧实现里的 '全局'，避免同一本书出现两种称呼）。
+// 结果会写进 buildNodes() 的每个节点（n.volume），前端一律直接消费，不再自己算。
+const GENERIC_CONTAINER_DIRS = new Set(['正文', '章节', 'chapters', 'chapter', 'ch', '卷', '正文卷', 'text', 'content', 'src']);
+const NO_VOLUME = '未分卷';
+function volumeGroupOf(file) {
+  const parts = normalizeRel(String(file || '')).split('/').filter(Boolean);
+  if (parts.length <= 1) return NO_VOLUME;
+  const dirs = parts.slice(0, -1);
+  for (let i = dirs.length - 1; i >= 0; i--) {
+    if (/卷/.test(dirs[i])) return dirs[i];
+  }
+  const parent = dirs[dirs.length - 1];
+  return GENERIC_CONTAINER_DIRS.has(parent.toLowerCase()) ? NO_VOLUME : parent;
+}
+
+// 文件的完整目录路径（一致性封包做「同目录邻近加权」用；与展示用的卷分组是两件事）
+function volumeDirOfNode(node) {
   if (!node || !node.file) return '';
-  return path.posix.dirname(node.file);
+  return path.posix.dirname(normalizeRel(node.file));
 }
 
 function buildConsistencyPackage(root, targetId, fullEntities) {
   const nodes = buildNodes(root);
   const target = targetId ? nodes.find(n => n.id === targetId) : null;
   const targetText = ((target ? target.content || '' : '') + ' ' + (target ? target.title || '' : '')).toLowerCase();
-  const targetVolumeKey = target ? volumeKeyOfNode(target) : '';
+  const targetVolumeKey = target ? volumeDirOfNode(target) : '';
   const targetCore = target ? extractChapterCore(target.content) : '';
   const targetCoreLower = targetCore.toLowerCase();
   const volumeName = targetVolumeKey ? path.posix.basename(targetVolumeKey) : '';
@@ -1216,7 +1295,7 @@ function buildConsistencyPackage(root, targetId, fullEntities) {
     if (targetText && (targetText.includes(title) || (title && content && targetText.includes(title)))) w += 0.6;
     // 卷感知：同一卷内的角色/设定/伏笔/上下文优先参与
     if (targetVolumeKey) {
-      const nVol = volumeKeyOfNode(n);
+      const nVol = volumeDirOfNode(n);
       if (nVol === targetVolumeKey) w += 0.5;
       else if (nVol && (nVol.startsWith(targetVolumeKey + '/') || targetVolumeKey.startsWith(nVol + '/'))) w += 0.3;
       if (volumeName && (n.title || '').includes(volumeName)) w += 0.4;
@@ -1521,7 +1600,7 @@ function recordAudit(root, project, result, nodeId) {
       timestamp: new Date().toISOString(),
       nodeId: nodeId || '',
       title: node ? node.title : (result.targetTitle || ''),
-      volume: result.targetVolume || (node ? volumeKeyOfNode(node) : ''),
+      volume: result.targetVolume || (node ? volumeGroupOf(node.file) : ''),
       core: result.targetCore || '',
       overall: Number(result.overall || 0),
       hardPass: !(Array.isArray(result.hardRules) && result.hardRules.some(r => r.pass === false)),
@@ -1898,20 +1977,25 @@ function summarizeUsage(range) {
 }
 
 // ── 全书健康度统计 ──
+// 字数口径：与看板/编辑器一致，统计【不含空白】的字符数（此前用 content.length 把换行空格也算进去，
+// 导致统计弹窗的总字数永远大于看板与编辑器，用户对照时以为数据错了）。
+function countWords(text) {
+  return String(text || '').replace(/\s+/g, '').length;
+}
+
 function buildBookStats(root) {
   const nodes = buildNodes(root);
   const chapters = nodes.filter(n => n.label === '章节');
-  const totalWords = chapters.reduce((s, n) => s + (n.content || '').length, 0);
+  const totalWords = chapters.reduce((s, n) => s + countWords(n.content), 0);
   const chapterCount = chapters.length;
   const avgWordsPerChapter = chapterCount ? Math.round(totalWords / chapterCount) : 0;
-  // 按文件路径倒数第二段取卷名（与前端 volumeKeyOf 一致）
+  // 卷归属：直接用节点上的 volume 字段（buildNodes 已按唯一口径算好，分卷/不分卷布局都适用）
   const volMap = {};
   for (const c of chapters) {
-    const parts = String(c.file || '').split(/[\\/]/);
-    const vol = parts.length > 1 ? parts[parts.length - 2] : '未分卷';
+    const vol = c.volume || volumeGroupOf(c.file);
     if (!volMap[vol]) volMap[vol] = { volume: vol, chapters: 0, words: 0 };
     volMap[vol].chapters++;
-    volMap[vol].words += (c.content || '').length;
+    volMap[vol].words += countWords(c.content);
   }
   const byVolume = Object.values(volMap)
     .map(v => ({ ...v, avg: v.chapters ? Math.round(v.words / v.chapters) : 0 }))
@@ -1924,15 +2008,24 @@ function buildBookStats(root) {
     filled: outlineFilled,
     rate: outlineNodes.length ? Math.round((outlineFilled / outlineNodes.length) * 100) : 0
   };
-  // 伏笔回收率：状态列含"已回收"计 recovered，其余计 planted
+  // 伏笔回收率：「未回收」口径统一为 isForeshadowOpen（已埋/计划回收），
+  // 其余状态在 byStatus 里单列，供下钻明细使用，避免各处对「未回收」各算一套。
   const foreshadowNodes = nodes.filter(n => n.label === '伏笔');
-  let fsRecovered = 0;
-  for (const n of foreshadowNodes) if (foreshadowStatusOf(n) === '已回收') fsRecovered++;
+  const fsByStatus = {};
+  let fsRecovered = 0, fsOpen = 0;
+  for (const n of foreshadowNodes) {
+    const raw = foreshadowStatusOf(n);
+    const st = raw || '未标记';
+    fsByStatus[st] = (fsByStatus[st] || 0) + 1;
+    if (st === '已回收') fsRecovered++;
+    else if (isForeshadowOpen(raw)) fsOpen++; // 传原始状态：'未标记' 不参与未回收
+  }
   const foreshadow = {
     total: foreshadowNodes.length,
-    planted: foreshadowNodes.length - fsRecovered,
+    planted: fsOpen,
     recovered: fsRecovered,
-    rate: foreshadowNodes.length ? Math.round((fsRecovered / foreshadowNodes.length) * 100) : 0
+    rate: foreshadowNodes.length ? Math.round((fsRecovered / foreshadowNodes.length) * 100) : 0,
+    byStatus: fsByStatus
   };
   // 分类统计
   const categories = {};
@@ -2469,6 +2562,7 @@ const server = http.createServer(async (req, res) => {
     const projects = fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })
       .filter(e => e.isDirectory())
       .map(e => e.name)
+      .filter(isListableProjectName)
       .filter(name => {
         const dir = path.join(PROJECTS_ROOT, name);
         return fs.existsSync(path.join(dir, '设定.md'))
@@ -3539,6 +3633,7 @@ const api = getApiConfig();
       fs.mkdirSync(path.dirname(full), { recursive: true });
       const title = path.basename(rel, '.md').replace(/[_-]+/g, ' ');
       fs.writeFileSync(full, '# ' + title + '\n\n', 'utf8');
+      invalidateFmCache(root);
       return sendJson(res, { ok: true, path: rel });
     } catch (e) {
       return sendJson(res, { error: e.message });
@@ -3556,6 +3651,7 @@ const api = getApiConfig();
       snapshotFiles(root, body.project || projectNameOfRoot(root), [rel], '删除文件');
       try { fs.copyFileSync(full, full + '.bak'); } catch (_) {}
       fs.unlinkSync(full);
+      invalidateFmCache(root);
       return sendJson(res, { ok: true, path: rel });
     } catch (e) {
       return sendJson(res, { error: e.message });
@@ -3577,6 +3673,7 @@ const api = getApiConfig();
       if (fs.existsSync(newFull)) return sendJson(res, { error: 'target file already exists' });
       fs.mkdirSync(path.dirname(newFull), { recursive: true });
       fs.renameSync(oldFull, newFull);
+      invalidateFmCache(root);
       return sendJson(res, { ok: true, path: newRel, oldPath: oldRel });
     } catch (e) {
       return sendJson(res, { error: e.message });
@@ -3610,4 +3707,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot };
+module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf };

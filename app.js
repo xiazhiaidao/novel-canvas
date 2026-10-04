@@ -92,14 +92,26 @@ function isGlobalBoardNode(n) {
   return /文件头|汇总|总纲/.test(n.title || '');
 }
 
+// 卷归属：唯一口径在服务端（buildNodes 给每个节点算好 n.volume，兼容分卷/不分卷布局）。
+// 前端不再自己从路径猜卷名——此前这里还有一个同名实现，两套算法在「目录名不含卷字」
+// 的项目里会得出不同卷名，导致「统计有这卷、点进下钻却是空的」。保留函数名是为兼容既有调用点。
 function volumeKeyOf(n) {
-  if (!n || !n.file) return '未分卷';
-  const parts = n.file.split(/[\\/]/);
-  return parts.length > 1 ? parts[parts.length - 2] : '未分卷';
+  return (n && n.volume) || '未分卷';
 }
 
 function chapterGroupKey(n) {
   return '章节·' + volumeKeyOf(n);
+}
+
+// 「未回收伏笔」的唯一判定，与 server.js 的 isForeshadowOpen 保持一致：
+// 有状态且不是关闭态（已回收/断线/废弃/搁置/取消）即为未回收——不写死具体「开启态」词，
+// 因为不同项目的状态词不同（6 列项目用「已埋/计划回收」，5 列项目用「已埋/推进中」）。
+// 此前看板徽标只认 已埋+计划回收、统计下钻按「除已回收外全算」，两处数字对不上。
+var FORESHADOW_CLOSED_STATES = ['已回收', '断线', '废弃', '搁置', '取消', '已放弃'];
+function isForeshadowOpen(n) {
+  const st = (typeof parseForeshadowStatus === 'function' ? parseForeshadowStatus(n) : '') || '';
+  if (!st) return false;
+  return FORESHADOW_CLOSED_STATES.indexOf(st) === -1;
 }
 
 function boardGroups() {
@@ -268,7 +280,7 @@ function renderSidebar() {
     div.appendChild(title);
     const labelNodes = nodes.filter(x => x.label === label);
     if (label === '伏笔') {
-      const open = labelNodes.filter(n => { const s = parseForeshadowStatus(n); return s === '已埋' || s === '计划回收'; }).length;
+      const open = labelNodes.filter(isForeshadowOpen).length;
       if (open) {
         const span = document.createElement('span');
         span.className = 'fbCount';
@@ -296,7 +308,7 @@ function renderSidebar() {
           const st = parseForeshadowStatus(n);
           if (st) {
             const badge = document.createElement('span');
-            badge.className = 'fbBadge ' + (st === '已回收' || st === '断线' ? 'done' : 'open');
+            badge.className = 'fbBadge ' + (FORESHADOW_CLOSED_STATES.indexOf(st) !== -1 ? 'done' : 'open');
             badge.textContent = st;
             btn.appendChild(badge);
           }
@@ -314,21 +326,9 @@ function renderSidebar() {
   }
 }
 
-function volumeKeyOf(n) {
-  const parts = (n.file || '').split(/[\\/]/);
-  if (parts.length > 1) {
-    const parent = parts[parts.length - 2];
-    if (/卷/.test(parent)) return parent;
-  }
-  const text = (n.title || '') + ' ' + (n.file || '');
-  const m = text.match(/(第\s*[0-9一二三四五六七八九十]+\s*卷|[\u4e00-\u9fa5A-Za-z0-9]{1,8}卷)/);
-  if (m) return m[0].trim().replace(/^[-_ ]+|[-_ ]+$/g, '');
-  return '全局';
-}
-
 function shouldGroupByVolume(list) {
   const keys = new Set(list.map(volumeKeyOf));
-  return keys.size > 1 || (keys.size === 1 && !keys.has('全局'));
+  return keys.size > 1 || (keys.size === 1 && !keys.has('未分卷'));
 }
 
 function renderVolumeGroups(div, list) {
@@ -338,8 +338,9 @@ function renderVolumeGroups(div, list) {
     (groups[vol] = groups[vol] || []).push(n);
   }
   const keys = Object.keys(groups).sort((a, b) => {
-    if (a === '全局') return 1;
-    if (b === '全局') return -1;
+    // 「未分卷」是兜底组，永远排最后（旧实现里这个兜底词叫「全局」，已统一）
+    if (a === '未分卷') return 1;
+    if (b === '未分卷') return -1;
     return a.localeCompare(b, 'zh');
   });
   for (const vol of keys) {
@@ -894,12 +895,7 @@ function renderBoard() {
     else if (len < 500) draft++;
     else done++;
   }
-  const fbStatus = {};
-  for (const f of foreshadows) {
-    const st = parseForeshadowStatus(f) || '未标记';
-    fbStatus[st] = (fbStatus[st] || 0) + 1;
-  }
-  const fbOpen = (fbStatus['已埋'] || 0) + (fbStatus['计划回收'] || 0);
+  const fbOpen = foreshadows.filter(isForeshadowOpen).length;
   summaryEl.innerHTML =
     '<div class="boardCard"><div class="num">' + chapters.length + '</div><div class="lbl">章节总数</div></div>' +
     '<div class="boardCard"><div class="num">' + done + '</div><div class="lbl">已写</div></div>' +
@@ -926,7 +922,7 @@ function renderBoard() {
     html += '<table class="boardTable"><thead><tr><th>伏笔</th><th>状态</th></tr></thead><tbody>';
     for (const f of foreshadows) {
       const st = parseForeshadowStatus(f) || '未标记';
-      const cls = st === '已埋' ? 'open' : (st === '计划回收' ? 'plan' : 'empty');
+      const cls = FORESHADOW_CLOSED_STATES.indexOf(st) !== -1 ? 'empty' : ((st === '计划回收' || st === '待回收') ? 'plan' : 'open');
       html += '<tr class="clickable" data-id="' + f.id + '"><td>' + escapeHtml(f.title) + '</td><td><span class="statusBadge ' + cls + '">' + escapeHtml(st) + '</span></td></tr>';
     }
     html += '</tbody></table>';
@@ -5618,8 +5614,8 @@ function buildStatsDrill(host) {
       drillRows(list, n => volumeKeyOf(n));
   }
   if (kind === 'foreshadow') {
-    const list = nodes.filter(n => n.label === '伏笔' && (parseForeshadowStatus(n) || '未标记') !== '已回收');
-    if (!list.length) return '<div class="drillEmpty">伏笔已全部回收</div>';
+    const list = nodes.filter(n => n.label === '伏笔' && isForeshadowOpen(n));
+    if (!list.length) return '<div class="drillEmpty">没有待回收的伏笔</div>';
     return '<div class="drillHead">未回收 ' + list.length + ' 条（点条目跳转）</div>' +
       drillRows(list, n => parseForeshadowStatus(n) || '未标记');
   }
