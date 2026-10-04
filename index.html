@@ -1272,6 +1272,10 @@
   #statusShortcutBtn:hover { opacity: 1; color: var(--accent); }
   #statusSearchBtn { cursor: pointer; opacity: .7; }
   #statusSearchBtn:hover { opacity: 1; color: var(--accent); }
+  /* 状态栏迷你监控条：常驻显示 字数 / 伏笔待收 / 一致性分，点击进监控中心 */
+  #statusHealth { cursor: pointer; opacity: .85; display: inline-flex; align-items: center; gap: 8px; }
+  #statusHealth:hover { opacity: 1; color: var(--accent); }
+  #statusHealth .shWarn { color: var(--accent); font-weight: 600; }
   /* 全项目全文搜索 */
   .ftModal { width: 700px; max-width: 94vw; }
   .ftHeadRow { display: flex; align-items: stretch; gap: 8px; }
@@ -1332,6 +1336,7 @@
     transition: width .18s ease;
   }
   /* 宽度随标签页切换：保留各视图原本各自调好的最佳宽度，不强行统一成一个值 */
+  .modal.analysisModal[data-pane="health"] { width: min(820px, 94vw); }
   .modal.analysisModal[data-pane="board"] { width: min(1000px, 94vw); }
   .modal.analysisModal[data-pane="link"] { width: min(640px, 94vw); }
   .modal.analysisModal[data-pane="stats"] { width: min(680px, 94vw); }
@@ -1676,6 +1681,27 @@
   .barPct { width: 44px; flex: 0 0 auto; text-align: right; color: var(--muted); }
   .catChips { display: flex; flex-wrap: wrap; gap: 6px; }
   .catChip { padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 14px; font-size: 12px; background: rgba(15,23,42,.04); }
+  /* ── 监控中心（ProjectHealth：进度 / 角色 / 伏笔 / 一致性 一份数据渲染）── */
+  .healthBody { overflow-y: auto; flex: 1; min-height: 0; }
+  .healthGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+  .healthCard { background: rgba(15,23,42,.04); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px 12px; cursor: pointer; transition: border-color .15s, transform .15s; }
+  .healthCard:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .healthCard .num { font-size: 19px; font-weight: 700; color: var(--accent); line-height: 1.25; }
+  .healthCard .lbl { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .healthCard.static { cursor: default; }
+  .healthCard.static:hover { transform: none; border-color: var(--panel-border); }
+  .healthSection { margin-bottom: 14px; }
+  .healthSection h4 { margin: 0 0 8px; font-size: 13px; color: var(--text); }
+  .healthAlert { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--panel-border); margin-bottom: 6px; font-size: 12.5px; line-height: 1.55; }
+  .healthAlert.warn { background: rgba(251,191,36,.12); border-color: rgba(180,83,9,.35); }
+  .healthAlert.info { background: rgba(15,23,42,.04); }
+  .healthAlert .haIcon { flex: 0 0 auto; }
+  .healthAlert .haText { flex: 1; min-width: 0; }
+  .healthAlert.clickable { cursor: pointer; }
+  .healthAlert.clickable:hover { border-color: var(--accent); }
+  .healthSub { font-size: 11.5px; color: var(--muted); margin: -4px 0 8px; line-height: 1.6; }
+  .time-ok { color: #34d399; }
+  .time-warn { color: var(--accent); }
   /* 时间线（作者手动维护的重要节点） */
   /* .timelineModal 宽度已由 [data-pane="timeline"] 接管 */
   .timelineBody { overflow-x: auto; padding-bottom: 4px; }
@@ -2069,6 +2095,7 @@
   </div>
   <div id="statusBar">
     <span id="statusProject"></span>
+    <span id="statusHealth" title="监控中心：字数 / 伏笔待收 / 一致性（点击打开监控）"></span>
     <span id="statusNodeCount"></span>
     <span id="statusWords"></span>
     <span id="statusSelected"></span>
@@ -2214,23 +2241,27 @@
     </div>
   </div>
   <div id="analysisModal" class="modal-mask">
-    <div class="modal analysisModal" id="analysisCard" data-pane="matrix">
+    <div class="modal analysisModal" id="analysisCard" data-pane="health">
       <div class="modalHead">
         <div class="modalTitle">
-          <div class="modalTitleMain" id="analysisTitleMain">关系矩阵</div>
-          <div class="modalTitleSub" id="analysisTitleSub">MATRIX</div>
+          <div class="modalTitleMain" id="analysisTitleMain">监控中心</div>
+          <div class="modalTitleSub" id="analysisTitleSub">MONITOR</div>
         </div>
         <button class="modalClose" id="analysisClose" title="关闭">✕</button>
       </div>
       <div class="analysisTabs">
-        <button class="analysisTab on" data-pane="matrix">关系矩阵</button>
+        <button class="analysisTab on" data-pane="health">监控</button>
+        <button class="analysisTab" data-pane="matrix">关系矩阵</button>
         <button class="analysisTab" data-pane="board">状态看板</button>
         <button class="analysisTab" data-pane="link">手动连线</button>
         <button class="analysisTab" data-pane="stats">全书统计</button>
         <button class="analysisTab" data-pane="timeline">时间线</button>
       </div>
       <div class="analysisPanes">
-        <div class="analysisPane on" id="analysisPaneMatrix" data-pane="matrix">
+        <div class="analysisPane on" id="analysisPaneHealth" data-pane="health">
+          <div id="healthBody" class="healthBody"></div>
+        </div>
+        <div class="analysisPane" id="analysisPaneMatrix" data-pane="matrix">
           <div class="matrixTabs">
             <button class="matrixTab on" data-matrix="roleChapter">角色 × 章节</button>
             <button class="matrixTab" data-matrix="foreshadowChapter">伏笔 × 章节</button>

@@ -1302,11 +1302,11 @@ function buildConsistencyPackage(root, targetId, fullEntities) {
     }
     // 章节核心命中：核心词直接命中时加权
     if (targetCoreLower && (title.includes(targetCoreLower) || content.includes(targetCoreLower))) w += 0.3;
-    // 伏笔状态动态权重：未回收的活跃伏笔更重要
+    // 伏笔状态动态权重：未回收的活跃伏笔更重要（口径走唯一实现，不再写死状态词）
     if (n.label === '伏笔') {
       const st = foreshadowStatusOf(n);
-      if (st === '已埋' || st === '计划回收' || st === '待回收') w += 0.3;
-      if (st === '已回收') w -= 0.2;
+      if (isForeshadowOpen(st)) w += 0.3;
+      else if (st === '已回收') w -= 0.2;
     }
     return Math.min(Math.max(w, 0.1), 2.0);
   };
@@ -1338,6 +1338,28 @@ function buildConsistencyPackage(root, targetId, fullEntities) {
   pushGroup('设定', weighted.filter(x => x.n.label === '设定'), false);
   pushGroup('大纲与卷', weighted.filter(x => x.n.label === '大纲' || x.n.label === '卷' || x.n.type === 'volume'), false);
   pushGroup('近期章节', weighted.filter(x => x.n.label === '章节').slice(0, 3), false);
+  // 【项目健康摘要】放在最前：让 AI 基于服务端实时算出的真实状态回答，而不是靠摘要猜。
+  // 刻意压到几百字符，避免把上下文预算吃光（AI 上下文膨胀是 v1.17 已踩过的坑）。
+  try {
+    const h = buildProjectHealth(root, projectNameOfRoot(root));
+    const fsOpen = (h.foreshadow.items || []).slice(0, 8)
+      .map(f => f.title + '（' + f.status + (f.chaptersSince != null ? '，已埋' + f.chaptersSince + '章' : '') + '）')
+      .join('；');
+    const roles = (h.characters || []).slice(0, 8)
+      .map(c => c.title + (c.lastChapter ? '（最后出场第' + c.lastChapter + '章）' : ''))
+      .join('；');
+    const lines = [
+      '【项目健康摘要（服务端实时计算，视为既有事实）】',
+      '进度：共 ' + h.progress.chapterCount + ' 章 / ' + h.progress.totalWords + ' 字，' + h.progress.volumeCount + ' 卷，已推进到第 ' + h.progress.maxChapter + ' 章'
+        + (h.progress.daysSinceUpdate != null ? '，最后更新 ' + h.progress.daysSinceUpdate + ' 天前' : ''),
+      '未回收伏笔 ' + h.foreshadow.open + ' 条' + (fsOpen ? '：' + fsOpen : ''),
+    ];
+    if (roles) lines.push('角色卡：' + roles);
+    const warns = (h.alerts || []).filter(a => a.level === 'warn').slice(0, 6).map(a => a.text);
+    if (warns.length) lines.push('待处理：' + warns.join('；'));
+    lines.push('（以上数字与状态已由程序核对，不要与它矛盾；如需更细的内容请用工具查证）');
+    parts.unshift(lines.join('\n'));
+  } catch (_) {}
   const packageText = parts.join('\n').slice(0, maxChars);
   return {
     targetId: target ? target.id : null,
@@ -1615,7 +1637,7 @@ function summarizeAuditStats(root, project) {
   const stats = loadAuditStats(project);
   const audits = stats.audits || [];
   const chapters = buildNodes(root).filter(n => n.label === '章节');
-  const totalWords = chapters.reduce((s, n) => s + (n.content || '').length, 0);
+  const totalWords = chapters.reduce((s, n) => s + countWords(n.content), 0);
   const volMap = {};
   for (const a of audits) {
     const vol = a.volume || '未分卷';
@@ -2031,6 +2053,251 @@ function buildBookStats(root) {
   const categories = {};
   for (const n of nodes) categories[n.label] = (categories[n.label] || 0) + 1;
   return { totalWords, chapterCount, avgWordsPerChapter, byVolume, outline, foreshadow, categories };
+}
+
+// ── 监控中心：单一聚合数据源（ProjectHealth）────────────────────────
+// 设计原则（v1.21.0 阶段 2）：状态栏监控条、监控标签、后续 AI 上下文全部从这一份数据渲染，
+// 禁止各视图各自再算一遍——口径分散正是「数字与明细对不上」的根源。
+// 全部为本地启发式计算，不调用任何大模型（零成本、可高频轮询）。
+const DEFAULT_FORESHADOW_ALERT_GAP = 20; // 伏笔埋设后超过 N 章仍未回收 → 告警
+const DEFAULT_STALE_DAYS = 7;            // 超过 N 天没有更新 → 断更提醒
+
+// 角色「当前状态」：优先取 `- 当前状态：xxx` / `- 状态：xxx` 行；否则取第一条要点。
+function roleStatusOf(node) {
+  const text = String(node.content || '');
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  for (const l of lines) {
+    const m = l.match(/^[-*]?\s*(?:当前状态|状态)\s*[:：]\s*(.+)$/);
+    if (m && m[1].trim()) return m[1].trim().slice(0, 120);
+  }
+  for (const l of lines) {
+    const m = l.match(/^[-*]\s*(.+)$/);
+    if (m && m[1].trim()) return m[1].trim().slice(0, 120);
+  }
+  return '';
+}
+
+// 角色「最后出场」：在章节正文里找最后一次出现其名字的章节（纯字符串匹配，便宜）。
+// 名字带括号说明的（如「莉亚思（三无少女·外三无内病娇）」）只取主名匹配。
+function lastAppearanceOf(name, chapters) {
+  const key = String(name || '').split(/[（(]/)[0].trim();
+  if (!key) return null;
+  let last = null;
+  for (const c of chapters) {
+    if (String(c.content || '').includes(key)) last = c;
+  }
+  if (!last) return null;
+  return { chapter: Number(last.chapter) || null, nodeId: last.id, title: last.title };
+}
+
+// 伏笔「埋设章号」：在整行的单元格里找像章号的那一格。
+// 两轮匹配——先找带前缀的（第12章 / Ch25），再退化为纯数字；**跳过首列**（那是编号 # / V1-01，
+// 不是章号，此行曾导致所有伏笔都被算成「埋在第1章」），也跳过状态格本体。
+function foreshadowPlantedChapter(node) {
+  const status = foreshadowStatusOf(node);
+  const cells = String(node.content || '').split('|').map(s => s.trim()).filter(Boolean);
+  for (let i = 1; i < cells.length; i++) {
+    if (status && cells[i] === status) continue;
+    const m = cells[i].match(/(?:第|ch(?:apter)?\s*)\s*(\d{1,4})/i);
+    if (m) return Number(m[1]);
+  }
+  for (let i = 1; i < cells.length; i++) {
+    if (status && cells[i] === status) continue;
+    const n = cells[i].match(/^(\d{1,4})$/);
+    if (n) return Number(n[1]);
+  }
+  return null;
+}
+
+// 告警文案用的干净标题：去掉 markdown 强调符号与行首编号（表格首列会被并进 title）。
+function cleanNodeTitle(title) {
+  return String(title || '')
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[#\d][\w-]*\s*/, '')
+    .replace(/^\s*\d+\s+/, '')
+    .trim();
+}
+
+function buildProjectHealth(root, projectName) {
+  const nodes = buildNodes(root);
+  const config = loadProjectConfig(root);
+  const healthCfg = (config && config.health) || {};
+  const fsGap = Number(healthCfg.foreshadowAlertGap) > 0 ? Number(healthCfg.foreshadowAlertGap) : DEFAULT_FORESHADOW_ALERT_GAP;
+  const staleDays = Number(healthCfg.staleDays) > 0 ? Number(healthCfg.staleDays) : DEFAULT_STALE_DAYS;
+
+  // ① 进度
+  const chapters = nodes.filter(n => n.label === '章节');
+  const totalWords = chapters.reduce((s, n) => s + countWords(n.content), 0);
+  const volMap = {};
+  for (const c of chapters) {
+    const v = c.volume || volumeGroupOf(c.file);
+    if (!volMap[v]) volMap[v] = { volume: v, chapters: 0, words: 0 };
+    volMap[v].chapters++;
+    volMap[v].words += countWords(c.content);
+  }
+  const volumes = Object.values(volMap)
+    .map(v => ({ ...v, avg: v.chapters ? Math.round(v.words / v.chapters) : 0 }))
+    .sort((a, b) => a.volume.localeCompare(b.volume, 'zh'));
+  const chapterNums = chapters.map(c => Number(c.chapter)).filter(x => Number.isFinite(x) && x > 0);
+  const maxChapter = chapterNums.length ? Math.max(...chapterNums) : chapters.length;
+  let lastMtime = 0;
+  for (const c of chapters) {
+    try { const st = fs.statSync(path.join(root, c.file)); if (st.mtimeMs > lastMtime) lastMtime = st.mtimeMs; } catch (_) {}
+  }
+  const daysSinceUpdate = lastMtime ? Math.floor((Date.now() - lastMtime) / 86400000) : null;
+
+  // ② 角色状态（只保留看起来像角色卡的节点，见 looksLikeCharacterCard）
+  const roleNodes = nodes.filter(n =>
+    n.label === '角色' && !n.unrecognized && !isGlobalBoardNodeType(n) && looksLikeCharacterCard(n));
+  const characters = roleNodes.map(n => {
+    const last = lastAppearanceOf(n.title, chapters);
+    return {
+      id: n.id,
+      title: cleanNodeTitle(n.title),
+      status: roleStatusOf(n),
+      lastChapter: last ? last.chapter : null,
+      lastChapterId: last ? last.nodeId : '',
+      // 距最后一次出场已过多少章（越大越可能被写丢）
+      gap: last && last.chapter ? Math.max(0, maxChapter - last.chapter) : null
+    };
+  });
+
+  // ③ 伏笔
+  const fsNodes = nodes.filter(n => n.label === '伏笔');
+  const fsItems = [];
+  const fsByStatus = {};
+  let fsRecovered = 0, fsOpen = 0;
+  for (const n of fsNodes) {
+    const raw = foreshadowStatusOf(n);
+    const st = raw || '未标记';
+    fsByStatus[st] = (fsByStatus[st] || 0) + 1;
+    const open = isForeshadowOpen(raw);
+    if (st === '已回收') fsRecovered++;
+    else if (open) fsOpen++;
+    if (!open) continue;
+    const planted = foreshadowPlantedChapter(n);
+    fsItems.push({
+      id: n.id,
+      title: cleanNodeTitle(n.title),
+      status: st,
+      plantedChapter: planted,
+      chaptersSince: planted ? Math.max(0, maxChapter - planted) : null
+    });
+  }
+  fsItems.sort((a, b) => (b.chaptersSince == null ? -1 : b.chaptersSince) - (a.chaptersSince == null ? -1 : a.chaptersSince));
+  const foreshadow = {
+    total: fsNodes.length,
+    open: fsOpen,
+    recovered: fsRecovered,
+    rate: fsNodes.length ? Math.round((fsRecovered / fsNodes.length) * 100) : 0,
+    byStatus: fsByStatus,
+    items: fsItems,
+    alertGap: fsGap
+  };
+
+  // ④ 一致性（复用既有审查统计，不另起一套）
+  let consistency = { totalAudits: 0, avgOverall: 0, hardFailCount: 0, driftCount: 0, latest: [] };
+  try {
+    const s = summarizeAuditStats(root, projectName);
+    consistency = {
+      totalAudits: s.totalAudits,
+      avgOverall: s.avgOverall,
+      hardFailCount: s.hardFailCount,
+      driftCount: s.driftCount,
+      latest: (s.latest || []).slice(0, 8)
+    };
+  } catch (_) {}
+
+  // ⑤ 扫描健康
+  const unrecNodes = nodes.filter(n => n.unrecognized);
+  const scan = {
+    nodeCount: nodes.length,
+    unrecognizedCount: unrecNodes.length,
+    unrecognizedFileCount: new Set(unrecNodes.map(n => n.file)).size,
+    unrecognized: unrecNodes.slice(0, 30).map(n => ({ id: n.id, title: n.title, file: n.file }))
+  };
+
+  // ⑥ 告警：不是展示数字，而是「需要你动手的事」，每条都带可跳转的 nodeId
+  const alerts = [];
+  for (const f of fsItems) {
+    if (f.chaptersSince != null && f.chaptersSince >= fsGap) {
+      alerts.push({
+        level: 'warn', kind: 'foreshadow',
+        text: '伏笔《' + f.title + '》已埋 ' + f.chaptersSince + ' 章未回收（埋于第 ' + f.plantedChapter + ' 章，现已到第 ' + maxChapter + ' 章）',
+        nodeId: f.id
+      });
+    }
+  }  for (const c of characters) {
+    if (c.gap != null && c.lastChapter && c.gap >= fsGap) {
+      alerts.push({
+        level: 'warn', kind: 'character',
+        text: '角色「' + c.title + '」自第 ' + c.lastChapter + ' 章后已 ' + c.gap + ' 章未出现',
+        nodeId: c.id
+      });
+    }
+  }
+  if (consistency.hardFailCount > 0) {
+    alerts.push({
+      level: 'warn', kind: 'consistency',
+      text: '有 ' + consistency.hardFailCount + ' 次一致性审查未通过硬性条件（建议回看审查明细）',
+      nodeId: (consistency.latest.find(x => !x.hardPass) || {}).nodeId || ''
+    });
+  }
+  if (scan.unrecognizedFileCount > 0) {
+    alerts.push({
+      level: 'info', kind: 'scan',
+      text: '有 ' + scan.unrecognizedFileCount + ' 个文件未被识别（可在识别报告里提升为正式节点）',
+      nodeId: ''
+    });
+  }
+  if (daysSinceUpdate != null && daysSinceUpdate >= staleDays) {
+    alerts.push({
+      level: 'info', kind: 'stale',
+      text: '已 ' + daysSinceUpdate + ' 天没有更新正文（无掉数据风险，仅提醒）',
+      nodeId: ''
+    });
+  }
+
+  return {
+    project: projectName,
+    generatedAt: new Date().toISOString(),
+    progress: {
+      totalWords,
+      chapterCount: chapters.length,
+      avgWordsPerChapter: chapters.length ? Math.round(totalWords / chapters.length) : 0,
+      volumeCount: volumes.length,
+      maxChapter,
+      daysSinceUpdate,
+      lastUpdate: lastMtime ? new Date(lastMtime).toISOString() : ''
+    },
+    volumes,
+    characters,
+    foreshadow,
+    consistency,
+    scan,
+    alerts
+  };
+}
+
+// 看板里的「汇总/总纲」类聚合节点不算角色/伏笔本体（与前端 isGlobalBoardNode 同义）
+function isGlobalBoardNodeType(n) {
+  if (!n) return false;
+  if (n.synthetic) return true;
+  return /文件头|汇总|总纲/.test(n.title || '');
+}
+
+// 明显不是「人」的分节标题
+const NOT_A_CHARACTER = /属性|状态|追踪|汇总|总纲|文件头|总表|规则|说明|设定|世界|大纲|关系|时间线|词典|清单|进度|日志|快照|表$/;
+
+// 是否像一张「角色卡」：必须有 身份/当前状态/定位/境界/战力 这类键行。
+// 为什么需要这道判定：`追踪/角色状态.md` 是角色卡，但 `追踪/状态追踪.md`（同为 label 角色）
+// 里是按「主角属性 / 装备清单 / 当前进度」分节的数据表——不是人。不区分就会把分节标题
+// 当成角色列出来。判不出来的项目宁可显示「暂无可解析的角色卡」，也不给假数据。
+const CHARACTER_KEY_LINE = /^[-*]?\s*(身份|当前状态|状态|定位|境界|战力|评级|口头禅|心结|动机|目标)\s*[:：]/m;
+function looksLikeCharacterCard(node) {
+  const title = String(node.title || '');
+  if (NOT_A_CHARACTER.test(title)) return false;
+  return CHARACTER_KEY_LINE.test(String(node.content || ''));
 }
 
 // ── 时间线 ───────────────────────────────────────────────
@@ -2539,6 +2806,17 @@ const server = http.createServer(async (req, res) => {
       const project = url.searchParams.get('project') || defaultProjectName();
       const root = resolveProjectRoot(project);
       return sendJson(res, { ok: true, ...buildBookStats(root) });
+    } catch (e) {
+      return sendJson(res, { error: e.message });
+    }
+  }
+
+  // 监控中心：单一聚合接口（状态栏监控条 / 监控标签 / AI 上下文共用这一份数据）
+  if (pathname === '/api/health' && req.method === 'GET') {
+    try {
+      const project = url.searchParams.get('project') || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      return sendJson(res, { ok: true, ...buildProjectHealth(root, projectNameOfRoot(root)) });
     } catch (e) {
       return sendJson(res, { error: e.message });
     }
@@ -3707,4 +3985,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf };
+module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf, buildProjectHealth, foreshadowPlantedChapter };

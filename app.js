@@ -103,6 +103,13 @@ function chapterGroupKey(n) {
   return '章节·' + volumeKeyOf(n);
 }
 
+// 字数口径（前端唯一实现，与服务端 countWords 一致）：不含空白。
+// 看板 / 统计下钻 / 状态栏 / 监控中心全部走这里——此前状态栏用 content.length（含空白），
+// 与看板又是两个数。
+function stripWords(text) {
+  return String(text || '').replace(/\s+/g, '').length;
+}
+
 // 「未回收伏笔」的唯一判定，与 server.js 的 isForeshadowOpen 保持一致：
 // 有状态且不是关闭态（已回收/断线/废弃/搁置/取消）即为未回收——不写死具体「开启态」词，
 // 因为不同项目的状态词不同（6 列项目用「已埋/计划回收」，5 列项目用「已埋/推进中」）。
@@ -198,7 +205,7 @@ function fillNodeContent(el, n) {
   const nfile = el.querySelector('.nfile');
   nfile.textContent = (n.file || '').split(/[\\/]/).pop();
   nfile.title = n.file || '';
-  el.querySelector('.nstats').textContent = ((n.content || '').replace(/\s+/g, '').length) + ' 字';
+  el.querySelector('.nstats').textContent = stripWords(n.content) + ' 字';
 }
 
 function cleanTitleKey(title) {
@@ -788,17 +795,20 @@ function renderMatrix() {
 // 各视图的渲染函数（renderMatrix / renderBoard / renderLinkManager / renderTimelineList）
 // 保持原样，只是改由 switchAnalysisTab 按需调用。
 const ANALYSIS_TABS = {
+  health:   { title: '监控中心', sub: 'MONITOR' },
   matrix:   { title: '关系矩阵', sub: 'MATRIX' },
   board:    { title: '状态看板', sub: 'BOARD' },
   link:     { title: '手动连线', sub: 'LINKS' },
   stats:    { title: '全书统计', sub: 'STATS' },
   timeline: { title: '时间线 · 重要节点', sub: 'TIMELINE' }
 };
-let analysisTab = 'matrix';
+let analysisTab = 'health';
 // 统计数据的缓存键（项目名 + 数据版本）。数据重载后版本变化会自然刷新，
 // 同一次打开内反复切标签则不重复打接口。
 let statsCacheKey = '';
 let statsCacheHtml = '';
+let healthCacheKey = '';
+let healthCacheHtml = '';
 
 function switchAnalysisTab(tab) {
   if (!ANALYSIS_TABS[tab]) tab = 'matrix';
@@ -821,6 +831,7 @@ function switchAnalysisTab(tab) {
   else if (tab === 'link') renderLinkManager();
   else if (tab === 'stats') loadBookStats();
   else if (tab === 'timeline') renderTimelineList();
+  else if (tab === 'health') loadHealth();
 }
 
 function openAnalysis(tab) {
@@ -889,7 +900,7 @@ function renderBoard() {
   const foreshadows = nodes.filter(n => real(n) && n.label === '伏笔');
   let done = 0, draft = 0, empty = 0, totalWords = 0;
   for (const c of chapters) {
-    const len = (c.content || '').replace(/\s+/g, '').length;
+    const len = stripWords(c.content);
     totalWords += len;
     if (len === 0) empty++;
     else if (len < 500) draft++;
@@ -910,7 +921,7 @@ function renderBoard() {
     html += '<table class="boardTable"><thead><tr><th>卷</th><th>章节</th><th>字数</th><th>状态</th></tr></thead><tbody>';
     for (const c of chapters) {
       const vol = volumeKeyOf(c);
-      const len = (c.content || '').replace(/\s+/g, '').length;
+      const len = stripWords(c.content);
       const st = len === 0 ? { key: 'empty', label: '空' } : (len < 500 ? { key: 'draft', label: '草稿' } : { key: 'done', label: '已写' });
       html += '<tr class="clickable" data-id="' + c.id + '"><td>' + escapeHtml(vol) + '</td><td>' + escapeHtml(c.title) + '</td><td>' + len.toLocaleString() + '</td><td><span class="statusBadge ' + st.key + '">' + st.label + '</span></td></tr>';
     }
@@ -2894,7 +2905,7 @@ function updateStatusBar() {
   const wordsEl = document.getElementById('statusWords');
   if (wordsEl && nodes) {
     const chapters = nodes.filter(n => n.label === '章节');
-    const words = chapters.reduce((s, n) => s + (n.content || '').length, 0);
+    const words = chapters.reduce((s, n) => s + stripWords(n.content), 0);
     wordsEl.textContent = '正文：' + words.toLocaleString('zh-CN') + ' 字 · ' + chapters.length + ' 章';
   } else if (wordsEl) {
     wordsEl.textContent = '';
@@ -2932,6 +2943,7 @@ async function loadData() {
   layoutOverrides = (data.layout && data.layout.overrides) || {};
   timelineNodes = (data.layout && Array.isArray(data.layout.timelineNodes)) ? data.layout.timelineNodes : [];
   statsCacheKey = ''; // 数据重载 → 全书统计缓存失效，下次打开重新拉取
+  healthCacheKey = ''; // 同上：监控中心缓存失效
   unrecognizedFiles = new Set(nodes.filter(n => n.unrecognized).map(n => n.file));
   enterAxisView(false);
 
@@ -2952,6 +2964,7 @@ async function loadData() {
   clearPendingRefs();
   loadChatHistory(chatJustSwitched); chatJustSwitched = false;
   updateStatusBar();
+  refreshHealthBar(); // 状态栏迷你监控条（异步，不阻塞加载）
 }
 
 // 空白拖拽平移
@@ -4990,6 +5003,8 @@ if (ftCaseBtn) {
 }
 const statusSearchBtn = document.getElementById('statusSearchBtn');
 if (statusSearchBtn) statusSearchBtn.addEventListener('click', ftOpen);
+const statusHealthEl = document.getElementById('statusHealth');
+if (statusHealthEl) statusHealthEl.addEventListener('click', () => openAnalysis('health'));
 window.openFullTextSearch = ftOpen;
 
 document.addEventListener('keydown', (e) => {
@@ -5525,6 +5540,186 @@ async function loadBackupList() {
   }
 }
 
+// ── 监控中心（单一数据源 /api/health）──────────────────────────────
+// 原则：所有数字都来自服务端聚合接口，前端不再自己算一遍；每个数字可下钻到「待办明细」，
+// 每条告警都能 focusNode() 跳到对应节点（禁止用 showDetail 跳转，见 v1.20 的隐性依赖）。
+async function fetchHealth() {
+  const res = await fetch('/api/health?project=' + encodeURIComponent(currentProject));
+  const d = await res.json();
+  if (d.error) throw new Error(d.error);
+  return d;
+}
+
+// 状态栏迷你监控条：伏笔待收 / 一致性分 / 待办数（数据来自同一个 /api/health）。
+// 刻意不含「字数」——字数·章数已由紧邻的 #statusWords 常驻显示，重复显示只会让状态栏更挤。
+async function refreshHealthBar() {
+  const el = document.getElementById('statusHealth');
+  if (!el || !currentProject) return;
+  try {
+    const d = await fetchHealth();
+    const open = (d.foreshadow && d.foreshadow.open) || 0;
+    const alerts = (d.alerts || []).filter(a => a.level === 'warn').length;
+    const avg = d.consistency && d.consistency.totalAudits ? d.consistency.avgOverall : null;
+    const parts = [];
+    if (open > 0) parts.push('<span class="' + (alerts ? 'shWarn' : '') + '">伏笔待收 ' + open + '</span>');
+    if (avg != null) parts.push('一致性 ' + avg);
+    if (alerts > 0) parts.push('<span class="shWarn">待办 ' + alerts + '</span>');
+    el.innerHTML = parts.length ? parts.join(' · ') : '监控正常';
+  } catch (_) {
+    el.textContent = '';
+  }
+}
+
+async function loadHealth() {
+  const body = document.getElementById('healthBody');
+  if (!body) return;
+  const key = currentProject || '';
+  if (healthCacheKey === key && healthCacheHtml) {
+    body.innerHTML = healthCacheHtml;
+    wireHealthClicks();
+    return;
+  }
+  body.innerHTML = '<div class="hint">加载中...</div>';
+  try {
+    const d = await fetchHealth();
+    healthCacheHtml = renderHealth(d);
+    healthCacheKey = key;
+    if (analysisTab !== 'health') return; // 请求返回时用户可能已切走
+    body.innerHTML = healthCacheHtml;
+    wireHealthClicks();
+  } catch (e) {
+    body.innerHTML = '<div class="hint">加载失败：' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderHealth(d) {
+  const p = d.progress || {};
+  const fs = d.foreshadow || {};
+  const scan = d.scan || {};
+  const cons = d.consistency || {};
+  const days = p.daysSinceUpdate;
+  const daysTxt = days == null ? '—' : (days + ' 天前');
+  const alerts = d.alerts || [];
+
+  // 状态卡片：除「平均每章」外都可下钻（点卡片 = 看构成它的具体条目）
+  const cards =
+    '<div class="healthCard" data-hcard="chapters"><div class="num">' + fmtNum(p.chapterCount || 0) + '</div><div class="lbl">章节（点击看明细）</div></div>' +
+    '<div class="healthCard" data-hcard="words"><div class="num">' + fmtNum(p.totalWords || 0) + '</div><div class="lbl">总字数（点击看各章）</div></div>' +
+    '<div class="healthCard" data-hcard="fsOpen"><div class="num">' + fmtNum(fs.open || 0) + '</div><div class="lbl">伏笔待收（点击看明细）</div></div>' +
+    '<div class="healthCard" data-hcard="roles"><div class="num">' + fmtNum((d.characters || []).length) + '</div><div class="lbl">角色卡（点击看状态）</div></div>';
+
+  const volRow = (d.volumes || []).length
+    ? '<div class="healthSub">共 ' + (d.volumes || []).length + ' 卷：' +
+      (d.volumes || []).map(v => escapeHtml(v.volume) + '（' + v.chapters + ' 章）').join(' · ') + '</div>'
+    : '';
+
+  const alertHtml = alerts.length
+    ? alerts.map(a =>
+        '<div class="healthAlert ' + (a.level === 'warn' ? 'warn' : 'info') + (a.nodeId ? ' clickable' : '') + '"' +
+        (a.nodeId ? ' data-hjump="' + escapeHtml(a.nodeId) + '"' : '') + '>' +
+          '<span class="haIcon">' + (a.level === 'warn' ? '⚠️' : 'ℹ️') + '</span>' +
+          '<span class="haText">' + escapeHtml(a.text) + '</span>' +
+          (a.nodeId ? '<span class="haIcon">↗</span>' : '') +
+        '</div>').join('')
+    : '<div class="hint">暂无需要处理的事 —— 没有长期未回收的伏笔、没有失踪角色、扫描与一致性都没问题。</div>';
+
+  const consTxt = cons.totalAudits
+    ? ('最近 ' + cons.totalAudits + ' 次审查：平均 ' + cons.avgOverall + ' 分' +
+       (cons.hardFailCount ? '，' + cons.hardFailCount + ' 次未过硬性条件' : '，全部通过硬性条件'))
+    : '还没有做过一致性审查（可在章节上点「一致性」跑一次）';
+
+  const unrecTxt = scan.unrecognizedFileCount
+    ? ('未识别文件 ' + scan.unrecognizedFileCount + ' 个 / 未识别节点 ' + (scan.unrecognizedCount || 0) + ' 个（可在识别报告里提升）')
+    : '所有文件都已被规则识别';
+
+  return '' +
+    '<div class="healthGrid">' + cards + '</div>' +
+    volRow +
+    '<div class="healthSection"><h4>需要你动手的事（' + alerts.length + '）</h4>' + alertHtml + '</div>' +
+    '<div class="healthSection"><h4>写作节奏</h4>' +
+      '<div class="healthSub">最后更新：' + escapeHtml(daysTxt) +
+      ' · 平均每章 ' + fmtNum(p.avgWordsPerChapter || 0) + ' 字' +
+      ' · 当前进度到第 ' + (p.maxChapter || 0) + ' 章</div>' +
+    '</div>' +
+    '<div class="healthSection"><h4>一致性</h4><div class="healthSub">' + escapeHtml(consTxt) + '</div></div>' +
+    '<div class="healthSection"><h4>扫描健康</h4><div class="healthSub">' + escapeHtml(unrecTxt) + '</div></div>' +
+    '<div id="healthDrillHost"></div>';
+}
+
+// 卡片下钻：把「数字」展开成「待办明细」，条目再点一次跳画布
+function buildHealthDrill(kind, d) {
+  if (kind === 'chapters' || kind === 'words') {
+    const list = nodes.filter(n => n.label === '章节')
+      .sort((a, b) => (Number(nodeAxisData(a).chapter) || 0) - (Number(nodeAxisData(b).chapter) || 0));
+    return '<div class="drillHead">共 ' + list.length + ' 章（点章节跳转 · 字数不含空白）</div>' +
+      drillRows(list, n => {
+        const ch = nodeAxisData(n).chapter;
+        return (ch != null ? '第' + ch + '章 · ' : '') + stripWords(n.content).toLocaleString() + '字';
+      });
+  }
+  if (kind === 'fsOpen') {
+    const list = (d.foreshadow && d.foreshadow.items) || [];
+    if (!list.length) return '<div class="drillEmpty">没有待回收的伏笔</div>';
+    return '<div class="drillHead">待回收 ' + list.length + ' 条（按已埋章数从久到近）</div>' +
+      list.map(f =>
+        '<div class="drillRow" data-id="' + escapeHtml(f.id) + '">' +
+          '<span class="drillName">' + escapeHtml(f.title) + '</span>' +
+          '<span class="drillMeta">' + escapeHtml(f.status || '') +
+            (f.chaptersSince != null ? ' · 已埋 ' + f.chaptersSince + ' 章' : '') + '</span>' +
+        '</div>').join('');
+  }
+  if (kind === 'roles') {
+    const list = d.characters || [];
+    if (!list.length) return '<div class="drillEmpty">该项目暂无可解析的角色卡（需要「追踪/角色状态.md」里按「## 角色名 + - 身份：/- 当前状态：」维护）</div>';
+    return '<div class="drillHead">' + list.length + ' 张角色卡（点条目跳转）</div>' +
+      list.map(c =>
+        '<div class="drillRow" data-id="' + escapeHtml(c.id) + '">' +
+          '<span class="drillName">' + escapeHtml(c.title) + '</span>' +
+          '<span class="drillMeta">' + escapeHtml(c.status || '无状态') +
+            (c.lastChapter ? ' · 最后出场第 ' + c.lastChapter + ' 章' : '') +
+            (c.gap ? ' · 已 ' + c.gap + ' 章未出现' : '') + '</span>' +
+        '</div>').join('');
+  }
+  return '';
+}
+
+function wireHealthClicks() {
+  const body = document.getElementById('healthBody');
+  if (!body || body._healthWired) return;
+  body._healthWired = true;
+  let lastHealth = null;
+  body.addEventListener('click', async (e) => {
+    // ① 告警条目 → 直接跳节点
+    const jump = e.target.closest('[data-hjump]');
+    if (jump) {
+      const id = jump.getAttribute('data-hjump');
+      if (id) { closeAnalysis(); focusNode(id); }
+      return;
+    }
+    // ② 卡片 → 展开待办明细
+    const card = e.target.closest('[data-hcard]');
+    if (!card) return;
+    e.stopPropagation();
+    const kind = card.getAttribute('data-hcard');
+    const host = document.getElementById('healthDrillHost');
+    if (!host) return;
+    const existing = host.querySelector('.drillPanel');
+    const openKind = existing ? existing.dataset.hkind : null;
+    if (existing) existing.remove();
+    if (openKind === kind) return; // 再点同一个卡片 = 收起
+    if (!lastHealth) { try { lastHealth = await fetchHealth(); } catch (_) { return; } }
+    const panel = document.createElement('div');
+    panel.className = 'drillPanel';
+    panel.dataset.hkind = kind;
+    panel.innerHTML = buildHealthDrill(kind, lastHealth);
+    host.innerHTML = '';
+    host.appendChild(panel);
+    panel.querySelectorAll('.drillRow').forEach(r => {
+      r.addEventListener('click', () => { closeAnalysis(); focusNode(r.dataset.id); });
+    });
+  });
+}
+
 // ── 全书统计 ──
 // 由 switchAnalysisTab('stats') 调用（不再自己开关弹窗）。
 // 带缓存：同一次数据加载内反复切标签不重复打接口；loadData() 会清空缓存。
@@ -5601,8 +5796,7 @@ function buildStatsDrill(host) {
     return '<div class="drillHead">' + escapeHtml(vol) + ' · ' + list.length + ' 章（点章节跳转）</div>' +
       drillRows(list, n => {
         const ch = nodeAxisData(n).chapter;
-        const len = (n.content || '').replace(/\s+/g, '').length;
-        return (ch != null ? '第' + ch + '章 · ' : '') + len.toLocaleString() + '字';
+        return (ch != null ? '第' + ch + '章 · ' : '') + stripWords(n.content).toLocaleString() + '字';
       });
   }
   if (kind === 'outline') {

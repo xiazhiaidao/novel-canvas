@@ -194,6 +194,12 @@
  html[data-theme="dark"] .volBar, html[data-theme="dark"] .barTrack{ background: rgba(255,255,255,.10); }
  html[data-theme="dark"] .volName, html[data-theme="dark"] .volMeta, html[data-theme="dark"] .barLabel, html[data-theme="dark"] .barPct{ color: var(--muted); }
  html[data-theme="dark"] .catChip{ background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.10); }
+/* 监控中心 */
+html[data-theme="dark"] .healthCard{ background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.10); }
+html[data-theme="dark"] .healthAlert.info{ background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.10); }
+html[data-theme="dark"] .healthAlert.warn{ background: rgba(255,180,84,.14); border-color: rgba(255,180,84,.35); }
+html[data-theme="dark"] .drillPanel{ background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.10); }
+html[data-theme="dark"] .drillRow:hover{ background: rgba(255,255,255,.07); }
  html[data-theme="dark"] .tlRow{ background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.10); }
  html[data-theme="dark"] .tlRow:hover{ border-color: var(--accent); }
  html[data-theme="dark"] .tlHint{ background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.10); color: var(--muted); }

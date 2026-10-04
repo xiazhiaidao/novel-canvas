@@ -679,6 +679,110 @@ async function main() {
       return 'OK(结构可用, 今日 calls=' + o.calls + ', total=' + o.total + ')';
     } catch (_) { return v; }
   });
+  await check('监控中心：/api/health 聚合结构与口径一致', async () => {
+    // 单一聚合接口：进度 / 卷 / 角色 / 伏笔 / 一致性 / 扫描 / 告警，且口径必须与 /api/bookstats 相等。
+    const v = await evalExpr(`(async () => {
+      const h = await fetch('/api/health?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      const b = await fetch('/api/bookstats?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      if (h.error) return JSON.stringify({ ok: false, why: h.error });
+      const shape = !!(h.progress && h.foreshadow && h.consistency && h.scan && Array.isArray(h.alerts) && Array.isArray(h.volumes) && Array.isArray(h.characters));
+      const wordsMatch = h.progress.totalWords === b.totalWords;
+      const chapMatch = h.progress.chapterCount === b.chapterCount;
+      const fsMatch = h.foreshadow.open === b.foreshadow.planted && h.foreshadow.recovered === b.foreshadow.recovered;
+      const alertsOk = h.alerts.every(a => a.text && (a.level === 'warn' || a.level === 'info'));
+      return JSON.stringify({ ok: shape && wordsMatch && chapMatch && fsMatch && alertsOk,
+        shape, wordsMatch, chapMatch, fsMatch, alertsOk,
+        words: h.progress.totalWords, beWords: b.totalWords, open: h.foreshadow.open, bePlanted: b.foreshadow.planted, alerts: h.alerts.length });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(字数' + o.words + ' 与统计一致, 伏笔待收' + o.open + ', 告警' + o.alerts + ' 条)') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('监控中心：伏笔埋设章号解析(跳过编号列)', async () => {
+    const { foreshadowPlantedChapter } = require(path.join(root, 'server.js'));
+    const row5 = { label: '伏笔', content: '| 1 | **韩铮背后势力** | Ch25/26（韩铮台词） | 推进中 | Ch40 查证→拾骨人 |' };
+    const row6 = { label: '伏笔', content: '| V1-01 | 五年前邪神陨落 | 第1章(星灭) | 长线(第45章爆点) | 已埋 | 说明 |' };
+    const noChapter = { label: '伏笔', content: '| 3 | 某伏笔 | 待定 | 已埋 | 待定 |' };
+    const a = foreshadowPlantedChapter(row5); // 首列「1」是编号，不能当章号
+    const b = foreshadowPlantedChapter(row6);
+    const c = foreshadowPlantedChapter(noChapter);
+    const ok = a === 25 && b === 1 && c === null;
+    return ok ? 'OK(5列=25, 6列=1, 无章号=null)' : ('解析结果 ' + a + ',' + b + ',' + c);
+  });
+
+  await check('监控中心：标签页渲染 + 状态栏监控条', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      openAnalysis('health');
+      for (let i = 0; i < 40; i++) {
+        await sleep(100);
+        const b = document.getElementById('healthBody');
+        if (b && (b.querySelector('.healthGrid') || b.innerHTML.indexOf('加载失败') !== -1)) break;
+      }
+      const m = document.getElementById('analysisModal');
+      const body = document.getElementById('healthBody');
+      const open = m && m.classList.contains('show');
+      const paneOn = document.getElementById('analysisPaneHealth').classList.contains('on');
+      const card = document.getElementById('analysisCard').getAttribute('data-pane');
+      const cards = body.querySelectorAll('.healthCard').length;
+      const alerts = body.querySelectorAll('.healthAlert').length;
+      const notLoading = body.innerHTML.indexOf('加载中') === -1;
+      // 状态栏迷你监控条：显示伏笔待收/一致性/待办，或「监控正常」（字数由 #statusWords 负责，不重复）
+      const bar = document.getElementById('statusHealth');
+      const barTxt = bar ? bar.textContent : '';
+      const barOk = /监控正常|伏笔待收|一致性|待办/.test(barTxt);
+      document.getElementById('analysisClose').click();
+      return JSON.stringify({ ok: open && paneOn && card === 'health' && cards >= 4 && notLoading && barOk,
+        open, paneOn, card, cards, alerts, notLoading, barTxt });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(卡片' + o.cards + ' 张, 告警 ' + o.alerts + ' 条, 状态栏「' + o.barTxt + '」)') : v;
+    } catch (_) { return v; }
+  });
+
+  await check('监控中心：卡片下钻待办明细 → 条目可跳节点', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      openAnalysis('health');
+      for (let i = 0; i < 40; i++) { await sleep(100); const b = document.getElementById('healthBody'); if (b && b.querySelector('.healthGrid')) break; }
+      // ① 点「章节」卡片 → 应展开待办明细
+      const card = document.querySelector('#healthBody .healthCard[data-hcard="chapters"]');
+      if (!card) return JSON.stringify({ ok: false, why: 'no card' });
+      card.click();
+      await sleep(200);
+      const panel = document.querySelector('#healthDrillHost .drillPanel');
+      const rows = panel ? panel.querySelectorAll('.drillRow').length : 0;
+      const head = panel ? (panel.querySelector('.drillHead') || {}).textContent : '';
+      // 再点同一卡片 → 收起
+      card.click();
+      await sleep(120);
+      const collapsed = !document.querySelector('#healthDrillHost .drillPanel');
+      // ② 点条目 → 关弹窗 + 跳节点（focusNode 会清搜索词）
+      const s = document.getElementById('search');
+      if (s) { s.value = 'zzz_should_be_cleared'; s.dispatchEvent(new Event('input', { bubbles: true })); }
+      card.click();
+      await sleep(200);
+      const row = document.querySelector('#healthDrillHost .drillRow');
+      let jumped = false, detailTitle = '';
+      if (row) {
+        row.click();
+        await sleep(150);
+        jumped = !document.getElementById('analysisModal').classList.contains('show');
+        detailTitle = ((document.querySelector('#detail h2') || {}).textContent || '');
+      }
+      const searchCleared = !s || s.value === '';
+      return JSON.stringify({ ok: rows > 0 && collapsed && jumped && !!detailTitle && searchCleared,
+        rows, head, collapsed, jumped, hasDetail: !!detailTitle, searchCleared });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok ? ('OK(下钻 ' + o.rows + ' 行 → 跳转 + 清搜索)') : v;
+    } catch (_) { return v; }
+  });
+
   await check('全书统计 API 可访问', async () => {
     const v = await evalExpr(`fetch('/api/bookstats?project=' + encodeURIComponent(currentProject)).then(r => r.json()).then(d => JSON.stringify({ ok: !!d.ok, words: d.totalWords, chapters: d.chapterCount, error: d.error || '' }))`);
     try { const o = JSON.parse(v); return (o.ok && o.words > 0 && o.chapters > 0) ? 'OK(words=' + o.words + ', chapters=' + o.chapters + ')' : v; } catch (_) { return v; }
@@ -990,7 +1094,7 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(✓命中/点击跳章)' : v; } catch (_) { return v; }
   });
-  await check('分析入口合并为单按钮(5 视图→1 入口)', async () => {
+  await check('分析入口合并为单按钮(6 视图→1 入口)', async () => {
     const v = await evalExpr(`JSON.stringify({
       has: !!document.getElementById('analysisBtn'),
       oldBtns: ['matrixBtn','boardBtn','linkManagerBtn','bookStatsBtn','timelineBtn'].filter(id => !!document.getElementById(id)),
@@ -1000,12 +1104,12 @@ async function main() {
     })`);
     try {
       const o = JSON.parse(v);
-      const seq = 'matrix,board,link,stats,timeline';
+      const seq = 'health,matrix,board,link,stats,timeline';
       const ok = o.has && o.oldBtns.length === 0 && o.oldModals.length === 0 && o.tabs.join(',') === seq && o.panes.join(',') === seq;
       return ok ? 'OK(旧入口/旧弹窗已清空)' : v;
     } catch (_) { return v; }
   });
-  await check('分析弹窗·5 个标签互斥可见且宽度联动', async () => {
+  await check('分析弹窗·各标签互斥可见且宽度联动', async () => {
     const v = await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       try {
@@ -1013,7 +1117,7 @@ async function main() {
         await sleep(200);
         const card = document.getElementById('analysisCard');
         const report = [];
-        for (const tab of ['matrix','board','link','stats','timeline']) {
+        for (const tab of ['health','matrix','board','link','stats','timeline']) {
           switchAnalysisTab(tab);
           await sleep(80);
           report.push({
@@ -1026,7 +1130,7 @@ async function main() {
         const exclusive = report.every(r => r.paneOn === r.tab && r.tabOn === r.tab && r.attr === r.tab);
         // 隐藏的 pane 必须是真正不显示（display:none），否则会叠在一起。
         // 注意排除当前激活的 timeline —— 它本来就该显示。
-        const hiddenNotShown = ['matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
+        const hiddenNotShown = ['health','matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
         const titleOk = (document.getElementById('analysisTitleMain').textContent || '').trim().length > 0;
         document.getElementById('analysisClose').click(); // 收尾：关掉，避免影响后续用例
         return JSON.stringify({ ok: exclusive && titleOk && hiddenNotShown, report, hiddenNotShown });
