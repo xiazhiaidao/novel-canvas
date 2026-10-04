@@ -712,6 +712,113 @@ async function main() {
     return ok ? 'OK(5列=25, 6列=1, 无章号=null)' : ('解析结果 ' + a + ',' + b + ',' + c);
   });
 
+  // ── 阶段 4：剧情创意提案器（结构化 + 引用核验，AI 调用不参与冒烟）────
+  await check('AI 错误如实转述：余额不足不再伪装成「解析失败」', async () => {
+    // 回归守卫：实测本项目用的网关在余额不足时返回 HTTP 402
+    // {"code":"INSUFFICIENT_BALANCE","message":"余额不足","data":{"retryAfterSeconds":39}}，
+    // 既没有 choices 也没有 error 字段。旧代码只看 choices → 空字符串 → 报「AI 结果无法解析」，
+    // 把「没钱了」误报成「模型不听话」，排查方向完全跑偏。
+    const { aiProviderError, aiEmptyReplyError } = require(path.join(root, 'server.js'));
+    const pay402 = { code: 'INSUFFICIENT_BALANCE', message: '余额不足', data: { retryAfterSeconds: 39 } };
+    const a = aiProviderError(pay402);
+    const b = aiProviderError({ error: { message: 'rate limit exceeded' } });
+    const c = aiProviderError({ choices: [{ message: { content: 'hi' } }] });
+    const d = aiEmptyReplyError(pay402, '', 'AI 审查返回格式无法解析');
+    const ok = /INSUFFICIENT_BALANCE/.test(a) && /余额不足/.test(a) && /39/.test(a)
+      && b === 'rate limit exceeded' && c === ''
+      && /AI 服务返回错误/.test(d) && !/解析/.test(d);
+    return ok ? ('OK(' + a + ')') : JSON.stringify({ a, b, c, d });
+  });
+
+  await check('剧情提案：schema 校验拒绝不合格输出', async () => {
+    // 纯函数断言：模型返回散文/半成品时必须明确报错，而不是当成提案展示。
+    const { validatePlotProposals } = require(path.join(root, 'server.js'));
+    const refs = { foreshadow: ['韩铮背后势力'], role: ['陆征'], setting: ['永途公路'] };
+    const good = {
+      title: '白烬回响', trigger: '旧信标亮起', conflict: '谁先拿到坐标', payoff: '先手优势',
+      risk: '可能过早暴露', span: '2~3 章', differsFrom: '首案，无重复',
+      uses: [{ kind: 'role', name: '陆征' }, { kind: 'foreshadow', name: '韩铮背后势力' }]
+    };
+    const notArray = validatePlotProposals('这是一段散文，不是 JSON', refs, 3);
+    const missing = validatePlotProposals([{ title: '只有标题' }], refs, 3);
+    const okCase = validatePlotProposals([good], refs, 1);
+    const arr = validatePlotProposals([good, { title: '坏的' }, 'string'], refs, 1);
+    const ok =
+      notArray.ok === false && /不合格/.test(notArray.error) &&
+      missing.ok === false && /缺字段/.test(missing.error) &&
+      okCase.ok === true && okCase.proposals[0].title === '白烬回响' &&
+      arr.ok === true && arr.proposals.length === 1 && arr.dropped.length === 2;
+    return ok ? 'OK(散文/缺字段被拒, 合法项通过, 拆出 2 个不合格项)'
+      : JSON.stringify({ notArray: notArray.error, missing: missing.error, okLen: okCase.proposals && okCase.proposals.length, dropped: arr.dropped });
+  });
+
+  await check('剧情提案：引用真实性核验(编造的名字被标出)', async () => {
+    const v = await evalExpr(`fetch('/api/health?project=' + encodeURIComponent(currentProject)).then(r => r.json()).then(h => JSON.stringify({ refName: ((h.foreshadow || {}).items || [])[0] ? h.foreshadow.items[0].title : '' }))`);
+    let o;
+    try { o = JSON.parse(v); } catch (_) { return v; }
+    const { validatePlotProposals } = require(path.join(root, 'server.js'));
+    const realName = o.refName || '';
+    const p = {
+      title: 'T', trigger: 't', conflict: 'c', payoff: 'p', risk: 'r', span: '1 章', differsFrom: '首案',
+      uses: [
+        { kind: 'foreshadow', name: realName || '占位' },
+        { kind: 'role', name: '根本没这个人XYZ' }
+      ]
+    };
+    const r = validatePlotProposals([p], { foreshadow: realName ? [realName] : [], role: [], setting: [] }, 1);
+    if (!r.ok) return '校验失败: ' + r.error;
+    const uses = r.proposals[0].uses;
+    const invented = r.proposals[0].invented;
+    const ok = uses.length === 2 && uses[0].verified === true && uses[1].verified === false && invented.length === 1;
+    return ok ? ('OK(真实引用 ✓ / 编造「' + invented[0] + '」已标出)') : JSON.stringify(uses);
+  });
+
+  await check('剧情提案：采纳护栏(schema/路径)不触发 LLM', async () => {
+    // 只打护栏分支：① 非法提案 ② 越界路径。两者都在调用模型之前返回，不花钱。
+    const v = await evalExpr(`(async () => {
+      const j = (u, b) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+      const bad = await j('/api/plot/adopt', { project: currentProject, proposal: { title: '只有标题' } });
+      const evil = await j('/api/plot/adopt', {
+        project: currentProject,
+        targetPath: '../../evil.md',
+        proposal: { title: 'T', trigger: 't', conflict: 'c', payoff: 'p', risk: 'r', span: '1 章', differsFrom: '首案' }
+      });
+      const dev = await fetch('/api/plot/devices?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+      return JSON.stringify({
+        ok: /缺字段/.test(bad.error || '') && /unsafe or invalid/.test(evil.error || '') && Array.isArray(dev.devices),
+        badErr: (bad.error || '').slice(0, 26), evilErr: (evil.error || '').slice(0, 26), devices: (dev.devices || []).length
+      });
+    })()`);
+    try { const o = JSON.parse(v); return o.ok ? ('OK(' + o.badErr + ' / ' + o.evilErr + ', 桥段库 ' + o.devices + ' 条)') : v; } catch (_) { return v; }
+  });
+
+  await check('剧情提案：标签页渲染且不自动调用 AI', async () => {
+    const v = await evalExpr(`(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      openAnalysis('plot');
+      await sleep(400);
+      const body = document.getElementById('plotBody');
+      const paneOn = document.getElementById('analysisPanePlot').classList.contains('on');
+      const card = document.getElementById('analysisCard').getAttribute('data-pane');
+      const gen = document.getElementById('plotGenBtn');
+      // 关键：进标签不应自动生成（AI 调用必须由点击触发）
+      const noAuto = body.querySelectorAll('.plotCard').length === 0 && !/正在生成/.test(body.textContent || '');
+      const dev = body.querySelector('.plotDevices');
+      const hasHint = /只出方案|还没有提案/.test(body.textContent || '');
+      openAnalysis('health');
+      for (let i = 0; i < 40; i++) { await sleep(100); if (document.querySelector('#healthBody [data-hplot]')) break; }
+      const link = document.querySelector('#healthBody [data-hplot]');
+      let jumped = false;
+      if (link) { link.click(); await sleep(300); jumped = document.getElementById('analysisPanePlot').classList.contains('on'); }
+      document.getElementById('analysisClose').click();
+      return JSON.stringify({ ok: paneOn && card === 'plot' && !!gen && noAuto && hasHint, paneOn, card, hasGen: !!gen, noAuto, hasDevices: !!dev, hasHint, link: !!link, jumped });
+    })()`);
+    try {
+      const o = JSON.parse(v);
+      return o.ok && o.jumped ? 'OK(不自动调用 AI · 监控→提案入口可用)' : v;
+    } catch (_) { return v; }
+  });
+
   // ── 阶段 3：去 AI 味（离线规则引擎 + 文风指纹）────────────────────
   await check('AI 味检测：规则引擎能区分 AI 稿与自然稿', async () => {
     // 直接对纯函数做标定断言：AI 稿（汇报式结论句 + 解释性旁白 + 精确量化 + 清单式排比）
@@ -1260,7 +1367,7 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(✓命中/点击跳章)' : v; } catch (_) { return v; }
   });
-  await check('分析入口合并为单按钮(6 视图→1 入口)', async () => {
+  await check('分析入口合并为单按钮(7 视图→1 入口)', async () => {
     const v = await evalExpr(`JSON.stringify({
       has: !!document.getElementById('analysisBtn'),
       oldBtns: ['matrixBtn','boardBtn','linkManagerBtn','bookStatsBtn','timelineBtn'].filter(id => !!document.getElementById(id)),
@@ -1270,7 +1377,7 @@ async function main() {
     })`);
     try {
       const o = JSON.parse(v);
-      const seq = 'health,matrix,board,link,stats,timeline';
+      const seq = 'health,plot,matrix,board,link,stats,timeline';
       const ok = o.has && o.oldBtns.length === 0 && o.oldModals.length === 0 && o.tabs.join(',') === seq && o.panes.join(',') === seq;
       return ok ? 'OK(旧入口/旧弹窗已清空)' : v;
     } catch (_) { return v; }
@@ -1283,7 +1390,7 @@ async function main() {
         await sleep(200);
         const card = document.getElementById('analysisCard');
         const report = [];
-        for (const tab of ['health','matrix','board','link','stats','timeline']) {
+        for (const tab of ['health','plot','matrix','board','link','stats','timeline']) {
           switchAnalysisTab(tab);
           await sleep(80);
           report.push({
@@ -1296,7 +1403,7 @@ async function main() {
         const exclusive = report.every(r => r.paneOn === r.tab && r.tabOn === r.tab && r.attr === r.tab);
         // 隐藏的 pane 必须是真正不显示（display:none），否则会叠在一起。
         // 注意排除当前激活的 timeline —— 它本来就该显示。
-        const hiddenNotShown = ['health','matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
+        const hiddenNotShown = ['health','plot','matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
         const titleOk = (document.getElementById('analysisTitleMain').textContent || '').trim().length > 0;
         document.getElementById('analysisClose').click(); // 收尾：关掉，避免影响后续用例
         return JSON.stringify({ ok: exclusive && titleOk && hiddenNotShown, report, hiddenNotShown });

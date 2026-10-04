@@ -1337,6 +1337,7 @@
   }
   /* 宽度随标签页切换：保留各视图原本各自调好的最佳宽度，不强行统一成一个值 */
   .modal.analysisModal[data-pane="health"] { width: min(820px, 94vw); }
+  .modal.analysisModal[data-pane="plot"] { width: min(920px, 96vw); }
   .modal.analysisModal[data-pane="board"] { width: min(1000px, 94vw); }
   .modal.analysisModal[data-pane="link"] { width: min(640px, 94vw); }
   .modal.analysisModal[data-pane="stats"] { width: min(680px, 94vw); }
@@ -1730,6 +1731,28 @@
   .dsInfoWrap { margin-top: 6px; }
   .dsInfoWrap summary { font-size: 11px; color: var(--muted); cursor: pointer; }
   .dsNote { font-size: 10.5px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+  /* ── 剧情创意提案器 ── */
+  .plotBody { overflow-y: auto; flex: 1; min-height: 0; }
+  .plotTop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .plotHint { font-size: 11.5px; color: var(--muted); line-height: 1.6; flex: 1 1 320px; min-width: 0; }
+  .plotGen { padding: 6px 14px; font-size: 12px; border: 1px solid var(--accent); border-radius: 9px; background: transparent; color: var(--accent); cursor: pointer; }
+  .plotGen:hover { background: rgba(180,83,9,.10); }
+  .plotGen:disabled { opacity: .55; cursor: default; }
+  .plotGhost { padding: 5px 11px; font-size: 11.5px; border: 1px solid var(--panel-border); border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; }
+  .plotGhost:hover { color: var(--accent); border-color: var(--accent); }
+  .plotCard { border: 1px solid var(--panel-border); border-radius: 12px; padding: 11px 13px; margin-bottom: 10px; background: rgba(15,23,42,.03); }
+  .plotCard h5 { margin: 0 0 8px; font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .plotSpan { font-size: 11px; font-weight: 400; color: var(--accent); border: 1px solid var(--panel-border); border-radius: 7px; padding: 1px 7px; }
+  .plotField { font-size: 12px; line-height: 1.62; margin-bottom: 4px; display: flex; gap: 7px; }
+  .plotField b { flex: 0 0 auto; color: var(--muted); font-weight: 600; min-width: 74px; }
+  .plotField span { flex: 1; min-width: 0; color: var(--text); }
+  .plotUses { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .plotRef { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(15,23,42,.04); }
+  .plotRef.bad { border-color: rgba(239,68,68,.5); color: #ef4444; background: rgba(239,68,68,.08); }
+  .plotFoot { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .plotWarn { font-size: 11px; color: #ef4444; }
+  .plotDevices { font-size: 11px; color: var(--muted); }
+  .plotDevices summary { cursor: pointer; }
   /* 时间线（作者手动维护的重要节点） */
   /* .timelineModal 宽度已由 [data-pane="timeline"] 接管 */
   .timelineBody { overflow-x: auto; padding-bottom: 4px; }
@@ -2279,6 +2302,7 @@
       </div>
       <div class="analysisTabs">
         <button class="analysisTab on" data-pane="health">监控</button>
+        <button class="analysisTab" data-pane="plot">剧情提案</button>
         <button class="analysisTab" data-pane="matrix">关系矩阵</button>
         <button class="analysisTab" data-pane="board">状态看板</button>
         <button class="analysisTab" data-pane="link">手动连线</button>
@@ -2288,6 +2312,9 @@
       <div class="analysisPanes">
         <div class="analysisPane on" id="analysisPaneHealth" data-pane="health">
           <div id="healthBody" class="healthBody"></div>
+        </div>
+        <div class="analysisPane" id="analysisPanePlot" data-pane="plot">
+          <div id="plotBody" class="plotBody"></div>
         </div>
         <div class="analysisPane" id="analysisPaneMatrix" data-pane="matrix">
           <div class="matrixTabs">

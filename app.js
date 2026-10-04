@@ -796,6 +796,7 @@ function renderMatrix() {
 // 保持原样，只是改由 switchAnalysisTab 按需调用。
 const ANALYSIS_TABS = {
   health:   { title: '监控中心', sub: 'MONITOR' },
+  plot:     { title: '剧情提案', sub: 'PLOT IDEAS' },
   matrix:   { title: '关系矩阵', sub: 'MATRIX' },
   board:    { title: '状态看板', sub: 'BOARD' },
   link:     { title: '手动连线', sub: 'LINKS' },
@@ -833,6 +834,7 @@ function switchAnalysisTab(tab) {
   else if (tab === 'stats') loadBookStats();
   else if (tab === 'timeline') renderTimelineList();
   else if (tab === 'health') loadHealth();
+  else if (tab === 'plot') loadPlot();
 }
 
 function openAnalysis(tab) {
@@ -5546,6 +5548,145 @@ async function loadBackupList() {
   }
 }
 
+// ── 剧情创意提案器（服务端结构化 + 引用核验；AI 调用一律由用户点击触发）──────
+let plotCache = { key: '', proposals: [], at: '', deviceCount: 0, dropped: [], progress: null };
+let plotDevices = [];
+let plotBusy = false;
+
+async function loadPlot() {
+  const body = document.getElementById('plotBody');
+  if (!body) return;
+  const key = currentProject || '';
+  if (plotCache.key !== key) { plotCache = { key, proposals: [], at: '', deviceCount: 0, dropped: [], progress: null }; }
+  try {
+    const d = await fetch('/api/plot/devices?project=' + encodeURIComponent(currentProject)).then(r => r.json());
+    plotDevices = d.devices || [];
+  } catch (_) {}
+  if (analysisTab !== 'plot') return;
+  body.innerHTML = renderPlot();
+  wirePlot();
+}
+
+function renderPlot() {
+  const progs = plotCache.proposals || [];
+  const card = (p, i) =>
+    '<div class="plotCard" data-idx="' + i + '">' +
+      '<h5>' + escapeHtml(p.title) + '<span class="plotSpan">' + escapeHtml(p.span) + '</span></h5>' +
+      '<div class="plotField"><b>触发点</b><span>' + escapeHtml(p.trigger) + '</span></div>' +
+      '<div class="plotField"><b>冲突设计</b><span>' + escapeHtml(p.conflict) + '</span></div>' +
+      '<div class="plotField"><b>预期爽点</b><span>' + escapeHtml(p.payoff) + '</span></div>' +
+      '<div class="plotField"><b>风险</b><span>' + escapeHtml(p.risk) + '</span></div>' +
+      (p.differsFrom ? '<div class="plotField"><b>与已用桥段</b><span>' + escapeHtml(p.differsFrom) + '</span></div>' : '') +
+      ((p.uses || []).length
+        ? '<div class="plotUses">' + p.uses.map(u =>
+            '<span class="plotRef' + (u.verified ? '' : ' bad') + '" title="' +
+              (u.verified ? '已在项目里核验存在' : '项目里找不到这个名字——模型可能编造了') + '">' +
+              escapeHtml(u.name) + (u.verified ? ' ✓' : ' ✕') + '</span>').join('') + '</div>'
+        : '') +
+      '<div class="plotFoot">' +
+        '<button class="plotAdopt" data-idx="' + i + '">采纳 → 生成分章大纲提案</button>' +
+        ((p.invented || []).length ? '<span class="plotWarn">引用了 ' + p.invented.length + ' 个项目里不存在的对象，采纳前请核对</span>' : '') +
+      '</div>' +
+    '</div>';
+
+  const devHtml = plotDevices.length
+    ? '<details class="plotDevices"><summary>已用桥段 ' + plotDevices.length + ' 条（新提案会避开它们）</summary>' +
+      plotDevices.slice(-20).reverse().map(d =>
+        '<div class="plotField"><b>' + escapeHtml(d.span || '—') + '</b><span>' + escapeHtml(d.title) + '：' + escapeHtml((d.summary || '').slice(0, 80)) +
+        (d.chapter ? '（第 ' + d.chapter + ' 章）' : '') + '</span></div>').join('') + '</details>'
+    : '<span class="plotDevices">还没有已用桥段记录 —— 采纳第一个方案后会自动记下来，后续提案会避开它。</span>';
+
+  let listHtml;
+  if (plotBusy) {
+    listHtml = '<div class="hint">正在生成…（要给模型 10~30 秒；这一步会消耗额度，只在你点按钮时才发生）</div>';
+  } else if (progs.length) {
+    listHtml = '<div class="statsSection"><h4>本批 ' + progs.length + ' 个方向' +
+      (plotCache.at ? '（' + escapeHtml(plotCache.at) + ' 生成）' : '') + '</h4>' +
+      progs.map(card).join('') +
+      ((plotCache.dropped && plotCache.dropped.length)
+        ? '<div class="plotWarn">另有 ' + plotCache.dropped.length + ' 个方向因格式不合格被丢弃：' + escapeHtml(plotCache.dropped.slice(0, 3).join('；')) + '</div>' : '') +
+      '</div>';
+  } else {
+    listHtml = '<div class="hint">还没有提案。点上面「生成 3~5 个方向」——上下文是服务端算好的真实状态' +
+      '（未回收伏笔、久未出场的角色、最近章节）＋ 已用桥段记录，并要求模型只引用真实存在的对象，编造的名字会被标红。</div>';
+  }
+
+  return '' +
+    '<div class="plotTop">' +
+      '<div class="plotHint">剧情军师<strong>只出方案、不写正文</strong>。每个方向必须说明<strong>可见的麻烦</strong>与<strong>代价</strong>，' +
+        '并自述与已用桥段的区别，避免反复给同一招。' +
+        (plotCache.progress ? '（当前进度：第 ' + plotCache.progress.maxChapter + ' 章 · 待回收伏笔 ' + plotCache.progress.openForeshadow + ' 条）' : '') +
+      '</div>' +
+      '<button class="plotGen" id="plotGenBtn"' + (plotBusy ? ' disabled' : '') + '>' +
+        (plotBusy ? '生成中…' : (progs.length ? '换一批' : '生成 3~5 个方向')) + '</button>' +
+    '</div>' +
+    devHtml +
+    listHtml;
+}
+
+function wirePlot() {
+  const body = document.getElementById('plotBody');
+  if (!body) return;
+  const gen = document.getElementById('plotGenBtn');
+  if (gen) gen.addEventListener('click', generatePlots);
+  body.querySelectorAll('.plotAdopt').forEach(btn => {
+    btn.addEventListener('click', () => adoptPlot(Number(btn.dataset.idx)));
+  });
+}
+
+async function generatePlots() {
+  if (plotBusy) return;
+  plotBusy = true;
+  const body = document.getElementById('plotBody');
+  if (body) { body.innerHTML = renderPlot(); wirePlot(); }
+  try {
+    const res = await fetch('/api/plot/propose', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject, count: 4 })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    plotCache = {
+      key: currentProject || '', proposals: d.proposals || [], at: new Date().toLocaleTimeString('zh-CN'),
+      deviceCount: d.deviceCount || 0, dropped: d.dropped || [], progress: d.progress || null
+    };
+    showToast('已生成 ' + plotCache.proposals.length + ' 个方向', 'success');
+  } catch (e) {
+    showToast('生成失败：' + e.message, 'error');
+  }
+  plotBusy = false;
+  if (body && analysisTab === 'plot') { body.innerHTML = renderPlot(); wirePlot(); }
+}
+
+async function adoptPlot(i) {
+  const p = (plotCache.proposals || [])[i];
+  if (!p) return;
+  let ok = true;
+  if (typeof confirmDialog === 'function') {
+    ok = await confirmDialog('把「' + p.title + '」落成《分章大纲》提案？\n\n会在最新一卷目录下新建一个 .md 提案文件，你审阅后接受才会写盘。', { okText: '生成提案' });
+  }
+  if (!ok) return;
+  const btn = document.querySelector('#plotBody .plotAdopt[data-idx="' + i + '"]');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  try {
+    const res = await fetch('/api/plot/adopt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject, proposal: p })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    plotDevices = []; // 已记入桥段库，下次进标签重新拉
+    showToast('已生成大纲提案：' + d.target, 'success');
+    closeAnalysis();
+    if (typeof switchSidebarMode === 'function') switchSidebarMode('files');
+    if (typeof openFile === 'function') await openFile(d.proposal.file);
+    if (typeof renderFileProposal === 'function') renderFileProposal(d.proposal);
+  } catch (e) {
+    showToast('采纳失败：' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '采纳 → 生成分章大纲提案'; }
+  }
+}
+
 // ── AI 味检测（离线规则引擎；服务端算，前端只渲染。判定权始终在作者）──────
 async function runDeslopScan() {
   const box = document.getElementById('deslopBox');
@@ -5779,7 +5920,11 @@ function renderHealth(d) {
   return '' +
     '<div class="healthGrid">' + cards + '</div>' +
     volRow +
-    '<div class="healthSection"><h4>需要你动手的事（' + alerts.length + '）</h4>' + alertHtml + '</div>' +
+    '<div class="healthSection"><h4>需要你动手的事（' + alerts.length + '）</h4>' + alertHtml +
+      '<div class="healthSub" style="margin-top:8px">' +
+        '<button class="plotGhost" data-hplot="1" title="带着这些待办去生成剧情方向">用这些待办生成剧情方案 →</button>' +
+      '</div>' +
+    '</div>' +
     '<div class="healthSection"><h4>写作节奏</h4>' +
       '<div class="healthSub">最后更新：' + escapeHtml(daysTxt) +
       ' · 平均每章 ' + fmtNum(p.avgWordsPerChapter || 0) + ' 字' +
@@ -5833,6 +5978,9 @@ function wireHealthClicks() {
   body._healthWired = true;
   let lastHealth = null;
   body.addEventListener('click', async (e) => {
+    // ⓪ 从监控直达剧情提案（待办 → 方案）
+    const toPlot = e.target.closest('[data-hplot]');
+    if (toPlot) { switchAnalysisTab('plot'); return; }
     // ① 告警条目 → 直接跳节点
     const jump = e.target.closest('[data-hjump]');
     if (jump) {

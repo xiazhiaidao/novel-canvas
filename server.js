@@ -1406,7 +1406,8 @@ async function auditConsistency(root, project, targetId, content) {
     recordUsage(api.model, data.usage, data, project);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
-    if (!parsed) throw new Error('AI 审查返回格式无法解析：' + String(reply).slice(0, 200));
+    if (!parsed) throw new Error(aiEmptyReplyError(data, reply, 'AI 审查返回格式无法解析'));
+      
     return { ok: true, ...parsed, packageStats: pkg.stats, weights: pkg.weights, targetTitle: targetNode ? targetNode.title : '', targetVolume: pkg.targetVolume, targetCore: pkg.targetCore };
   } finally {
     clearTimeout(timer);
@@ -1476,7 +1477,7 @@ async function advanceConsistency(root, project, targetId, content) {
     recordUsage(api.model, data.usage, data, project);
     const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
     const parsed = parseJsonFromAI(reply);
-    if (!parsed) throw new Error('AI 推进结果无法解析：' + String(reply).slice(0, 200));
+    if (!parsed) throw new Error(aiEmptyReplyError(data, reply, 'AI 推进结果无法解析'));
     const created = [];
     const allUpdates = []
       .concat(Array.isArray(parsed.cardUpdates) ? parsed.cardUpdates : [])
@@ -1576,7 +1577,7 @@ async function writeNextChapter(root, project, targetId, content, instruction) {
     const data = await r.json();
     recordUsage(api.model, data.usage, data, project);
     let reply = (aiMessageContent(data?.choices?.[0]?.message) || data?.error?.message || '').trim();
-    if (!reply) throw new Error('模型未返回内容');
+    if (!reply) throw new Error(aiEmptyReplyError(data, reply, '模型未返回内容'));
     const fence = reply.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
     if (fence) reply = fence[1].trim();
     let title = '';
@@ -2642,6 +2643,171 @@ function loadVoiceprint(project) {
   try { return JSON.parse(fs.readFileSync(voiceprintFile(project), 'utf8')); } catch (_) { return null; }
 }
 
+// ══ 剧情创意提案器（v1.24.0 阶段 4）══════════════════════════════════
+// 与「在 AI 聊天里问一句给我几个方案」的区别：
+//   ① 上下文是**服务端算好的真实状态**（ProjectHealth + 未回收伏笔 + 久未出现角色 + 最近章节），不让模型自己猜；
+//   ② 输出**结构化 schema**，逐字段校验，不合格直接报错（不接受「看起来像提案」的散文）；
+//   ③ **已用桥段记忆**（.data/plot-devices-<project>.json）：新提案必须自述与旧桥段的区别，避免反复给同一招；
+//   ④ 引用的伏笔/角色/设定**必须在项目里真实存在**，服务端逐条核验，编造的会被标出来；
+//   ⑤ 采纳后转成**分章大纲提案**，走既有 /api/apply_proposal 审阅写盘，不直写。
+function plotDevicesFile(project) {
+  const safe = String(project || 'default').replace(/[\\/:*?"<>|]/g, '_');
+  return path.join(ROOT, '.data', 'plot-devices-' + safe + '.json');
+}
+function loadPlotDevices(project) {
+  try {
+    const d = JSON.parse(fs.readFileSync(plotDevicesFile(project), 'utf8'));
+    return Array.isArray(d.devices) ? d : { devices: [] };
+  } catch (_) { return { devices: [] }; }
+}
+function savePlotDevices(project, data) {
+  try {
+    fs.mkdirSync(path.join(ROOT, '.data'), { recursive: true });
+    fs.writeFileSync(plotDevicesFile(project), JSON.stringify(data, null, 2), 'utf8');
+  } catch (_) {}
+}
+function appendPlotDevice(project, rec) {
+  const d = loadPlotDevices(project);
+  d.devices.push(rec);
+  if (d.devices.length > 200) d.devices = d.devices.slice(-200);
+  savePlotDevices(project, d);
+  return d.devices.length;
+}
+
+// 提案 schema：字段名 / 中文说明 / 是否必填 / 长度上限
+const PLOT_FIELDS = [
+  { key: 'title', label: '方案名', required: true, max: 40 },
+  { key: 'trigger', label: '触发点', required: true, max: 200 },
+  { key: 'conflict', label: '冲突设计', required: true, max: 260 },
+  { key: 'payoff', label: '预期爽点', required: true, max: 200 },
+  { key: 'risk', label: '风险', required: true, max: 200 },
+  { key: 'span', label: '预计跨度', required: true, max: 40 },
+  { key: 'differsFrom', label: '与已用桥段的区别', required: true, max: 200 }
+];
+
+// 引用真实性核验：只在项目真实存在的名单里找（先精确、再双向包含，容忍简称）
+function verifyPlotRefs(uses, refIndex) {
+  const out = [];
+  for (const u of (Array.isArray(uses) ? uses : [])) {
+    const kind = ['foreshadow', 'role', 'setting'].includes(String(u && u.kind)) ? String(u.kind) : 'other';
+    const name = String((u && u.name) || '').trim();
+    if (!name) continue;
+    const pool = refIndex[kind] || [];
+    const hit = pool.find(x => x === name) || pool.find(x => x.includes(name) || name.includes(x));
+    out.push({ kind, name, verified: !!hit, matchedAs: hit || '' });
+  }
+  return out;
+}
+
+// schema 校验：不合格的项丢弃并记录原因；全不合格 → 报错（这就是「schema 校验失败分支」）
+function validatePlotProposals(raw, refIndex, minCount) {
+  const want = Math.max(1, Number(minCount) || 3);
+  const arr = Array.isArray(raw) ? raw : (raw && (raw.proposals || raw.items || raw.plans));
+  if (!Array.isArray(arr) || !arr.length) {
+    return { ok: false, error: '提案格式不合格：模型没有返回数组（应为 [{...}]）' };
+  }
+  const proposals = [];
+  const dropped = [];
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') { dropped.push('非对象项'); continue; }
+    const p = {};
+    const missing = [];
+    for (const f of PLOT_FIELDS) {
+      let v = item[f.key];
+      if (Array.isArray(v)) v = v.join('；');
+      v = String(v == null ? '' : v).trim();
+      if (!v) { if (f.required) missing.push(f.label); continue; }
+      if (v.length > f.max) v = v.slice(0, f.max);
+      p[f.key] = v;
+    }
+    if (missing.length) { dropped.push('缺字段[' + missing.join('/') + ']'); continue; }
+    p.uses = verifyPlotRefs(item.uses || item.refs, refIndex);
+    p.invented = p.uses.filter(u => !u.verified).map(u => u.name);
+    proposals.push(p);
+  }
+  if (!proposals.length) {
+    return { ok: false, error: '提案格式不合格：' + (dropped.slice(0, 3).join('；') || '无有效项') + '（title/trigger/conflict/payoff/risk/span/differsFrom 必须全部非空）' };
+  }
+  return { ok: true, proposals, dropped, asked: want };
+}
+
+// 供提案引用的「真实名单」：写进 prompt，从源头减少编造
+function plotRefIndex(root) {
+  const nodes = buildNodes(root);
+  const foreshadow = nodes.filter(n => n.label === '伏笔' && isForeshadowOpen(foreshadowStatusOf(n)))
+    .map(n => cleanNodeTitle(n.title)).filter(Boolean);
+  const role = nodes.filter(n => n.label === '角色' && looksLikeCharacterCard(n)).map(n => cleanNodeTitle(n.title));
+  const setting = nodes.filter(n => n.label === '设定' && !n.unrecognized).map(n => cleanNodeTitle(n.title));
+  return { foreshadow, role, setting };
+}
+
+// 供提案用的「剧情锚点章节」：按章号升序、且跳过备份/归档目录。
+// 为什么要单独抽一个：buildNodes 的返回顺序是**目录扫描顺序**，备份目录（如 `旧版备份/`）会被夹在中间，
+// 直接 slice(-5) 取到的「最近章节」可能是第 1~3 章的副本——与「已推进到第 N 章」自相矛盾，
+// 模型就会从错的进度接着编（实测踩到过）。
+function plotAnchorChapters(root) {
+  const all = buildNodes(root).filter(n => n.label === '章节');
+  const clean = all.filter(c => !PLOT_BACKUP_DIR.test(String(c.file || '')));
+  const pool = clean.length ? clean : all;
+  return pool.slice().sort((a, b) => (Number(a.chapter) || 0) - (Number(b.chapter) || 0));
+}
+
+// 章节标题去掉「第N章」前缀（标题里常自带一个，和外部章号重复成「第20章 第十九章 逆序」）
+function stripChapterPrefix(title) {
+  return String(title || '').replace(/^第\s*[0-9一二三四五六七八九十百]+\s*[章回节]\s*/, '').trim();
+}
+
+function buildPlotContext(root, project) {
+  const h = buildProjectHealth(root, project);
+  const refs = plotRefIndex(root);
+  const devices = loadPlotDevices(project).devices;
+  const anchors = plotAnchorChapters(root);
+  const recent = anchors.slice(-5).map(c => '第' + (c.chapter || '?') + '章 ' + stripChapterPrefix(cleanNodeTitle(c.title)));
+  const openFs = (h.foreshadow.items || []).slice(0, 12)
+    .map(f => f.title + '（' + f.status + (f.chaptersSince != null ? '，已埋 ' + f.chaptersSince + ' 章' : '') + '）');
+  const missRoles = (h.characters || []).filter(c => c.gap != null && c.gap >= 10)
+    .slice(0, 8).map(c => c.title + '（自第 ' + c.lastChapter + ' 章后 ' + c.gap + ' 章未出现）');
+  const lines = [
+    '【项目现状（服务端实时计算，视为事实）】',
+    '进度：共 ' + h.progress.chapterCount + ' 章 / ' + h.progress.totalWords + ' 字，' + h.progress.volumeCount + ' 卷，已推进到第 ' + h.progress.maxChapter + ' 章'
+      + (h.progress.daysSinceUpdate != null ? '，最后更新 ' + h.progress.daysSinceUpdate + ' 天前' : ''),
+    '最近章节：' + (recent.join(' → ') || '（无）'),
+    '未回收伏笔 ' + h.foreshadow.open + ' 条：' + (openFs.join('；') || '（无）')
+  ];
+  if (missRoles.length) lines.push('久未出现的角色：' + missRoles.join('；'));
+  const warns = (h.alerts || []).filter(a => a.level === 'warn').map(a => a.text);
+  if (warns.length) lines.push('待处理：' + warns.slice(0, 6).join('；'));
+  if (devices.length) {
+    lines.push('【已用过的桥段（' + devices.length + ' 条；新方案必须与它们不同，并在 differsFrom 里说清区别）】');
+    for (const d of devices.slice(-20)) {
+      lines.push('- ' + d.title + '（' + (d.span || '') + '）：' + d.summary + (d.chapter ? '（已用于第 ' + d.chapter + ' 章）' : ''));
+    }
+  } else {
+    lines.push('【已用桥段】暂无记录（这是第一批提案）');
+  }
+  lines.push('【可引用的真实对象（引用时必须用这里的字面名称，不得编造）】');
+  lines.push('- 未回收伏笔：' + (refs.foreshadow.join('、') || '（无）'));
+  lines.push('- 角色：' + (refs.role.join('、') || '（无）'));
+  lines.push('- 设定：' + (refs.setting.slice(0, 30).join('、') || '（无）'));
+  return { text: lines.join('\n'), refs, health: h, deviceCount: devices.length };
+}
+
+// 提案大纲的落盘位置：默认放到「最新一章所在的卷目录」下，**新建文件**而不是改写既有大纲
+// （既有大纲里是作者自己写的东西，AI 生成的内容不该直接混进去；新文件也让 proposal 的 diff 干净可读）。
+// ⚠️ 取「最新一章」时必须跳过备份/归档类目录——否则《房车求生》会把大纲写进
+// `第一卷/旧版备份/AI味修订前-20260926/`。用**通用词**判断（备份/归档/backup…），
+// 不硬编码任何个人目录名（项目特有的排除规则应写进 novel-canvas.config.json）。
+const PLOT_BACKUP_DIR = /(备份|归档|存档|backup|archive|旧版|bak)/i;
+function defaultPlotOutlinePath(root, prop) {
+  const anchors = plotAnchorChapters(root);
+  const last = anchors[anchors.length - 1];
+  const dir = last && last.file ? path.posix.dirname(normalizeRel(last.file)) : '';
+  const safeTitle = String(prop.title || '剧情提案').replace(/[\\/:*?"<>|\s]/g, '').slice(0, 20) || '剧情提案';
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const name = '剧情提案-' + stamp + '-' + safeTitle + '.md';
+  return dir && dir !== '.' ? dir + '/' + name : name;
+}
+
 // ── 时间线 ───────────────────────────────────────────────
 // 时间线改为作者手动维护的重要节点（存于布局文件 timelineNodes，见 /api/timeline）。
 // 旧版自动抽取「第N天 / 年月日」已移除：长篇剧情动辄跨越百年，按时间标记无法准确表达。
@@ -2805,6 +2971,30 @@ function aiMessageContent(msg) {
   if (typeof c === 'string' && c.trim()) return c;
   if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()) return msg.reasoning_content;
   return typeof c === 'string' ? c : '';
+}
+
+// 从提供方响应里提取**可读的错误原因**。
+// 为什么需要它：并非所有网关都按 OpenAI 规范返回 `error.message`——本项目实测遇到过
+// `{"code":"INSUFFICIENT_BALANCE","message":"余额不足","data":{"retryAfterSeconds":39}}`（HTTP 402），
+// 没有 choices、也没有 error 字段。旧代码只看 choices → 拿到空字符串 → 报「AI 结果无法解析」，
+// 把「余额不足」误报成「解析失败」，查错方向完全跑偏（老冒烟里那条长期失败的用例就是这么来的）。
+function aiProviderError(data) {
+  if (!data) return '';
+  if (typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+  if (data.error && typeof data.error.message === 'string' && data.error.message.trim()) return data.error.message.trim();
+  if (!data.choices && typeof data.message === 'string' && data.message.trim()) {
+    const code = data.code ? data.code + '：' : '';
+    const retry = data.data && data.data.retryAfterSeconds ? '（' + data.data.retryAfterSeconds + ' 秒后可重试）' : '';
+    return code + data.message.trim() + retry;
+  }
+  if (!data.choices && typeof data.msg === 'string' && data.msg.trim()) return data.msg.trim();
+  return '';
+}
+// 统一收口：reply 为空时，把提供方原因说清楚，而不是笼统报「解析失败」
+function aiEmptyReplyError(data, rawReply, fallback) {
+  const reason = aiProviderError(data);
+  if (reason) return 'AI 服务返回错误：' + reason;
+  return (fallback || 'AI 未返回可解析内容') + (rawReply ? '：' + String(rawReply).slice(0, 200) : '（响应为空）');
 }
 
 const AGENT_TOOLS = [
@@ -3256,7 +3446,7 @@ const server = http.createServer(async (req, res) => {
         recordUsage(api.model, data.usage, data, project);
         const reply = aiMessageContent(data?.choices?.[0]?.message) || '';
         parsed = parseJsonFromAI(reply);
-        if (!parsed) throw new Error('AI 改写结果无法解析：' + String(reply).slice(0, 200));
+        if (!parsed) throw new Error(aiEmptyReplyError(data, reply, 'AI 改写结果无法解析'));
       } finally {
         clearTimeout(timer);
       }
@@ -3290,6 +3480,150 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { error: e.message });
     }
   }
+
+  // ── 剧情创意提案器 ──
+  if (pathname === '/api/plot/devices' && req.method === 'GET') {
+    try {
+      const project = url.searchParams.get('project') || defaultProjectName();
+      const d = loadPlotDevices(projectNameOfRoot(resolveProjectRoot(project)));
+      return sendJson(res, { ok: true, devices: d.devices || [] });
+    } catch (e) { return sendJson(res, { error: e.message }); }
+  }
+  if (pathname === '/api/plot/device/remove' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = projectNameOfRoot(resolveProjectRoot(body.project || defaultProjectName()));
+      const d = loadPlotDevices(project);
+      const before = d.devices.length;
+      d.devices = d.devices.filter(x => x.id !== body.id);
+      savePlotDevices(project, d);
+      return sendJson(res, { ok: true, removed: before - d.devices.length });
+    } catch (e) { return sendJson(res, { error: e.message }); }
+  }
+  if (pathname === '/api/plot/propose' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = body.project || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      const pname = projectNameOfRoot(root);
+      const ctx = buildPlotContext(root, pname);
+      const want = Math.max(3, Math.min(5, Number(body.count) || 4));
+      const api = getApiConfig();
+      if (!api) throw new Error('AI 对话未配置：请设置 DEEPSEEK_API_KEY 后重启服务');
+      const sys = '你是长篇网文的剧情军师，**只出方案，不写正文**。给出 ' + want + ' 个互不重复的剧情方向。硬性要求：'
+        + '① 每个方案必须用到「可引用的真实对象」里已有的伏笔/角色/设定，名称逐字照抄，**禁止编造**；'
+        + '② 优先推进长期未回收的伏笔、把消失太久的角色拉回来；'
+        + '③ 每个方案都要有「可见的麻烦或代价」，不接受"气氛更紧张了"这类空话；'
+        + '④ differsFrom 写清与已用桥段的区别（没有已用桥段就写「首案，无重复」）；'
+        + '⑤ 只输出 JSON 数组，不要 Markdown 围栏、不要任何解释。'
+        + '结构：[{"title":"方案名(≤20字)","trigger":"触发点:什么事件把剧情推起来","conflict":"冲突设计:谁和谁/争什么/为什么不能退",'
+        + '"payoff":"预期爽点:读者看到什么会觉得值","risk":"风险:这个方案可能出的问题","span":"预计跨度:如 2~3 章",'
+        + '"uses":[{"kind":"foreshadow|role|setting","name":"字面名称"}],"differsFrom":"与已用桥段的区别"}]';
+      const userMsg = ctx.text + (body.instruction ? '\n\n【额外要求】\n' + String(body.instruction).trim() : '');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 150000);
+      let reply = '';
+      let aiData = null;
+      try {
+        const r = await fetch(api.base + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api.apiKey },
+          body: JSON.stringify({ model: api.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }], max_tokens: 4000, stream: false }),
+          signal: controller.signal
+        });
+        const data = await r.json();
+        aiData = data;
+        recordUsage(api.model, data.usage, data, project);
+        reply = aiMessageContent(data?.choices?.[0]?.message) || '';
+      } finally { clearTimeout(timer); }
+      // 先分清「提供方报错」与「模型真的返回了不能解析的东西」：
+      // 旧代码一律报「格式不合格」，会把「余额不足」误报成「模型不听话」，排查方向全错。
+      if (!reply) return sendJson(res, { error: aiEmptyReplyError(aiData, reply, '模型没有返回内容') });
+      const parsed = parseJsonFromAI(reply);
+      const v = validatePlotProposals(parsed, ctx.refs, want);
+      if (!v.ok) return sendJson(res, { error: v.error, raw: String(reply).slice(0, 500) });
+      return sendJson(res, {
+        ok: true, proposals: v.proposals, dropped: v.dropped, deviceCount: ctx.deviceCount,
+        progress: { maxChapter: ctx.health.progress.maxChapter, openForeshadow: ctx.health.foreshadow.open, chapters: ctx.health.progress.chapterCount }
+      });
+    } catch (e) { return sendJson(res, { error: e.message }); }
+  }
+  if (pathname === '/api/plot/adopt' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const project = body.project || defaultProjectName();
+      const root = resolveProjectRoot(project);
+      const pname = projectNameOfRoot(root);
+      // 先用**不需要 LLM** 的 schema 校验挡住非法输入（冒烟测试就靠这条护栏）
+      const v = validatePlotProposals([body.proposal], plotRefIndex(root), 1);
+      if (!v.ok) return sendJson(res, { error: v.error });
+      const prop = v.proposals[0];
+      const target = String(body.targetPath || '').trim() || defaultPlotOutlinePath(root, prop);
+      if (!isSafePath(target, root) || !isMdPath(target)) return sendJson(res, { error: 'unsafe or invalid target path' });
+      if (fs.existsSync(path.join(root, target))) return sendJson(res, { error: '目标文件已存在，请换个文件名：' + target });
+      const api = getApiConfig();
+      if (!api) throw new Error('AI 对话未配置：请设置 DEEPSEEK_API_KEY 后重启服务');
+      const ctx = buildPlotContext(root, pname);
+      const sys = '你是大纲规划师。把选定的剧情方案落成**可执行的分章大纲**。要求：'
+        + '① 明确覆盖哪几章（从第 X 章开始，章号要接在项目当前进度之后）；'
+        + '② 每章一段：「## 第N章 章名」+ 本章目标 / 冲突升级 / 结尾钩子；'
+        + '③ 标出伏笔埋设与回收点（用项目里已有的伏笔名称）；'
+        + '④ 保留项目既有的人名、地名与设定，**不新增项目里没出现过的专有名词**；'
+        + '⑤ 直接输出 Markdown 正文，不要代码围栏、不要解释。';
+      const userMsg = ctx.text + '\n\n【选定的方案】\n'
+        + PLOT_FIELDS.map(f => f.label + '：' + prop[f.key]).join('\n')
+        + '\n引用对象：' + (prop.uses.map(u => u.name + (u.verified ? '(已核验)' : '(未核验)')).join('、') || '无');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 150000);
+      let md = '';
+      let aiData = null;
+      try {
+        const r = await fetch(api.base + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api.apiKey },
+          body: JSON.stringify({ model: api.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }], max_tokens: 4000, stream: false }),
+          signal: controller.signal
+        });
+        const data = await r.json();
+        aiData = data;
+        recordUsage(api.model, data.usage, data, project);
+        md = (aiMessageContent(data?.choices?.[0]?.message) || '').trim();
+      } finally { clearTimeout(timer); }
+      const fence = md.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
+      if (fence) md = fence[1].trim();
+      if (!md) throw new Error(aiEmptyReplyError(aiData, md, '模型没有返回大纲内容'));
+      const head = '# ' + prop.title + '（剧情提案 → 分章大纲）\n\n'
+        + '> 由「剧情提案器」于 ' + new Date().toLocaleString('zh-CN') + ' 生成，采纳前请通读。\n'
+        + '> 触发点：' + prop.trigger + '\n> 冲突设计：' + prop.conflict + '\n> 预期爽点：' + prop.payoff
+        + '\n> 风险：' + prop.risk + '\n> 预计跨度：' + prop.span + '\n'
+        + (prop.uses.length ? '> 引用：' + prop.uses.map(u => u.name + (u.verified ? '' : '（未在项目里找到，需核对）')).join('、') + '\n' : '')
+        + (prop.differsFrom ? '> 与已用桥段的区别：' + prop.differsFrom + '\n' : '')
+        + '\n---\n\n';
+      const output = head + md;
+      const proposal = proposalSet({
+        id: 'p' + (proposalSeq++),
+        kind: 'file_edit',
+        file: target,
+        title: prop.title + '（剧情提案 → 分章大纲）',
+        oldContent: '',
+        newContent: output,
+        root,
+        project: pname
+      });
+      const deviceId = 'd' + Date.now();
+      const deviceCount = appendPlotDevice(pname, {
+        id: deviceId,
+        title: prop.title,
+        summary: prop.conflict,
+        span: prop.span,
+        chapter: ctx.health.progress.maxChapter + 1,
+        adoptAt: new Date().toISOString(),
+        file: target
+      });
+      return sendJson(res, { ok: true, proposal, target, deviceCount, deviceId });
+    } catch (e) { return sendJson(res, { error: e.message }); }
+  }
+
 
   // 监控中心：单一聚合接口（状态栏监控条 / 监控标签 / AI 上下文共用这一份数据）
   if (pathname === '/api/health' && req.method === 'GET') {
@@ -4465,4 +4799,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf, buildProjectHealth, foreshadowPlantedChapter, deslopAnalyze, deslopStats, buildVoiceprint, loadVoiceprint };
+module.exports = { listMdFiles, AGENT_ROLES, findNodeLoose, resolveFileLoose, buildNodes, resolveProjectRoot, volumeGroupOf, countWords, isForeshadowOpen, foreshadowStatusOf, buildProjectHealth, foreshadowPlantedChapter, deslopAnalyze, deslopStats, buildVoiceprint, loadVoiceprint, validatePlotProposals, loadPlotDevices, buildPlotContext, defaultPlotOutlinePath, aiProviderError, aiEmptyReplyError };
