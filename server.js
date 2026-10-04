@@ -2326,7 +2326,24 @@ const DESLOP_REGEX_RULES = [
   { key: 'reportLabel', name: '汇报式结论句', severity: 4, re: /^\s*(这|那)(是|就是|叫)[^，。！？]{0,12}[。]?\s*$/, reason: '「这是…」式贴标签结论句，把观察直接说成结论' },
   { key: 'trivialQuant', name: '无意义精确量化', severity: 3, re: /(花了?|用了?|过了?)[^。！？]{0,4}[一二三四五六七八九十两\d]+\s*秒钟?/, reason: '给无关紧要的动作配精确秒数，是汇报式叙述的典型痕迹' },
   { key: 'metaphor', name: '比喻精确而多余', severity: 2.5, re: /(像|仿佛|如同|宛如)[^。！？]{2,22}?(一样|一般|似的|扔进|落进|砸进)/, reason: '比喻交代得完整又工整，读者不需要的信息被补齐了' },
+
+  // ── AI 常用句式（作者手册与任务书都点名的套路）──
+  { key: 'notBut', name: '「不是A，而是B」句式', severity: 3, re: /不是[^。！？]{1,22}?而是/, reason: '「不是…而是…」是典型的议论文对举句式。（注意只认带「而是」的完整对举；人写小说常说「不是X，是Y」，那是自然口语，不算）' },
+  { key: 'ratherThan', name: '「与其说…不如说」句式', severity: 3, re: /与其(说)?[^。！？]{1,20}?不如/, reason: '书面议论文句式，带解释腔' },
+  { key: 'notOnly', name: '「不仅…更是」句式', severity: 3, re: /不[仅只](仅)?是[^。！？]{1,20}?(更是|也是|还是)/, reason: '递进式对举，AI 很爱用；人的递进通常不给这么整齐' },
+  { key: 'atSameTime', name: '「…的同时，也…」句式', severity: 3, re: /[^。！？]{2,14}的同时[，,]?[^。！？]{0,14}(也|还|更|又)/, reason: '「…的同时」是书面连接，叙述里出现说明句子被"写"出来而不是"讲"出来' },
+  { key: 'aKindOf', name: '「一种…的感觉」式抽象', severity: 3, re: /(一种|某种)[^。！？]{1,10}?的(感觉|情绪|东西|存在|力量|气息)/, reason: '把说不清的东西抽象命名，是 AI 补足信息量的惯用手法' },
+  { key: 'behindIs', name: '「…的背后，是…」句式', severity: 3, re: /(的)?背后[，,]?(是|藏着|有着)|在[^。！？]{2,12}的背后/, reason: '「背后是…」式揭示意，带说明书口吻' },
+  { key: 'thisMoment', name: '「这一刻/此时此刻」', severity: 3, re: /(此时此刻|这一刻|就在这一刻|在这一刻)/, reason: '煽情式时间定位，AI 用它制造"分量"' },
+  { key: 'allThis', name: '「这一切」总括', severity: 2.5, re: /(这一切|这一切的|所有这些)/, reason: '段落收尾常用的总括词，属于"点题"的一种' },
+  { key: 'likeTwice', name: '「像…又像…」句式', severity: 2.5, re: /(像|仿佛)[^。！？]{2,16}?(又|也)(像|仿佛)/, reason: '双重比喻对举，工整得不像随口说的' },
+  { key: 'thenSeq', name: '「…，然后…」顺序连接', severity: 1.5, re: /[^。！？]{2,14}[，,]\s*然后[^。！？]{1,14}/, reason: '「然后」把动作串成流程，是汇报式叙述的骨架' },
+  { key: 'ifThen', name: '「如果…就/那么…」', severity: 1.5, re: /如果[^。！？]{2,20}?(那么|就|便)/, reason: '假设推理句式（人也会用，仅提示）' },
+  { key: 'evenIf', name: '「即便…也…」', severity: 1.5, re: /(即便|即使|哪怕)[^。！？]{2,20}?(也|仍|依然|还是)/, reason: '让步句式（人也会用，仅提示）' },
 ];
+
+// 全文级密度的过渡词（AI 靠它们把段落"焊"起来）
+const DESLOP_TRANSITIONS = ['然而', '于是', '随即', '顿时', '紧接着', '与此同时', '片刻后', '少顷', '须臾', '话虽如此', '总之', '总而言之'];
 
 const DESLOP_PANEL_LINE = /^\s*【/;
 
@@ -2427,6 +2444,8 @@ function deslopStats(text) {
   const variance = lens.length ? lens.reduce((a, b) => a + (b - avg) * (b - avg), 0) / lens.length : 0;
   const std = Math.sqrt(variance);
   const dialogueChars = lines.filter(l => l.startsWith('“') || l.startsWith('"')).reduce((a, l) => a + deslopCharCount(l), 0);
+  const per1000 = (n) => han ? Math.round((n / han) * 1000 * 10) / 10 : 0;
+  const ellipsis = (src.match(/……|\.\.\./g) || []).length;
   return {
     han,
     sentences: sentences.length,
@@ -2437,6 +2456,12 @@ function deslopStats(text) {
     dialogueRatio: han ? Math.round((dialogueChars / han) * 1000) / 1000 : 0,
     exclamPer1000: han ? Math.round((((src.match(/！/g) || []).length) / han) * 1000) * 10 / 10 : 0,
     emDashPer1000: han ? Math.round((((src.match(/——/g) || []).length) / han) * 1000) * 10 / 10 : 0,
+    // 标点习惯（作者手册明确要求：引号统一中文弯引号；分号/省略号滥用是书面腔痕迹）
+    straightQuotes: (src.match(/"/g) || []).length,
+    ellipsisPer1000: per1000(ellipsis),
+    semicolonPer1000: per1000((src.match(/；/g) || []).length),
+    parenPer1000: per1000((src.match(/[（(]/g) || []).length),
+    transitionPer1000: per1000(DESLOP_TRANSITIONS.reduce((a, w) => a + (src.split(w).length - 1), 0))
   };
 }
 
@@ -2493,6 +2518,25 @@ function deslopAnalyze(text, baseline) {
   }
   if (stats.emDashPer1000 > 12) {
     hits.push({ type: 'emDashDense', name: '破折号偏密', severity: 1.5, start: 0, end: 0, text: '', reason: '每千字 ' + stats.emDashPer1000 + ' 处破折号' });
+  }
+  // ── 标点习惯 ──
+  if (stats.straightQuotes > 0) {
+    hits.push({
+      type: 'straightQuote', name: '引号未用中文弯引号', severity: 3, start: 0, end: 0, text: '',
+      reason: '正文里有 ' + stats.straightQuotes + ' 个半角直引号 " ——改稿手册的硬规矩是统一用 “…”（内部引用用 ‘…’）'
+    });
+  }
+  if (stats.ellipsisPer1000 > 6) {
+    hits.push({ type: 'ellipsisDense', name: '省略号偏密', severity: 2, start: 0, end: 0, text: '', reason: '每千字 ' + stats.ellipsisPer1000 + ' 处省略号，拖节奏的痕迹' });
+  }
+  if (stats.semicolonPer1000 >= 2) {
+    hits.push({ type: 'semicolon', name: '分号（书面腔）', severity: 2, start: 0, end: 0, text: '', reason: '每千字 ' + stats.semicolonPer1000 + ' 个分号——小说叙述里人很少用分号，那是论文与说明文的分句方式' });
+  }
+  if (stats.parenPer1000 >= 4) {
+    hits.push({ type: 'paren', name: '括号补充偏多', severity: 1.5, start: 0, end: 0, text: '', reason: '每千字 ' + stats.parenPer1000 + ' 处括号补充，像在给自己加注解' });
+  }
+  if (stats.transitionPer1000 >= 4) {
+    hits.push({ type: 'transition', name: '过渡词偏密', severity: 2, start: 0, end: 0, text: '', reason: '每千字 ' + stats.transitionPer1000 + ' 个过渡词（然而/于是/随即/顿时…），像用连接词把段落焊起来' });
   }
 
   // 文风指纹偏离：与作者自己的基线比，而不是与"绝对标准"比。

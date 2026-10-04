@@ -813,6 +813,43 @@ async function main() {
     } catch (_) { return v; }
   });
 
+  await check('AI 味检测：覆盖 AI 常用句式与标点习惯', async () => {
+    // 病灶（结构）之外的第二层：AI 常用句式 + 标点习惯。
+    const { deslopAnalyze } = require(path.join(root, 'server.js'));
+    const text = [
+      '# 测试',
+      '',
+      '他不是不累，而是不想停下来。',
+      '',
+      '他站起身的同时，也顺手关了灯。',
+      '',
+      '这一切都发生得太快了。',
+      '',
+      '就在这一刻，他忽然明白了。',
+      '',
+      '一种说不清的感觉涌了上来。',
+      '',
+      '在秩序的背后，是一整套代价。',
+      '',
+      '"他说过这句话。"'
+    ].join('\n');
+    const r = deslopAnalyze(text, null);
+    const types = new Set(r.hits.filter(h => (h.severity || 0) >= 2).map(h => h.type));
+    const need = ['notBut', 'atSameTime', 'allThis', 'thisMoment', 'aKindOf', 'behindIs', 'straightQuote'];
+    const missing = need.filter(t => !types.has(t));
+    // 自然口语「不是X，是Y」不算套路（只认带「而是」的完整对举）——这是标定时踩过的误报
+    const okNatural = deslopAnalyze('不是当前值，是上限。\n\n不是灰霾的反光，是车灯。', null)
+      .hits.filter(h => h.type === 'notBut').length === 0;
+    // 标点：分号 / 省略号密度
+    const p = deslopAnalyze('# t\n\n他说完就走了；她没有回答；屋里很安静。\n\n他等了一会儿……然后又等了一会儿……最后走了。', null);
+    const ptypes = new Set(p.hits.map(h => h.type));
+    const punctOk = ptypes.has('semicolon') && ptypes.has('ellipsisDense');
+    if (missing.length) return '缺句式规则: ' + missing.join(',');
+    if (!okNatural) return '「不是X，是Y」被误判成套路';
+    if (!punctOk) return '标点规则未命中: ' + [...ptypes].join(',');
+    return 'OK(7 类 AI 句式 + 分号/省略号密度 + 不误判自然口语)';
+  });
+
   await check('AI 味检测：详情面板按钮与结果面板可用', async () => {
     const v = await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
