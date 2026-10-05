@@ -1638,7 +1638,7 @@ async function main() {
     })()`);
     try { const o = JSON.parse(v); return o.ok ? 'OK(✓命中/点击跳章)' : v; } catch (_) { return v; }
   });
-  await check('分析入口合并为单按钮(7 视图→1 入口)', async () => {
+  await check('分析入口合并为单按钮(8 视图→1 入口)', async () => {
     const v = await evalExpr(`JSON.stringify({
       has: !!document.getElementById('analysisBtn'),
       oldBtns: ['matrixBtn','boardBtn','linkManagerBtn','bookStatsBtn','timelineBtn'].filter(id => !!document.getElementById(id)),
@@ -1648,7 +1648,7 @@ async function main() {
     })`);
     try {
       const o = JSON.parse(v);
-      const seq = 'health,plot,matrix,board,link,stats,timeline';
+      const seq = 'health,plot,matrix,board,roles,link,stats,timeline';
       const ok = o.has && o.oldBtns.length === 0 && o.oldModals.length === 0 && o.tabs.join(',') === seq && o.panes.join(',') === seq;
       return ok ? 'OK(旧入口/旧弹窗已清空)' : v;
     } catch (_) { return v; }
@@ -1661,7 +1661,7 @@ async function main() {
         await sleep(200);
         const card = document.getElementById('analysisCard');
         const report = [];
-        for (const tab of ['health','plot','matrix','board','link','stats','timeline']) {
+        for (const tab of ['health','plot','matrix','board','roles','link','stats','timeline']) {
           switchAnalysisTab(tab);
           await sleep(80);
           report.push({
@@ -1674,7 +1674,7 @@ async function main() {
         const exclusive = report.every(r => r.paneOn === r.tab && r.tabOn === r.tab && r.attr === r.tab);
         // 隐藏的 pane 必须是真正不显示（display:none），否则会叠在一起。
         // 注意排除当前激活的 timeline —— 它本来就该显示。
-        const hiddenNotShown = ['health','plot','matrix','board','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
+        const hiddenNotShown = ['health','plot','matrix','board','roles','link','stats'].every(t => getComputedStyle(document.getElementById('analysisPane' + t[0].toUpperCase() + t.slice(1))).display === 'none');
         const titleOk = (document.getElementById('analysisTitleMain').textContent || '').trim().length > 0;
         document.getElementById('analysisClose').click(); // 收尾：关掉，避免影响后续用例
         return JSON.stringify({ ok: exclusive && titleOk && hiddenNotShown, report, hiddenNotShown });

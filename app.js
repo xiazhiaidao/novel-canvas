@@ -788,6 +788,70 @@ function matrixHits(rText, title) {
   return out;
 }
 
+// 这里只给出处与字面命中；埋设、强化、回收的剧情判断交给作者和 Agent 核对。
+function foreshadowEvidence(n) {
+  const plan = n.foreshadowPlan || {}, name = n.foreshadowName || n.title, aliases = entityAliases(name);
+  const rows = [];
+  for (const chapter of nodes.filter(x => x.label === '章节' && !isGlobalBoardNode(x))) {
+    const file = openFiles.find(f => f.path === chapter.file && !f.pendingCreate);
+    const draft = detailDrafts.get(currentProject + ':' + chapter.id);
+    const text = file?.dirty ? file.content : draft?.content ?? chapter.content ?? '';
+    const hits = matrixHits(text, name), number = nodeAxisData(chapter).chapter;
+    const reasons = [];
+    if (plan.plantedChapter != null && number === plan.plantedChapter) reasons.push('埋设记录');
+    if (plan.expectedChapter != null && number === plan.expectedChapter) reasons.push('回收计划');
+    if (hits.length) reasons.push('关键词命中');
+    if (!reasons.length) continue;
+    const offsets = aliases.map(a => text.indexOf(a)).filter(i => i >= 0);
+    const offset = offsets.length ? Math.min(...offsets) : -1;
+    const line = offset >= 0 ? (chapter.startLine || 1) + text.slice(0,offset).split('\n').length - 1 : null;
+    const excerpt = offset < 0 ? '' : text.slice(Math.max(0,offset-45),offset+125).replace(/\s+/g,' ').trim();
+    rows.push({ node:chapter, number, reasons, hits, line, excerpt, dirty:!!file?.dirty || draft?.content != null });
+  }
+  rows.sort((a,b) => (a.number ?? Infinity) - (b.number ?? Infinity) || a.node.file.localeCompare(b.node.file,'zh-CN'));
+  return { plan, rows };
+}
+
+function renderForeshadowEvidence(n) {
+  const panel = document.getElementById('detailForeshadow');
+  if (!panel || n.label !== '伏笔' || isGlobalBoardNode(n)) { highlightForeshadowEvidence(null); return; }
+  const evidence = foreshadowEvidence(n), { plan, rows } = evidence;
+  highlightForeshadowEvidence(n,rows);
+  panel.replaceChildren();
+  const summary = document.createElement('summary'); summary.textContent = '伏笔脉络 · ' + rows.length + ' 个相关章节'; summary.title = '关联章节已在画布中高亮；点击章节可定位'; panel.appendChild(summary);
+  const meta = document.createElement('div'); meta.className = 'foreshadowMeta';
+  meta.textContent = '状态：' + (parseForeshadowStatus(n) || '未标记') + ' · 埋设：' + (plan.planted || '未记录') + ' · 回收计划：' + (plan.expected || '未记录'); panel.appendChild(meta);
+  const hint = document.createElement('p'); hint.className = 'foreshadowHint';
+  hint.textContent = '按已保存记录与正文关键词匹配；命中不代表已强化或已回收。';
+  if (plan.expectedChapter != null && !rows.some(r => r.number === plan.expectedChapter)) hint.textContent += ' 回收计划章尚未找到。';
+  panel.appendChild(hint);
+  const list = document.createElement('div'); list.className = 'foreshadowChapterList';
+  for (const row of rows) {
+    const button = document.createElement('button'); button.className = 'foreshadowChapter'; button.dataset.id = row.node.id;
+    const title = document.createElement('strong'); title.textContent = row.node.title;
+    const reason = document.createElement('span'); reason.className = 'foreshadowReason'; reason.textContent = row.reasons.join(' · ') + (row.dirty ? ' · 未保存草稿' : '');
+    const snippet = document.createElement('span'); snippet.className = 'foreshadowExcerpt'; snippet.textContent = row.excerpt || '由伏笔记录关联，需核对正文。';
+    button.title = row.node.file + (row.line ? ' · 行 ' + row.line : '') + (row.hits.length ? '\n' + row.hits.join('、') : '');
+    button.append(title,reason,snippet); button.onclick = () => focusNode(row.node.id); list.appendChild(button);
+  }
+  if (!rows.length) { const empty = document.createElement('p'); empty.className = 'foreshadowHint'; empty.textContent = '没有找到记录对应的章节或标题关键词。可交给 Agent 查找别称和间接铺垫。'; list.appendChild(empty); }
+  panel.appendChild(list);
+  const actions = document.createElement('div'); actions.className = 'foreshadowActions';
+  for (const [mode,label] of [['review','检查此伏笔'],['plan','规划回收']]) {
+    const button = document.createElement('button'); button.textContent = label; button.onclick = () => startForeshadowTask(n.id,mode); actions.appendChild(button);
+  }
+  panel.appendChild(actions);
+}
+
+function highlightForeshadowEvidence(n, rows) {
+  const active = n?.label === '伏笔' && !isGlobalBoardNode(n) && detailRenderedProject === currentProject;
+  const ids = new Set(active ? (rows || foreshadowEvidence(n).rows).map(r => r.node.id) : []);
+  document.querySelectorAll('#axisNodes .node').forEach(el => {
+    el.classList.toggle('foreshadowMatch',ids.has(el.dataset.id));
+    el.classList.toggle('foreshadowOrigin',!!active && el.dataset.id === n.id);
+  });
+}
+
 function buildMatrixTable(rowTitle, colTitle, rowNodes, colNodes, matchFn) {
   let html = '<table class="matrixTable"><thead><tr><th>' + escapeHtml(rowTitle) + ' \\ ' + escapeHtml(colTitle) + '</th>';
   for (const c of colNodes) html += '<th class="mxColHead" data-id="' + escapeHtml(c.id) + '" title="点击查看：' + escapeHtml(c.title) + '">' + escapeHtml(c.title) + '</th>';
@@ -820,11 +884,11 @@ function renderMatrix() {
   let html = '';
   if (matrixMode === 'roleChapter') {
     html = chapters.length && roles.length
-      ? buildMatrixTable('章节', '角色', chapters, roles, (r, c, rText) => matrixHits(rText, c.title))
+      ? buildMatrixTable('章节', '角色', chapters, roles, (r, c, rText) => [...new Set((c.roleAliases || [c.title]).flatMap(name=>matrixHits(rText,name)))])
       : '<div class="empty">还没有章节或角色数据</div>';
   } else if (matrixMode === 'foreshadowChapter') {
     html = chapters.length && foreshadows.length
-      ? buildMatrixTable('章节', '伏笔', chapters, foreshadows, (r, c, rText) => matrixHits(rText, c.title))
+      ? buildMatrixTable('章节', '伏笔', chapters, foreshadows, (r, c, rText) => matrixHits(rText, c.foreshadowName || c.title))
       : '<div class="empty">还没有章节或伏笔数据</div>';
   } else if (matrixMode === 'settingRole') {
     html = settings.length && roles.length
@@ -849,6 +913,7 @@ const ANALYSIS_TABS = {
   plot:     { title: '剧情提案', sub: 'PLOT IDEAS' },
   matrix:   { title: '关系矩阵', sub: 'MATRIX' },
   board:    { title: '状态看板', sub: 'BOARD' },
+  roles:    { title: '角色状态追踪', sub: 'CHARACTERS' },
   link:     { title: '手动连线', sub: 'LINKS' },
   stats:    { title: '全书统计', sub: 'STATS' },
   timeline: { title: '时间线 · 重要节点', sub: 'TIMELINE' }
@@ -882,11 +947,12 @@ function switchAnalysisTab(tab) {
   if (mainEl) mainEl.textContent = meta.title;
   if (subEl) subEl.textContent = meta.sub;
   if (tab === 'matrix') renderMatrix();
-  else if (tab === 'board') renderBoard();
+  else if (tab === 'board') { renderBoard(); refreshHealthBar(); }
   else if (tab === 'link') renderLinkManager();
   else if (tab === 'stats') loadBookStats();
   else if (tab === 'timeline') renderTimelineList();
   else if (tab === 'health') loadHealth();
+  else if (tab === 'roles') loadCharacterTracking();
   else if (tab === 'plot') loadPlot();
 }
 
@@ -994,8 +1060,13 @@ function renderBoard() {
     }
     html += '</tbody></table>';
   }
+  const roles = currentCharacters(), summary = healthSnapshot?.project === currentProject ? healthSnapshot.characterTracking?.summary : null;
+  html += '<h4 style="margin:16px 0 8px">角色状态</h4><button class="plotGhost" id="boardCharacters">'+(summary?summary.total+' 张卡片 · '+summary.withStatus+' 已记状态 · '+summary.needsReview+' 待核对':'查看角色状态与变化')+' · 打开追踪 →</button>';
+  if (roles.length) html += '<table class="boardTable"><thead><tr><th>角色</th><th>当前状态</th><th>截至章节</th><th>待核对</th></tr></thead><tbody>'+roles.map(c=>'<tr class="clickable" data-character-id="'+escapeHtml(c.id)+'"><td>'+escapeHtml(c.title)+'</td><td>'+escapeHtml(c.status || '未填写')+'</td><td>'+(c.updatedChapter!=null?'第 '+c.updatedChapter+' 章':'未记录')+'</td><td>'+escapeHtml(c.issues.join(' · ') || '—')+'</td></tr>').join('')+'</tbody></table>';
   bodyEl.innerHTML = html;
-  bodyEl.querySelectorAll('tr.clickable').forEach(tr => {
+  document.getElementById('boardCharacters').onclick = ()=>openCharacterTracking('');
+  bodyEl.querySelectorAll('[data-character-id]').forEach(row=>row.onclick=()=>openCharacterTracking(row.dataset.characterId));
+  bodyEl.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => {
       closeBoard();
       focusNode(tr.dataset.id);
@@ -1363,40 +1434,126 @@ function renderMarkdown(text) {
   return html;
 }
 
+const detailDrafts = new Map();
+let detailRenderedProject = '', detailRenderedNodeId = '';
+const detailDraftTimers = new Map();
+let detailDraftStorageWarning = false;
+function detailDraftStorageKey(project, id) { return 'novelDetailDraft_v1:' + encodeURIComponent(project) + ':' + encodeURIComponent(id); }
+function persistDetailDraft(project, id) {
+  const key = project + ':' + id;
+  clearTimeout(detailDraftTimers.get(key)); detailDraftTimers.delete(key);
+  const draft = detailDrafts.get(key);
+  try {
+    if (draft && (draft.content != null || draft.props != null)) localStorage.setItem(detailDraftStorageKey(project,id), JSON.stringify({ ...draft, version:1, project, id }));
+    else localStorage.removeItem(detailDraftStorageKey(project,id));
+  } catch (_) {
+    if (!detailDraftStorageWarning) { detailDraftStorageWarning = true; showToast('本地草稿保存失败，请先保存内容再关闭窗口', 'error'); }
+  }
+}
+function readDetailDraft(project, n) {
+  const key = project + ':' + n.id;
+  if (detailDrafts.has(key)) return detailDrafts.get(key);
+  try {
+    const draft = JSON.parse(localStorage.getItem(detailDraftStorageKey(project,n.id)) || 'null');
+    if (draft?.version === 1 && draft.project === project && draft.id === n.id && draft.file === n.file && typeof draft.editing === 'boolean' && ['content','props'].includes(draft.tab) &&
+        (draft.content === null || typeof draft.content === 'string') && typeof draft.savedContent === 'string' && typeof draft.savedProps === 'string' &&
+        (draft.props === null || (Array.isArray(draft.props) && draft.props.length === 4 && draft.props.every(v => typeof v === 'string')))) {
+      detailDrafts.set(key,draft); return draft;
+    }
+  } catch (_) {}
+  return null;
+}
+function clearDetailDraft(project, id) {
+  detailDrafts.delete(project + ':' + id); persistDetailDraft(project,id);
+}
+function flushDetailDrafts() {
+  captureDetailDraft();
+  for (const draft of detailDrafts.values()) persistDetailDraft(draft.project,draft.id);
+}
+window.addEventListener('pagehide', flushDetailDrafts);
+window.addEventListener('beforeunload', flushDetailDrafts);
+function captureDetailDraft() {
+  const area = document.getElementById('editContent');
+  if (!area || !detailRenderedNodeId) return;
+  const props = ['propType', 'propChapter', 'propProgress', 'propLane'].map(id => document.getElementById(id)?.value || '');
+  const key = detailRenderedProject + ':' + detailRenderedNodeId, previous = detailDrafts.get(key);
+  detailDrafts.set(key, {
+    project:detailRenderedProject, id:detailRenderedNodeId, file:detailBody.dataset.file || '',
+    content: area.value === area.dataset.savedContent ? null : area.value,
+    savedContent:previous?.content != null ? previous.savedContent : area.dataset.savedContent,
+    savedProps:previous?.props != null ? previous.savedProps : detailBody.dataset.savedProps,
+    editing: detailBody.dataset.mode === 'edit',
+    tab: detailBody.dataset.tab || 'content',
+    props: JSON.stringify(props) === detailBody.dataset.savedProps ? null : props
+  });
+  clearTimeout(detailDraftTimers.get(key));
+  const project = detailRenderedProject, id = detailRenderedNodeId;
+  detailDraftTimers.set(key, setTimeout(() => persistDetailDraft(project,id),250));
+}
 function showDetail(n) {
+  captureDetailDraft();
+  detailRenderedProject = currentProject; detailRenderedNodeId = n.id;
+  if (innerWidth <= 980) document.getElementById('detail').classList.add('responsive-open');
+  const draft = readDetailDraft(currentProject,n);
+  if (draft?.content === n.content) draft.content = null;
+  detailBody.dataset.file = n.file || '';
   const a = nodeAxisData(n);
   currentDetailNodeId = n.id; // AI 味改写要落到具体节点/文件
   document.dispatchEvent(new CustomEvent('detailNodeChanged', { detail: n }));
-  const levels = (axisDef && axisDef.levels) || [];
   const typeOptions = ['role', 'faction', 'setting', 'outline', 'volume', 'chapter', 'foreshadow', 'context', 'unrecognized'].map(t =>
     '<option value="' + t + '"' + (n.type === t ? ' selected' : '') + '>' + typeToLabel(t) + '</option>').join('');
   // 剧情推进：显式覆盖（axisProgress[章号]）> 空（默认 y=x 对角线）
   const progVal = (a.chapter != null && axisProgress[a.chapter] != null) ? axisProgress[a.chapter] : '';
   detailBody.innerHTML =
-    '<h2>' + escapeHtml(n.title) + '</h2>' +
-    '<div class="meta">' + n.label + ' · ' + escapeHtml(n.file) + ' · 行 ' + n.startLine + '-' + n.endLine + '</div>' +
-    '<div class="nodeProps">' +
-      '<div class="propRow"><label>类型</label><select id="propType">' + typeOptions + '</select></div>' +
-      '<div class="propRow"><label>章号</label><input id="propChapter" type="number" min="0" value="' + (a.chapter || '') + '" placeholder="未分配"></div>' +
-      '<div class="propRow"><label>剧情推进(0-100)</label><input id="propProgress" type="number" min="0" max="100" value="' + progVal + '" placeholder="自动(y=x)"></div>' +
-      '<div class="propRow"><label>泳道</label><input id="propLane" value="' + escapeHtml(a.lane || '') + '" placeholder="（v2）"></div>' +
-      '<div class="propRow"><button id="propSave" title="保存属性（类型/章号/剧情推进/泳道写入项目布局覆盖）">保存属性</button></div>' +
-    '</div>' +
-    '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap">' +
-      '<button id="copyIdBtn" style="padding:4px 10px;border:1px solid var(--panel-border);border-radius:8px;background:transparent;cursor:pointer;color:var(--muted)">复制节点ID</button>' +
-      '<button id="previewToggle" style="padding:4px 10px;border:1px solid var(--panel-border);border-radius:8px;background:transparent;cursor:pointer;color:var(--muted)">预览</button>' +
-      '<button id="detailAddChatBtn" title="将整个节点内容加入对话（引用标签，不直接发送）">添加到对话</button>' +
-      '<button id="detailDeslopBtn" title="离线检测 AI 味（纯本地规则，不调用大模型；判定权始终在你）">AI 味检测</button>' +
-    '</div>' +
-    '<div id="preview" style="overflow:auto;max-height:300px"></div>' +
-    '<label>完整 Markdown 内容（保存会写回原文件）</label>' +
-    '<textarea id="editContent">' + escapeHtml(n.content || '') + '</textarea>' +
-    '<div class="btnRow"><button id="saveBtn">保存到项目文件</button></div>' +
-    '<div id="deslopBox"></div>' +
-    '<div class="status" id="saveStatus"></div>';
+    '<div class="detailHeading"><span class="detailKind">' + escapeHtml(n.label) + '</span><span id="detailWordCount" class="detailWordCount"></span><span id="detailDirty" hidden>未保存</span><h2>' + escapeHtml(n.foreshadowName || n.title) + '</h2></div>' +
+    '<details class="detailSource"><summary>' + escapeHtml((n.file || '').split(/[\\/]/).pop() || '画布节点') + '<span>来源</span></summary><div>' + escapeHtml(n.file || '') + ' · 行 ' + n.startLine + '–' + n.endLine + '</div></details>' +
+    '<div class="detailTabs" role="tablist" aria-label="节点信息"><button id="detailContentTab" role="tab" aria-controls="detailContentPane">内容</button><button id="detailPropsTab" role="tab" aria-controls="detailPropsPane">属性</button></div>' +
+    '<section id="detailContentPane" role="tabpanel" aria-labelledby="detailContentTab">' +
+      (n.label === '伏笔' && !isGlobalBoardNode(n) ? '<details id="detailForeshadow" open></details>' : '') +
+      (n.label === '角色' && !isGlobalBoardNode(n) ? '<details id="detailCharacter" open></details>' : '') +
+      '<div class="detailActions"><button id="detailAddChatBtn" title="加入现有 Agent 的引用资料，不自动发送">添加到 Agent</button><button id="previewToggle">编辑内容</button><details class="detailMore"><summary aria-label="更多节点操作">•••</summary><div><button id="copyIdBtn">复制节点 ID</button><button id="detailDeslopBtn">AI 味检测</button><button id="detailDiscardDraft">放弃本地草稿</button></div></details></div>' +
+      '<div id="preview"></div><label class="detailEditLabel" for="editContent">Markdown 内容</label>' +
+      '<textarea id="editContent" aria-label="节点内容">' + escapeHtml(draft?.content ?? n.content ?? '') + '</textarea>' +
+      '<div class="btnRow detailSaveRow"><button id="saveBtn" class="primary">保存内容</button></div><div id="deslopBox"></div>' +
+    '</section>' +
+    '<section id="detailPropsPane" role="tabpanel" aria-labelledby="detailPropsTab" hidden><div class="nodeProps">' +
+      '<div class="propRow"><label for="propType">节点类型</label><select id="propType">' + typeOptions + '</select></div>' +
+      '<div class="propRow"><label for="propChapter">所属章号</label><input id="propChapter" type="number" min="0" value="' + (a.chapter ?? '') + '" placeholder="未分配"></div>' +
+      '<div class="propRow"><label for="propProgress">剧情推进（%）</label><input id="propProgress" type="number" min="0" max="100" value="' + progVal + '" placeholder="跟随章号"></div>' +
+      '<div class="propRow"><label for="propLane">剧情泳道</label><input id="propLane" value="' + escapeHtml(a.lane || '') + '" placeholder="例如：主线"></div>' +
+      '<p class="detailPropHint">留空的剧情推进跟随章节位置。属性仅改变画布组织，正文通过“保存内容”写回。</p>' +
+      '<button id="propSave" class="primary">保存属性</button></div></section>' +
+    '<div class="status" id="saveStatus" role="status"></div>';
+  const setDetailTab = tab => {
+    detailBody.dataset.tab = tab;
+    for (const name of ['content', 'props']) {
+      const button = document.getElementById(name === 'content' ? 'detailContentTab' : 'detailPropsTab');
+      const selected = tab === name;
+      button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
+      document.getElementById(name === 'content' ? 'detailContentPane' : 'detailPropsPane').hidden = !selected;
+    }
+    captureDetailDraft();
+  };
+  document.getElementById('detailContentTab').onclick = () => setDetailTab('content');
+  document.getElementById('detailPropsTab').onclick = () => setDetailTab('props');
+  detailBody.querySelector('.detailTabs').onkeydown = e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    setDetailTab(e.key === 'Home' ? 'content' : e.key === 'End' ? 'props' : detailBody.dataset.tab === 'content' ? 'props' : 'content');
+    document.getElementById(detailBody.dataset.tab === 'content' ? 'detailContentTab' : 'detailPropsTab').focus();
+  };
   const propSaveBtn = document.getElementById('propSave');
+  const propFields = ['propType', 'propChapter', 'propProgress', 'propLane'];
+  detailBody.dataset.savedProps = JSON.stringify(propFields.map(id => document.getElementById(id).value));
+  const contentConflict = draft?.content != null && draft.savedContent !== (n.content || '');
+  const propsConflict = draft?.props != null && draft.savedProps !== detailBody.dataset.savedProps;
+  if (draft?.props) propFields.forEach((id, i) => document.getElementById(id).value = draft.props[i]);
   if (propSaveBtn) {
     propSaveBtn.addEventListener('click', async () => {
+      const project = currentProject;
+      const stored = detailDrafts.get(project + ':' + n.id);
+      if (stored?.props != null && stored.savedProps !== detailBody.dataset.savedProps && !confirm('画布属性在草稿生成后已有变化。仍用恢复的属性草稿保存？')) return;
+      const savedProps = JSON.stringify(propFields.map(id => document.getElementById(id).value));
       const patch = {
         type: document.getElementById('propType').value,
         label: typeToLabel(document.getElementById('propType').value),
@@ -1409,10 +1566,14 @@ function showDetail(n) {
         const res = await fetch('/api/override', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project: currentProject, id: n.id, patch })
+          body: JSON.stringify({ project, id: n.id, patch })
         });
         const d = await res.json();
         if (d.error) throw new Error(d.error);
+        if (project !== currentProject) return;
+        const state = detailDrafts.get(project + ':' + n.id);
+        if (state) { if (JSON.stringify(state.props) === savedProps) state.props = null; state.savedProps = savedProps; persistDetailDraft(project,n.id); }
+        if (detailRenderedNodeId === n.id) detailBody.dataset.savedProps = savedProps;
         layoutAxis[n.id] = { chapter: patch.chapter || null, level: null, lane: patch.lane || null };
         // 剧情推进（章级）：数字 → 写入 axisProgress；空 → 回退默认 y=x 对角线
         const ch = patch.chapter || null;
@@ -1426,13 +1587,14 @@ function showDetail(n) {
           clearTimeout(layoutTimer);
           await postLayout();
           await loadData();
-          if (nodeMap[n.id]) showDetail(nodeMap[n.id]);
+          if (currentDetailNodeId === n.id && nodeMap[n.id]) showDetail(nodeMap[n.id]);
         } else {
           n.type = patch.type; n.label = patch.label;
           showToast('属性已保存', 'success');
           saveLayout();
           if (viewMode === 'axis') renderAxisView();
           else { renderNodes(); redrawEdges(); }
+          if (detailRenderedNodeId === n.id) updateCount();
         }
       } catch (e) {
         showToast('保存属性失败：' + e.message, 'error');
@@ -1440,7 +1602,26 @@ function showDetail(n) {
     });
   }
   const editArea = document.getElementById('editContent');
+  editArea.dataset.savedContent = n.content || '';
   const previewEl = document.getElementById('preview');
+  const setDetailEditing = editing => {
+    detailBody.dataset.mode = editing ? 'edit' : 'preview';
+    document.getElementById('previewToggle').textContent = editing ? '预览内容' : '编辑内容';
+    document.getElementById('previewToggle').dataset.on = editing ? '' : '1';
+    editArea.style.display = editing ? 'block' : 'none';
+    previewEl.style.display = editing ? 'none' : 'block';
+    if (!editing) {
+      const row = editArea.value.trim();
+      if (n.foreshadowFields && row.startsWith('|') && row.endsWith('|') && !row.includes('\n')) {
+        const cells = row.slice(1,-1).split('|').map(s => s.trim());
+        previewEl.innerHTML = '<dl class="foreshadowRecord">' + n.foreshadowFields.map((f,i) => '<dt>' + escapeHtml(f.label) + '</dt><dd>' + escapeHtml(cells[i] || '—') + '</dd>').join('') + '</dl>';
+      } else previewEl.innerHTML = renderMarkdown(editArea.value);
+      const first = previewEl.firstElementChild;
+      if (first && /^H[1-4]$/.test(first.tagName) && first.textContent.trim() === (n.title || '').trim()) first.remove();
+      while (previewEl.firstElementChild?.tagName === 'BR') previewEl.firstElementChild.remove();
+    }
+    captureDetailDraft();
+  };
   // 浮动选中工具条（Trae 风格）：编辑区/预览里选中文字 → 弹出「添加到对话」（整节点加入走右键菜单或「添加到对话」按钮）
   hookSelToolbar(editArea, true, (sel, start, end, full) => {
     const lineRange = computeLineRange(full, start, end);
@@ -1450,7 +1631,7 @@ function showDetail(n) {
         const status = document.getElementById('saveStatus');
         if (status) status.textContent = '已添加引用「' + (n.file || n.title) + (lineRange ? ' 行' + lineRange : '') + '」，可在输入框继续输入问题后发送';
       },
-      edit: () => { editArea.style.display = ''; editArea.focus(); }
+      edit: () => { setDetailEditing(true); editArea.focus(); }
     };
   });
   if (previewEl) {
@@ -1460,35 +1641,31 @@ function showDetail(n) {
         const status = document.getElementById('saveStatus');
         if (status) status.textContent = '已添加引用「' + (n.file || n.title) + '」，可在输入框继续输入问题后发送';
       },
-      edit: () => { editArea.style.display = ''; editArea.focus(); }
+      edit: () => { setDetailEditing(true); editArea.focus(); }
     }));
   }
   document.getElementById('copyIdBtn').addEventListener('click', () => {
-    navigator.clipboard.writeText(n.id).then(() => { const b = document.getElementById('copyIdBtn'); b.textContent = '已复制'; setTimeout(() => b.textContent = '复制节点ID', 1000); });
+    navigator.clipboard.writeText(n.id).then(() => showToast('节点 ID 已复制', 'success')).catch(() => showToast('无法访问剪贴板', 'error'));
   });
+  document.getElementById('detailDiscardDraft').onclick = () => {
+    const state = detailDrafts.get(currentProject + ':' + n.id);
+    if ((state?.content != null || state?.props != null) && !confirm('放弃此节点未保存的内容和属性草稿，恢复已保存版本？')) return;
+    clearDetailDraft(currentProject,n.id); detailRenderedNodeId = ''; showDetail(nodeMap[n.id] || n);
+  };
   document.getElementById('previewToggle').addEventListener('click', () => {
-    const btn = document.getElementById('previewToggle');
-    if (btn.textContent.includes('预览') && !btn.dataset.on) {
-      btn.dataset.on = '1';
-      btn.textContent = '编辑';
-      editArea.style.display = 'none';
-      previewEl.style.display = 'block';
-      previewEl.innerHTML = renderMarkdown(editArea.value);
-    } else {
-      btn.dataset.on = '';
-      btn.textContent = '预览';
-      editArea.style.display = 'block';
-      previewEl.style.display = 'none';
-    }
+    setDetailEditing(detailBody.dataset.mode !== 'edit');
+    if (detailBody.dataset.mode === 'edit') editArea.focus();
   });
   document.getElementById('detailAddChatBtn').addEventListener('click', () => {
-    addSelectionToChat(n.file, n.title, n.content || n.desc || '', '', n.label || '节点', true);
+    addSelectionToChat(n.file, n.title, editArea.value, '', n.label || '节点', true);
     const status = document.getElementById('saveStatus');
     if (status) status.textContent = '已添加引用「' + (n.title || n.file) + '」，可在输入框继续输入问题后发送';
   });
   const deslopBtn = document.getElementById('detailDeslopBtn');
-  if (deslopBtn) deslopBtn.addEventListener('click', () => runDeslopScan());
+  if (deslopBtn) deslopBtn.addEventListener('click', () => { setDetailEditing(true); detailBody.querySelector('.detailMore').open = false; runDeslopScan(); });
   document.getElementById('saveBtn').addEventListener('click', async () => {
+    const project = currentProject;
+    if (contentConflict && !confirm('原文在草稿生成后已有变化。仍用恢复的内容草稿覆盖当前节点？')) return;
     const content = editArea.value;
     const status = document.getElementById('saveStatus');
     status.textContent = '保存中...';
@@ -1496,35 +1673,45 @@ function showDetail(n) {
       const res = await fetch('/api/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: n.id, content, project: currentProject })
+        body: JSON.stringify({ id: n.id, content, project })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      n.content = data.node.content || content;
+      n.content = data.node.content ?? content;
+      editArea.dataset.savedContent = n.content;
+      if (detailRenderedNodeId === n.id && detailRenderedProject === project) captureDetailDraft();
+      detailDrafts.set(project + ':' + n.id, { ...detailDrafts.get(project + ':' + n.id), content: editArea.value === n.content ? null : editArea.value, savedContent:n.content });
+      persistDetailDraft(project,n.id);
+      if (project !== currentProject) return;
       n.desc = (content.split('\n').find(l => l.trim() && !l.trim().startsWith('#')) || '').trim().slice(0, 100);
       const el = world.querySelector(`.node[data-id="${n.id}"]`);
       if (el) el.querySelector('.ndesc').textContent = n.desc;
       status.textContent = '已写回 ' + n.file;
       showToast('已写回 ' + n.file, 'success');
       await loadData();
-      // loadData 会清空详情面板：保存后重新打开同一节点，写作流程不中断
-      if (nodeMap[n.id]) showDetail(nodeMap[n.id]);
+      // loadData 会恢复当前节点，保留保存期间继续输入的草稿与新选中节点。
     } catch (e) {
       status.textContent = '保存失败: ' + e.message;
       showToast('保存失败: ' + e.message, 'error');
     }
   });
-  const statusEl = document.getElementById('saveStatus');
   const counter = document.createElement('div');
-  counter.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px';
+  counter.className = 'detailCounter';
   editArea.parentNode.insertBefore(counter, editArea.nextSibling);
   function updateCount() {
     const chars = editArea.value.replace(/\s/g, '').length;
     const lines = editArea.value.split('\n').length;
-    counter.textContent = '字数（不含空白）：' + chars + ' · 行数：' + lines + ' · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+S 保存';
+    counter.textContent = chars + ' 字 · ' + lines + ' 行';
+    document.getElementById('detailWordCount').textContent = stripWords(editArea.value) + ' 字';
+    const contentDirty = editArea.value !== editArea.dataset.savedContent;
+    const propsDirty = JSON.stringify(propFields.map(id => document.getElementById(id).value)) !== detailBody.dataset.savedProps;
+    document.getElementById('detailDirty').hidden = !contentDirty && !propsDirty;
+    document.getElementById('detailDirty').textContent = contentDirty ? '内容未保存' : '属性未保存';
+    captureDetailDraft();
   }
   editArea.addEventListener('input', updateCount);
   updateCount();
+  if (draft?.content != null || draft?.props != null) document.getElementById('saveStatus').textContent = contentConflict || propsConflict ? '已恢复本地草稿；已保存版本有变化，请核对后保存。' : '已恢复本地草稿，尚未写入文件。';
   // 撤销/重做：自维护历史栈（textarea 原生撤销在 showDetail / 刷新后被清空，这里保证 Ctrl+Z 始终可用）
   const undoStack = [];
   const redoStack = [];
@@ -1574,8 +1761,25 @@ function showDetail(n) {
       if (sb) sb.click();
     }
   });
+  setDetailEditing(draft?.editing || false);
+  setDetailTab(draft?.tab || 'content');
+  propFields.forEach(id => document.getElementById(id).addEventListener('input', updateCount));
+  updateCount();
+  renderForeshadowEvidence(n);
+  renderCharacterDetail(n);
   document.querySelectorAll('.item').forEach(b => b.classList.toggle('active', b.dataset.id === n.id));
 }
+
+document.addEventListener('projectDataUpdated', () => {
+  if (detailRenderedProject !== currentProject || !(document.getElementById('detailForeshadow') || document.getElementById('detailCharacter'))) return;
+  const current = nodeMap[currentDetailNodeId];
+  if (current) showDetail(current);
+  else {
+    captureDetailDraft(); detailRenderedNodeId = ''; currentDetailNodeId = null;
+    const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = '此记录已不在项目中，请从导航选择其他节点。';
+    detailBody.replaceChildren(empty); highlightForeshadowEvidence(null);
+  }
+});
 
 function focusNode(id) {
   const n = nodeMap[id];
@@ -2400,6 +2604,7 @@ function applyAxisTransform() {
   const inner = document.getElementById('axisInner') || document.getElementById('axisView');
   if (!inner) return;
   inner.style.transform = `translate(${axisViewT.x}px, ${axisViewT.y}px) scale(${axisViewT.scale})`;
+  inner.style.setProperty('--axis-grid-scale', Math.max(.01, axisViewT.scale));
   const axisView = document.getElementById('axisView');
   axisView.classList.toggle('axis-overview', axisViewT.scale < .65);
   const zoomValue = document.getElementById('axisZoomValue');
@@ -2673,9 +2878,18 @@ function renderAxisView() {
   // 网格背景：垂直列线（每章一列）
   const grid = document.getElementById('axisGrid');
   if (grid) {
-    grid.style.backgroundSize = axisColW + 'px 100%';
     // 清理旧的引导线
-    grid.querySelectorAll('.axisLevelLine,.axisDiagLine,.axisPctLine,.axisBandLine,.axisFrameLine').forEach(el => el.remove());
+    grid.querySelectorAll('.axisChapterLine,.axisLevelLine,.axisDiagLine,.axisPctLine,.axisBandLine,.axisFrameLine').forEach(el => el.remove());
+    // 各章宽度可能不同；格线按真实章节边界排列，不能用固定宽度背景代替。
+    for (let ch = 1; ch <= maxChapter; ch++) {
+      const line = document.createElement('div');
+      line.className = 'axisChapterLine';
+      line.dataset.chapter = ch;
+      line.style.left = chapterStart[ch] + 'px';
+      line.style.top = plotTop + 'px';
+      line.style.height = (contentBottom - plotTop) + 'px';
+      grid.appendChild(line);
+    }
   }
 
   // Y 轴：分段模式（卷/境界/剧情节点）或 细刻度+层级参考网格 模式；泳道模式则按泳道切横带
@@ -3026,6 +3240,7 @@ function renderAxisView() {
   redrawAxisEdges();
   renderAxisTimelinePins();
   applyFilters(); // 渲染后立即套用分类筛选/搜索（轴节点也要被过滤）
+  highlightForeshadowEvidence(nodeMap[currentDetailNodeId]);
 
   const hint = document.createElement('div');
   hint.className = 'axisHint';
@@ -3304,7 +3519,11 @@ async function loadData() {
   redrawEdges();
   if (savedView) applyAxisTransform(); // 恢复平移/缩放（在渲染完成后应用）
   viewStateReady = true;               // 此后才允许把视图状态写回盘
-  detailBody.innerHTML = '<div class="empty">点击节点查看完整内容</div>';
+  captureDetailDraft();
+  const restoreDetail = detailRenderedProject === currentProject && nodeMap[detailRenderedNodeId];
+  detailRenderedNodeId = ''; currentDetailNodeId = '';
+  if (restoreDetail) showDetail(restoreDetail);
+  else detailBody.innerHTML = '<div class="empty"><div class="emptyIcon">◈</div><div class="emptyTitle">选择节点查看内容</div><div class="emptySub">内容与属性显示在这里，写作任务交给 Agent。</div></div>';
   if (typeof loadWritingTasks !== 'function') clearPendingRefs(!chatJustSwitched);
   loadChatHistory(chatJustSwitched); chatJustSwitched = false;
   document.dispatchEvent(new Event('projectDataUpdated'));
@@ -4658,10 +4877,10 @@ chatMessages.addEventListener('keydown', (e) => {
   }
 });
 // ── 对话框：拖拽调整大小 + 停靠位置（底部/右侧/左侧/悬浮） ──
-function chatDockNow() { try { return localStorage.getItem('novelCanvasChatDock') || 'right'; } catch (_) { return 'right'; } }
+function chatDockNow() { try { return localStorage.getItem('novelCanvasChatDock') || 'bottom'; } catch (_) { return 'bottom'; } }
 function chatSizes() {
-  let h = 360, w = 460, fr = null;
-  try { h = parseInt(localStorage.getItem('novelCanvasChatHeight') || '300', 10) || 300; } catch (_) {}
+  let h = 320, w = 460, fr = null;
+  try { h = parseInt(localStorage.getItem('novelCanvasChatHeight') || '320', 10) || 320; } catch (_) {}
   try { w = parseInt(localStorage.getItem('novelCanvasChatWidth') || '460', 10) || 460; } catch (_) {}
   try { fr = JSON.parse(localStorage.getItem('novelCanvasChatFloat') || 'null'); } catch (_) {}
   if (!fr || typeof fr.x !== 'number') fr = { x: Math.round(window.innerWidth * 0.55), y: 70, w: 420, h: 480 };
@@ -4693,15 +4912,15 @@ function syncChatPanel() {
     panel.style.left = r.x + 'px';
     panel.style.top = r.y + 'px';
     panel.style.width = r.w + 'px';
-    panel.style.height = (collapsed ? 36 : r.h) + 'px';
+    panel.style.height = (collapsed ? 40 : r.h) + 'px';
     panel.style.alignSelf = '';
   } else if (dock === 'right' || dock === 'left') {
     panel.style.width = s.side + 'px';
-    panel.style.height = collapsed ? '36px' : 'auto';
+    panel.style.height = collapsed ? '40px' : 'auto';
     panel.style.alignSelf = collapsed ? 'flex-start' : 'stretch';
   } else {
     panel.style.width = '';
-    panel.style.height = (collapsed ? 36 : s.bottom) + 'px';
+    panel.style.height = (collapsed ? 40 : Math.max(260, Math.min(window.innerHeight * 0.7, s.bottom))) + 'px';
     panel.style.alignSelf = '';
   }
   const sel = document.getElementById('chatDock');
@@ -4755,7 +4974,7 @@ function initChatResize() {
     const dy = e.clientY - chatResizing.startY;
     const dock = chatResizing.dock;
     if (dock === 'bottom') {
-      const h = Math.max(60, Math.min(window.innerHeight * 0.85, chatResizing.h - dy));
+      const h = Math.max(isChatCollapsed() ? 40 : 260, Math.min(window.innerHeight * 0.7, chatResizing.h - dy));
       panel.style.height = h + 'px';
       try { localStorage.setItem('novelCanvasChatHeight', String(h)); } catch (_) {}
     } else if (dock === 'right') {
@@ -4873,6 +5092,7 @@ detailCollapseBtn.addEventListener('click', () => {
 });
 detailShowBtn.addEventListener('click', () => {
   detailEl.classList.remove('hidden');
+  detailEl.classList.add('responsive-open');
   document.getElementById('detailResizer').classList.remove('hidden');
   detailShowBtn.classList.remove('show');
 });
@@ -4895,7 +5115,7 @@ function initResizer(handleId, targetId, mode) {
       if (!dragging) return;
       const delta = ev.clientX - startX;
       let w = mode === 'left' ? startW + delta : startW - delta;
-      w = Math.max(mode === 'left' ? 180 : 240, Math.min(mode === 'left' ? 420 : 640, w));
+      w = Math.max(mode === 'left' ? 180 : 300, Math.min(mode === 'left' ? 420 : 480, w));
       target.style.width = w + 'px';
     }
     function up() {
@@ -6234,6 +6454,73 @@ function wireDeslopHits() {
   });
 }
 
+// ── 角色追踪：磁盘卡片、字面章节线索与观测到的字段变更 ──
+let characterSelection = '', characterProject = '', characterRequestSeq = 0;
+function currentCharacters() { return healthSnapshot?.project === currentProject ? healthSnapshot.characters || [] : []; }
+async function loadCharacterTracking() {
+  const project = currentProject, seq = ++characterRequestSeq;
+  document.getElementById('characterRefresh').disabled = true;
+  try {
+    await refreshProjectMonitor(project);
+    if (project !== currentProject || seq !== characterRequestSeq) return;
+    renderCharacterTracking();
+  } catch(e) {
+    if (project === currentProject && seq === characterRequestSeq) document.getElementById('characterDetail').textContent = '加载失败：' + e.message;
+  } finally { if (seq === characterRequestSeq) document.getElementById('characterRefresh').disabled = false; }
+}
+function characterHasDraft(c) {
+  return openFiles.some(f=>f.path===c.file&&f.dirty) || detailDrafts.get(currentProject+':'+c.id)?.content != null;
+}
+function renderCharacterTracking() {
+  if (characterProject !== currentProject) {
+    characterProject = currentProject; characterSelection = '';
+    document.getElementById('characterSearch').value = '';
+    document.getElementById('characterFilter').value = 'all';
+  }
+  const all = currentCharacters(), tracking = healthSnapshot?.characterTracking || {}, s = tracking.summary || {};
+  document.getElementById('characterSummary').innerHTML = [['角色卡',s.total],['已记状态',s.withStatus],['待核对',s.needsReview],['有正文线索',s.withMentions],['卡片变更',s.changes]].map(([label,value])=>'<span><strong>'+fmtNum(value)+'</strong>'+label+'</span>').join('');
+  const query = document.getElementById('characterSearch').value.trim().toLowerCase(), filter = document.getElementById('characterFilter').value;
+  const list = all.filter(c=>[c.title,...c.aliases,...c.fields.map(f=>f.value)].join(' ').toLowerCase().includes(query))
+    .filter(c=>filter==='all'||filter==='review'&&c.issues.length||filter==='missing'&&!c.status||filter==='changed'&&c.history?.length);
+  if (!list.some(c=>c.id===characterSelection)) characterSelection = list[0]?.id || '';
+  document.getElementById('characterRoster').innerHTML = list.map(c=>'<button class="characterItem'+(c.id===characterSelection?' active':'')+'" data-character="'+escapeHtml(c.id)+'" aria-pressed="'+(c.id===characterSelection)+'"><strong>'+escapeHtml(c.title)+'</strong><small>'+escapeHtml(c.status || '尚未填写当前状态')+'</small><small>'+c.mentionCount+' 个章节线索'+(c.issues.length?' · '+c.issues.length+' 项待核对':'')+'</small></button>').join('') || '<div class="hint">'+(all.length?'没有符合筛选的角色':'暂无角色卡。可在追踪/角色状态.md 用 ## 角色名维护，或在角色目录放单独文件。')+'</div>';
+  const c = list.find(c=>c.id===characterSelection), host = document.getElementById('characterDetail');
+  if (!c) { host.innerHTML = ''; return; }
+  const missing = c.status ? '' : '<div class="characterField"><dt>当前状态</dt><dd>未填写；身份和性格不代替当前状态。</dd></div>';
+  const fields = c.fields.filter(f=>!['aliases','updated'].includes(f.key));
+  const history = [...(c.history || [])].reverse();
+  host.innerHTML = '<div class="characterHead"><div><h3>'+escapeHtml(c.title)+'</h3><div class="characterSource">'+escapeHtml(c.file)+' · 第 '+c.startLine+' 行</div></div><div class="characterActions"><button data-character-open="'+escapeHtml(c.id)+'">编辑卡片</button><button data-character-agent="'+escapeHtml(c.id)+'">核对并更新 →</button></div></div>'+
+    '<div class="characterNote">别名：'+escapeHtml(c.aliases.join(' / '))+' · 状态截至：'+(c.updatedChapter!=null?'第 '+c.updatedChapter+' 章':'未记录')+' · 最后字面提及：'+(c.lastChapter!=null?'第 '+c.lastChapter+' 章':'未匹配')+'</div>'+
+    '<div class="characterIssues">'+escapeHtml(c.issues.length?'待核对：'+c.issues.join(' · '):'已填写状态与更新章号')+'</div>'+
+    (characterHasDraft(c)?'<p class="characterNote">此卡片有未保存草稿，下方统计与历史来自磁盘；Agent 引用会携带草稿。</p>':'')+
+    '<dl class="characterFields">'+missing+fields.map(f=>'<div class="characterField"><dt>'+escapeHtml(f.label)+' · 行 '+f.line+'</dt><dd>'+escapeHtml(f.value || '未填写')+'</dd></div>').join('')+'</dl>'+
+    '<details class="characterSection" open><summary>卡片变更记录 · '+history.length+'</summary><div class="characterNote">从首次扫描开始，保留最近 100 次字段变化。检测时间不是剧情发生时间，首次扫描仅建基线。'+escapeHtml(tracking.error || '')+'</div><div class="characterEvidence">'+(history.map(h=>'<div class="characterChange"><time>'+escapeHtml(new Date(h.at).toLocaleString('zh-CN'))+'</time>'+(h.asOfChapter!=null?' · 卡片截至第 '+h.asOfChapter+' 章':'')+h.changes.map(f=>'<div>'+escapeHtml(f.label)+'：<del>'+escapeHtml(f.before || '未填写')+'</del> → <ins>'+escapeHtml(f.after || '已清空')+'</ins></div>').join('')+'</div>').join('')||'<div class="characterNote">尚未观测到字段变化。保存卡片或采纳提案后刷新即可记录；正文中新发生的事件需要核对后更新卡片。</div>')+'</div></details>'+
+    '<details class="characterSection" open><summary>正文线索 · '+c.mentionCount+' 个章节</summary><div class="characterNote">按名字和声明的别名字面匹配，可包含回忆或他人提及，不能据此判定实际出场、伤势或关系变化。这里只统计已保存正文。</div><div class="characterEvidence">'+(c.mentions.map(m=>'<button class="characterMention" data-character-chapter="'+escapeHtml(m.nodeId)+'"><strong>'+escapeHtml(m.title)+'</strong> · '+escapeHtml(m.aliases.join(' / '))+'<span>'+escapeHtml(m.file)+' · 行 '+m.line+'</span><span>'+escapeHtml(m.excerpt)+'</span></button>').join('') || '<div class="characterNote">未匹配到名字或别名，请核对别称；这不代表该角色没有出场。</div>')+'</div></details>';
+}
+function openCharacterTracking(id) {
+  characterSelection = id; characterProject = currentProject;
+  document.getElementById('characterSearch').value = ''; document.getElementById('characterFilter').value = 'all';
+  openAnalysis('roles');
+}
+function renderCharacterDetail(n) {
+  const host = document.getElementById('detailCharacter');
+  if (!host || !n) return;
+  const c = currentCharacters().find(c=>c.id===n.id);
+  host.innerHTML = '<summary>角色状态追踪</summary><div class="characterNote">'+escapeHtml(c?.status || '当前状态尚未解析，可打开追踪页检查字段')+(c?' · '+c.mentionCount+' 个正文线索 · '+(c.history?.length || 0)+' 次卡片变更':'')+'</div><div class="characterActions"><button id="detailCharacterOpen">查看状态与变化</button><button id="detailCharacterAgent">核对并更新 →</button></div>';
+  document.getElementById('detailCharacterOpen').onclick = ()=>openCharacterTracking(n.id);
+  document.getElementById('detailCharacterAgent').onclick = ()=>startCharacterTask(n.id);
+}
+document.getElementById('characterSearch').addEventListener('input',renderCharacterTracking);
+document.getElementById('characterFilter').addEventListener('change',renderCharacterTracking);
+document.getElementById('characterRefresh').addEventListener('click',()=>loadCharacterTracking());
+document.getElementById('analysisPaneRoles').addEventListener('click',e=>{
+  const item = e.target.closest('[data-character]');
+  if (item) { characterSelection = item.dataset.character; renderCharacterTracking(); return; }
+  const open = e.target.closest('[data-character-open]'), chapter = e.target.closest('[data-character-chapter]'), agent = e.target.closest('[data-character-agent]');
+  if (open || chapter) { closeAnalysis(); activateEditorTab('canvas'); focusNode(open?.dataset.characterOpen || chapter.dataset.characterChapter); if (open && detailBody.dataset.mode !== 'edit') document.getElementById('previewToggle')?.click(); }
+  if (agent) startCharacterTask(agent.dataset.characterAgent);
+});
+
 // ── 监控中心（单一数据源 /api/health）──────────────────────────────
 // 原则：所有数字都来自服务端聚合接口，前端不再自己算一遍；每个数字可下钻到「待办明细」，
 // 每条告警都能 focusNode() 跳到对应节点（禁止用 showDetail 跳转，见 v1.20 的隐性依赖）。
@@ -6248,12 +6535,16 @@ function publishHealth(d, project) {
   healthSnapshot = { ...d, project, chapters: nodes.filter(n => n.label === '章节') };
   healthCacheKey = project;
   healthCacheHtml = renderHealth(d);
+  statsCacheKey = '';
   const body = document.getElementById('healthBody');
   if (body && analysisTab === 'health') {
     body.innerHTML = healthCacheHtml;
     wireHealthClicks();
   }
   renderHealthBar(d);
+  if (analysisTab === 'roles') renderCharacterTracking();
+  if (analysisTab === 'board') renderBoard();
+  if (detailRenderedProject === project) renderCharacterDetail(nodeMap[currentDetailNodeId]);
 }
 
 // 只刷新磁盘快照与监控，不重建编辑器、不清空草稿、不改变平移/缩放及聊天状态。
@@ -6420,14 +6711,14 @@ function buildHealthDrill(kind, d) {
   }
   if (kind === 'roles') {
     const list = d.characters || [];
-    if (!list.length) return '<div class="drillEmpty">该项目暂无可解析的角色卡（需要「追踪/角色状态.md」里按「## 角色名 + - 身份：/- 当前状态：」维护）</div>';
+    if (!list.length) return '<div class="drillEmpty">暂无已识别的角色卡，请在角色目录或追踪/角色状态.md 维护。</div>';
     return '<div class="drillHead">' + list.length + ' 张角色卡（点条目跳转）</div>' +
       list.map(c =>
         '<div class="drillRow" data-id="' + escapeHtml(c.id) + '">' +
           '<span class="drillName">' + escapeHtml(c.title) + '</span>' +
           '<span class="drillMeta">' + escapeHtml(c.status || '无状态') +
-            (c.lastChapter ? ' · 最后出场第 ' + c.lastChapter + ' 章' : '') +
-            (c.gap ? ' · 已 ' + c.gap + ' 章未出现' : '') + '</span>' +
+            (c.lastChapter ? ' · 最后字面提及第 ' + c.lastChapter + ' 章' : '') +
+            (c.gap ? ' · 已 ' + c.gap + ' 章无命中（待核对）' : '') + '</span>' +
         '</div>').join('');
   }
   return '';
@@ -6453,6 +6744,7 @@ function wireHealthClicks() {
     if (!card) return;
     e.stopPropagation();
     const kind = card.getAttribute('data-hcard');
+    if (kind === 'roles') { openCharacterTracking(''); return; }
     const host = document.getElementById('healthDrillHost');
     if (!host) return;
     const existing = host.querySelector('.drillPanel');
@@ -6488,6 +6780,7 @@ async function loadBookStats() {
     const res = await fetch('/api/bookstats?project=' + encodeURIComponent(currentProject));
     const d = await res.json();
     if (d.error) throw new Error(d.error);
+    if (key !== currentProject) return;
     statsCacheHtml = renderBookStats(d);
     statsCacheKey = key;
     // 请求返回时用户可能已切到别的标签，此时不要再往隐藏 pane 里写内容
@@ -6505,6 +6798,7 @@ function wireStatsClicks() {
   if (!body || body._statsWired) return;
   body._statsWired = true;
   body.addEventListener('click', (e) => {
+    if (e.target.closest('[data-character-stats]')) { openCharacterTracking(''); return; }
     const host = e.target.closest('[data-drill]');
     if (!host) return;
     e.stopPropagation();
@@ -6606,7 +6900,8 @@ function renderBookStats(d) {
       '<span class="barLabel">已回收 ' + d.foreshadow.recovered + ' / 共 ' + d.foreshadow.total + ' 条</span>' +
       '<span class="barTrack"><span class="barFill green" style="width:' + d.foreshadow.rate + '%"></span></span>' +
       '<span class="barPct">' + d.foreshadow.rate + '%</span></div></div>' +
-    '<div class="statsSection"><h4>分类统计</h4><div class="catChips">' + (cats || '<div class="hint">暂无节点</div>') + '</div></div>';
+    '<div class="statsSection"><h4>角色状态</h4><button class="plotGhost" data-character-stats="1">'+fmtNum(d.characterTracking?.summary.total)+' 张卡片 · '+fmtNum(d.characterTracking?.summary.withStatus)+' 已记状态 · '+fmtNum(d.characterTracking?.summary.needsReview)+' 待核对 · 查看追踪 →</button></div>' +
+    '<div class="statsSection"><h4>分类节点数（含文件头与汇总）</h4><div class="catChips">' + (cats || '<div class="hint">暂无节点</div>') + '</div></div>';
 }
 
 // ── 时间线（作者手动维护的重要节点，按章节排序；不再自动抽取时间标记） ──

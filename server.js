@@ -7,7 +7,7 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 
 const ROOT = __dirname; // 应用目录：存放页面/静态资源
 const PROJECTS_ROOT = process.env.NOVEL_PROJECTS_ROOT || path.dirname(ROOT); // 小说项目根目录
@@ -386,16 +386,31 @@ function parseTableSegments(fileKey, file, type, label, root) {
     }
   }
   if (headerIdx < 0) return segs;
-  const headerCells = lines[headerIdx].split('|').map(s => s.trim()).filter(Boolean);
+  const tableCells = line => line.trim().slice(1,-1).split('|').map(s => s.trim());
+  const headerCells = tableCells(lines[headerIdx]);
   for (let i = headerIdx + 2; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim().startsWith('|') || !line.trim().endsWith('|')) continue;
-    const cells = line.split('|').map(s => s.trim()).filter(Boolean);
+    const cells = tableCells(line);
     if (cells.length < 2) continue;
     const idCell = cells[0] || `row-${i}`;
     const titleCell = cells[1] || idCell;
     const id = `${fileKey}:${slug(idCell)}`;
-    segs.push({ id, file, type, label, title: `${idCell} ${titleCell}`.trim(), content: line, startLine: i + 1, endLine: i + 1 });
+    const node = { id, file, type, label, title: `${idCell} ${titleCell}`.trim(), content: line, startLine: i + 1, endLine: i + 1 };
+    if (label === '伏笔') {
+      node.foreshadowName = titleCell;
+      node.foreshadowFields = headerCells.map((label,index) => ({ label,value:cells[index] || '' }));
+      const field = pattern => { const idx = headerCells.findIndex(h => !/状态|说明|备注/.test(h) && pattern.test(h)); return idx < 0 ? '' : cells[idx] || ''; };
+      const planted = field(/投放|埋设|埋入|首次出现/), expected = field(/回收/);
+      node.foreshadowPlan = { planted, expected, plantedChapter:foreshadowChapterReference(planted), expectedChapter:foreshadowChapterReference(expected) };
+    }
+    if (label === '角色') {
+      const nameColumn = headerCells.findIndex(h=>/^(角色|姓名|名字|人物|名称|角色名|人物名)$/.test(h.replace(/[*`]/g,'').trim()));
+      node.roleName = cells[nameColumn>=0?nameColumn:/编号|序号|^#|^id$/i.test(headerCells[0])?1:0] || titleCell;
+      node.title = node.roleName;
+      node.roleFields = headerCells.map((label,index) => ({ label,value:cells[index] || '',line:i+1 }));
+    }
+    segs.push(node);
   }
   return segs;
 }
@@ -755,10 +770,15 @@ function buildNodes(root) {
   const headingExclude = (config.scan && config.scan.headingExclude) || [];
   for (const def of config.scan.files) {
     try {
-      const segs = (def.table
+      let segs = (def.table
         ? parseTableSegments(def.key || def.match, def.match, def.type, def.label, root)
-        : parseHeadingSegments(def.key || def.match, def.match, def.type, def.label, new RegExp(def.heading || '^##\\s'), root))
-        .filter(s => !headingExclude.some(h => String(s.title).includes(h)));
+        : parseHeadingSegments(def.key || def.match, def.match, def.type, def.label, new RegExp(def.heading || '^##\\s'), root));
+      if (def.label === '角色' && !def.table && !segs.some(s=>characterFields(s).length && looksLikeCharacterCard(s))) {
+        const table = parseTableSegments(def.key || def.match,def.match,def.type,def.label,root);
+        // 老追踪文件也可直接用横向角色表；普通人物卡里的键值/关系表不会替换已有分节。
+        if (table.some(n=>n.roleFields.some(f=>/^(角色|姓名|名字|人物|名称|角色名|人物名)$/.test(f.label.replace(/[*`]/g,'').trim())))) segs = table;
+      }
+      segs = segs.filter(s => !headingExclude.some(h => String(s.title).includes(h)));
       for (const s of segs) {
         const firstLine = s.content.split('\n').find(l => l.trim() && !l.trim().startsWith('#')) || '';
         nodes.push({
@@ -877,6 +897,7 @@ function buildNodes(root) {
   for (const n of nodes) {
     n.volume = volumeGroupOf(n.file);
     if (n.label === '伏笔') n.foreshadowStatus = foreshadowStatusOf(n);
+    if (n.label === '角色') n.roleAliases = characterAliases(n,characterFields(n));
   }
 
   return nodes;
@@ -1390,7 +1411,7 @@ function buildConsistencyPackage(root, targetId, fullEntities) {
       .map(f => f.title + '（' + f.status + (f.chaptersSince != null ? '，已埋' + f.chaptersSince + '章' : '') + '）')
       .join('；');
     const roles = (h.characters || []).slice(0, 8)
-      .map(c => c.title + (c.lastChapter ? '（最后出场第' + c.lastChapter + '章）' : ''))
+      .map(c => c.title + (c.lastChapter ? '（最后字面提及第' + c.lastChapter + '章，待核对）' : ''))
       .join('；');
     const lines = [
       '【项目健康摘要（服务端实时计算，视为既有事实）】',
@@ -2097,7 +2118,10 @@ function buildBookStats(root) {
   // 分类统计
   const categories = {};
   for (const n of nodes) categories[n.label] = (categories[n.label] || 0) + 1;
-  return { totalWords, chapterCount, avgWordsPerChapter, byVolume, outline, foreshadow, categories };
+  const maxChapter = Math.max(0,...chapters.map(c=>Number(c.chapter)||0));
+  const gap = Number(loadProjectConfig(root)?.health?.foreshadowAlertGap) || DEFAULT_FORESHADOW_ALERT_GAP;
+  const { characterTracking } = buildCharacterTracking(nodes,root,maxChapter,gap>0?gap:DEFAULT_FORESHADOW_ALERT_GAP);
+  return { totalWords, chapterCount, avgWordsPerChapter, byVolume, outline, foreshadow, categories,characterTracking };
 }
 
 // ── 监控中心：单一聚合数据源（ProjectHealth）────────────────────────
@@ -2107,38 +2131,148 @@ function buildBookStats(root) {
 const DEFAULT_FORESHADOW_ALERT_GAP = 20; // 伏笔埋设后超过 N 章仍未回收 → 告警
 const DEFAULT_STALE_DAYS = 7;            // 超过 N 天没有更新 → 断更提醒
 
-// 角色「当前状态」：优先取 `- 当前状态：xxx` / `- 状态：xxx` 行；否则取第一条要点。
-function roleStatusOf(node) {
-  const text = String(node.content || '');
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  for (const l of lines) {
-    const m = l.match(/^[-*]?\s*(?:当前状态|状态)\s*[:：]\s*(.+)$/);
-    if (m && m[1].trim()) return m[1].trim().slice(0, 120);
+const ROLE_FIELD_KEYS = {
+  status: ['当前状态','状态','现状'], identity: ['身份','定位','角色定位'],
+  location: ['当前位置','所在位置','所在地','位置'], strength: ['境界','战力','等级','实力','评级'],
+  condition: ['身体状况','健康状态','伤势','伤病'], goal: ['当前目标','目标','动机'],
+  relation: ['人物关系','关系','关系状态'], inventory: ['持有物','装备','物品','装备清单'],
+  aliases: ['别名','别称','化名','昵称'], updated: ['状态更新章','更新章节','截至章节','最后更新章节','最后更新'],
+  personality: ['性格','心结','口头禅']
+};
+function characterFields(node) {
+  const fields = [];
+  const add = (rawLabel,value,line) => {
+    const label = String(rawLabel).replace(/[*`_]/g,'').replace(/[:：]\s*$/,'').trim();
+    const key = Object.keys(ROLE_FIELD_KEYS).find(k => ROLE_FIELD_KEYS[k].includes(label));
+    if (!key) return;
+    fields.push({ key,label,value:String(value || '').trim(),line });
+  };
+  if (node.roleFields) {
+    for (const f of node.roleFields) add(f.label,f.value,f.line);
+    return fields;
   }
-  for (const l of lines) {
-    const m = l.match(/^[-*]\s*(.+)$/);
-    if (m && m[1].trim()) return m[1].trim().slice(0, 120);
+  const lines = String(node.content || '').split('\n');
+  let historyLevel = 0;
+  for (let i=0;i<lines.length;i++) {
+    const text = lines[i].trim();
+    const section = text.match(/^(#{2,6})\s+(.+)$/);
+    if (section && /变化记录|变更记录|状态历史|历史状态|成长记录/.test(section[2])) { historyLevel = section[1].length; continue; }
+    if (historyLevel) {
+      if (!section || section[1].length>historyLevel) continue;
+      historyLevel = 0;
+    }
+    // 键值要点、强调键、两列表格及 ### 状态 小节均可读取。
+    const cells = text.startsWith('|') ? text.replace(/^\||\|$/g,'').split('|').map(s=>s.trim()) : null;
+    if (cells?.length === 2) { add(cells[0],cells[1],(node.startLine || 1)+i); continue; }
+    const match = text.replace(/^[-*+]\s+/,'').replace(/\*\*|`/g,'').match(/^([^:：]{1,20})\s*[:：]\s*(.*)$/);
+    if (match) { add(match[1],match[2],(node.startLine || 1)+i); continue; }
+    const heading = text.match(/^#{3,6}\s+(.+)$/);
+    if (heading) {
+      const body = [];
+      for (let j=i+1;j<lines.length && !/^\s*#/.test(lines[j]);j++) {
+        if (/^\s*[-*+]?\s*[^:：]{1,20}[:：]/.test(lines[j])) break;
+        if (lines[j].trim()) body.push(lines[j].trim().replace(/^[-*+]\s+/,''));
+      }
+      add(heading[1],body.join('；'),(node.startLine || 1)+i);
+    }
   }
-  return '';
+  return fields;
+}
+function characterAliases(node, fields) {
+  const name = cleanNodeTitle(node.roleName || node.title).split(/[（(]/)[0].trim();
+  const declared = fields.filter(f=>f.key==='aliases').flatMap(f=>f.value.split(/[、,，;；/|]/));
+  return [...new Set([name,...declared.map(s=>s.trim().replace(/[*`]/g,''))])].filter(s=>s && s.length<=60);
+}
+function characterMentions(aliases, chapters) {
+  const mentions = [];
+  for (const c of chapters) {
+    const text = String(c.content || '');
+    const hits = aliases.filter(a=>text.includes(a));
+    if (!hits.length) continue;
+    const offset = Math.min(...hits.map(a=>text.indexOf(a)));
+    mentions.push({ nodeId:c.id,title:c.title,file:c.file,chapter:Number(c.chapter)||null,aliases:hits,
+      line:(c.startLine || 1)+text.slice(0,offset).split('\n').length-1,
+      excerpt:text.slice(Math.max(0,offset-40),offset+130).replace(/\s+/g,' ').trim() });
+  }
+  return mentions.sort((a,b)=>(a.chapter ?? Infinity)-(b.chapter ?? Infinity)||a.file.localeCompare(b.file,'zh'));
 }
 
-// 角色「最后出场」：在章节正文里找最后一次出现其名字的章节（纯字符串匹配，便宜）。
-// 名字带括号说明的（如「莉亚思（三无少女·外三无内病娇）」）只取主名匹配。
-function lastAppearanceOf(name, chapters) {
-  const key = String(name || '').split(/[（(]/)[0].trim();
-  if (!key) return null;
-  let last = null;
-  for (const c of chapters) {
-    if (String(c.content || '').includes(key)) last = c;
+// 仅保存两次磁盘扫描之间的卡片字段差异；检测时间不是剧情发生时间。
+// 不写小说 Markdown，未采纳的提案和编辑器草稿不会进入此记录。
+function trackCharacterStates(root, characters) {
+  const dir = process.env.NOVEL_CANVAS_TRACKING_DIR || path.join(ROOT,'.data','character-history');
+  const file = path.join(dir,createHash('sha256').update(path.resolve(root)).digest('hex')+'.json');
+  let saved = { startedAt:new Date().toISOString(),cards:{} };
+  try { saved = JSON.parse(fs.readFileSync(file,'utf8')); } catch (e) {
+    if (e.code !== 'ENOENT') return { available:false,startedAt:'',error:'角色变更记录读取失败，请检查应用数据目录' };
   }
-  if (!last) return null;
-  return { chapter: Number(last.chapter) || null, nodeId: last.id, title: last.title };
+  if (!saved || typeof saved !== 'object' || !saved.cards || typeof saved.cards !== 'object') return { available:false,startedAt:'',error:'角色变更记录格式异常，请检查应用数据目录' };
+  const cards = {}, at = new Date().toISOString();
+  for (const c of characters) {
+    const values = Object.fromEntries(c.fields.map(f=>[f.label,f.value]));
+    const previous = saved.cards?.[c.id];
+    const history = [...(previous?.history || [])];
+    if (previous) {
+      const changes = [...new Set([...Object.keys(previous.values || {}),...Object.keys(values)])]
+        .filter(label=>(previous.values[label] || '') !== (values[label] || ''))
+        .map(label=>({ label,before:previous.values[label] || '',after:values[label] || '' }));
+      if (changes.length) history.push({ at,asOfChapter:c.updatedChapter,changes });
+    }
+    cards[c.id] = { values,history:history.slice(-100) };
+    c.history = cards[c.id].history;
+  }
+  const next = { startedAt:saved.startedAt || at,cards };
+  try {
+    if (JSON.stringify(next) !== JSON.stringify(saved)) {
+      fs.mkdirSync(path.dirname(file),{ recursive:true });
+      fs.writeFileSync(file+'.tmp',JSON.stringify(next,null,2),'utf8');
+      fs.renameSync(file+'.tmp',file);
+    }
+    return { available:true,startedAt:next.startedAt };
+  } catch (_) { return { available:false,startedAt:next.startedAt,error:'角色变更记录未能保存，请检查应用数据目录' }; }
+}
+function buildCharacterTracking(nodes, root, maxChapter, alertGap) {
+  const chapters = nodes.filter(n=>n.label==='章节');
+  const roleNodes = nodes.filter(n=>n.label==='角色'&&!n.unrecognized&&!isGlobalBoardNodeType(n)&&looksLikeCharacterCard(n));
+  const characters = roleNodes.map(n=>{
+    const fields = characterFields(n), aliases = characterAliases(n,fields), mentions = characterMentions(aliases,chapters);
+    const last = mentions.filter(m=>m.chapter!=null).at(-1) || mentions.at(-1);
+    const status = fields.find(f=>f.key==='status'&&f.value)?.value || '';
+    const updated = fields.find(f=>f.key==='updated')?.value || '';
+    const updatedChapter = foreshadowChapterReference(updated);
+    const gap = last?.chapter ? Math.max(0,maxChapter-last.chapter) : null;
+    const issues = [];
+    if (!status) issues.push('缺少当前状态');
+    if (!mentions.length) issues.push('未匹配正文');
+    if (gap != null && gap>=alertGap) issues.push('长期未提及');
+    if (updatedChapter != null && last?.chapter>updatedChapter) issues.push('状态落后于正文');
+    if (updatedChapter == null) issues.push('缺少更新章号');
+    return { id:n.id,title:cleanNodeTitle(n.roleName || n.title),file:n.file,startLine:n.startLine,
+      status,fields,aliases,updatedChapter,mentions,mentionCount:mentions.length,
+      lastChapter:last?.chapter ?? null,lastChapterId:last?.nodeId || '',gap,issues };
+  });
+  const tracking = trackCharacterStates(root,characters);
+  const summary = { total:characters.length,withStatus:characters.filter(c=>c.status).length,
+    needsReview:characters.filter(c=>c.issues.length).length,withMentions:characters.filter(c=>c.mentions.length).length,
+    changes:characters.reduce((sum,c)=>sum+(c.history?.length || 0),0) };
+  return { characters,characterTracking:{ ...tracking,summary,alertGap } };
 }
 
 // 伏笔「埋设章号」：在整行的单元格里找像章号的那一格。
 // 两轮匹配——先找带前缀的（第12章 / Ch25），再退化为纯数字；**跳过首列**（那是编号 # / V1-01，
 // 不是章号，此行曾导致所有伏笔都被算成「埋在第1章」），也跳过状态格本体。
+function foreshadowChapterReference(value) {
+  const text = String(value || '').trim();
+  const number = chapterNumberFromTitle(text, '');
+  if (number != null) return number;
+  const match = text.match(/\bch\s*(\d{1,4})\b/i) || text.match(/^(\d{1,4})$/);
+  return match ? Number(match[1]) : null;
+}
 function foreshadowPlantedChapter(node) {
+  if (node.foreshadowPlan) {
+    // 有表头时只读埋设列，不能把回收计划或编号当成埋设章号。
+    return node.foreshadowPlan.plantedChapter ?? null;
+  }
   const status = foreshadowStatusOf(node);
   const cells = String(node.content || '').split('|').map(s => s.trim()).filter(Boolean);
   for (let i = 1; i < cells.length; i++) {
@@ -2192,20 +2326,7 @@ function buildProjectHealth(root, projectName) {
   const daysSinceUpdate = lastMtime ? Math.floor((Date.now() - lastMtime) / 86400000) : null;
 
   // ② 角色状态（只保留看起来像角色卡的节点，见 looksLikeCharacterCard）
-  const roleNodes = nodes.filter(n =>
-    n.label === '角色' && !n.unrecognized && !isGlobalBoardNodeType(n) && looksLikeCharacterCard(n));
-  const characters = roleNodes.map(n => {
-    const last = lastAppearanceOf(n.title, chapters);
-    return {
-      id: n.id,
-      title: cleanNodeTitle(n.title),
-      status: roleStatusOf(n),
-      lastChapter: last ? last.chapter : null,
-      lastChapterId: last ? last.nodeId : '',
-      // 距最后一次出场已过多少章（越大越可能被写丢）
-      gap: last && last.chapter ? Math.max(0, maxChapter - last.chapter) : null
-    };
-  });
+  const { characters,characterTracking } = buildCharacterTracking(nodes,root,maxChapter,fsGap);
 
   // ③ 伏笔
   const fsNodes = nodes.filter(n => n.label === '伏笔');
@@ -2276,7 +2397,7 @@ function buildProjectHealth(root, projectName) {
     if (c.gap != null && c.lastChapter && c.gap >= fsGap) {
       alerts.push({
         level: 'warn', kind: 'character',
-        text: '角色「' + c.title + '」自第 ' + c.lastChapter + ' 章后已 ' + c.gap + ' 章未出现',
+        text: '角色「' + c.title + '」自第 ' + c.lastChapter + ' 章后已 ' + c.gap + ' 章无名字/别名命中（待核对）',
         nodeId: c.id
       });
     }
@@ -2317,6 +2438,7 @@ function buildProjectHealth(root, projectName) {
     },
     volumes,
     characters,
+    characterTracking,
     foreshadow,
     consistency,
     scan,
@@ -2332,17 +2454,14 @@ function isGlobalBoardNodeType(n) {
 }
 
 // 明显不是「人」的分节标题
-const NOT_A_CHARACTER = /属性|状态|追踪|汇总|总纲|文件头|总表|规则|说明|设定|世界|大纲|关系|时间线|词典|清单|进度|日志|快照|表$/;
+const NOT_A_CHARACTER = /(?:属性|汇总|总纲|文件头|总表|规则|说明|设定|关系表|时间线|词典|清单|进度|日志|快照|表)$|^(?:状态|追踪|世界|大纲|关系|角色状态|状态追踪|主角状态)$/;
 
-// 是否像一张「角色卡」：必须有 身份/当前状态/定位/境界/战力 这类键行。
-// 为什么需要这道判定：`追踪/角色状态.md` 是角色卡，但 `追踪/状态追踪.md`（同为 label 角色）
-// 里是按「主角属性 / 装备清单 / 当前进度」分节的数据表——不是人。不区分就会把分节标题
-// 当成角色列出来。判不出来的项目宁可显示「暂无可解析的角色卡」，也不给假数据。
-const CHARACTER_KEY_LINE = /^[-*]?\s*(身份|当前状态|状态|定位|境界|战力|评级|口头禅|心结|动机|目标)\s*[:：]/m;
+// 排除属性板与汇总小节；字段缺失的人物卡仍保留为待办。
 function looksLikeCharacterCard(node) {
-  const title = String(node.title || '');
+  const title = String(node.roleName || node.title || '');
   if (NOT_A_CHARACTER.test(title)) return false;
-  return CHARACTER_KEY_LINE.test(String(node.content || ''));
+  // 已被角色规则识别的普通人物卡也列出；缺字段应是待办，不能从统计中消失。
+  return !!title.trim();
 }
 
 // ══ AI 味检测（离线规则引擎，零 LLM 成本）══════════════════════════════
@@ -2811,7 +2930,7 @@ function buildPlotContext(root, project) {
   const openFs = (h.foreshadow.items || []).slice(0, 12)
     .map(f => f.title + '（' + f.status + (f.chaptersSince != null ? '，已埋 ' + f.chaptersSince + ' 章' : '') + '）');
   const missRoles = (h.characters || []).filter(c => c.gap != null && c.gap >= 10)
-    .slice(0, 8).map(c => c.title + '（自第 ' + c.lastChapter + ' 章后 ' + c.gap + ' 章未出现）');
+    .slice(0, 8).map(c => c.title + '（自第 ' + c.lastChapter + ' 章后 ' + c.gap + ' 章无字面命中，待核对）');
   const lines = [
     '【项目现状（服务端实时计算，视为事实）】',
     '进度：共 ' + h.progress.chapterCount + ' 章 / ' + h.progress.totalWords + ' 字，' + h.progress.volumeCount + ' 卷，已推进到第 ' + h.progress.maxChapter + ' 章'

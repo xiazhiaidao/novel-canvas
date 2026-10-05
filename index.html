@@ -689,80 +689,78 @@
   }
   .fileTreeItem .recFileBadge { background: #6b7280; color: #fff; font-weight: 700; }
   #detail {
-    width: 340px; background: var(--panel); backdrop-filter: blur(14px);
-    border-left: 1px solid var(--panel-border); padding: 0;
-    overflow-y: auto; z-index: 10;
+    width: 350px; flex: none; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--panel-border); display: flex; flex-direction: column;
+    overflow: hidden; z-index: 10;
   }
-  #detailHead {
-    padding: 14px 16px;
-    font-weight: 700;
-    color: var(--accent);
-    border-bottom: 1px solid var(--panel-border);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  #detailBody { padding: 16px; }
-  #detail::-webkit-scrollbar { width: 5px; }
-  #detail::-webkit-scrollbar-thumb { background: rgba(15,23,42,.15); border-radius: 4px; }
-  #detail h2 { font-size: 18px; color: var(--accent); margin-bottom: 8px; }
-  #detail .meta { font-size: 12px; color: var(--muted); margin-bottom: 12px; word-break: break-all; line-height: 1.6; }
-  #detail label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
-  #detail .nodeProps {
-    display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
-    padding: 10px; margin-bottom: 10px; border-radius: 12px;
-    background: rgba(15,23,42,.03); border: 1px solid var(--panel-border);
-  }
-
-  #detail .propRow { display: flex; flex-direction: column; gap: 3px; }
-  #detail .propRow label { margin: 0; font-size: 10px; }
-  #detail .propRow select, #detail .propRow input {
-    padding: 4px 8px; border-radius: var(--rad-sm); font-size: 12px;
-    border: 1px solid var(--panel-border); background: var(--panel); color: var(--text);
-    min-width: 84px; outline: none;
-  }
-  #detail .propRow input[type="number"] { min-width: 70px; width: 70px; }
-  #detail .propRow button {
-    flex: 0; padding: 6px 12px; border-radius: var(--rad-sm); font-size: 12px; font-weight: 600;
-    background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--text-strong);
-    border: 1px solid var(--panel-border); cursor: pointer;
-  }
-  #detail .propRow button:hover { border-color: rgba(217,119,6,.45); }
-  #detail textarea {
-    width: 100%; min-height: 260px; padding: 12px; background: rgba(15,23,42,.04);
-    border: 1px solid var(--panel-border); border-radius: 12px; color: var(--text);
-    font-size: 13px; outline: none; resize: vertical; line-height: 1.7; transition: border .2s;
-  }
-  #detail textarea:focus { border-color: rgba(245,197,107,.45); }
-  #detail .btnRow { display: flex; gap: 8px; margin-top: 14px; }
-  #detail button {
-    flex: 1; padding: 10px; border: none; border-radius: var(--rad-md);
-    background: linear-gradient(135deg, #e7e9f0, #d6dae6); color: var(--accent);
-    font-size: 13px; font-weight: 600; cursor: pointer; transition: all var(--dur);
-  }
-  #detail button:hover { background: linear-gradient(135deg, #d6dae6, #c2c9d6); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.3); }
-  /* 收起按钮保持小号文字样式（#detail button 选择器会误伤它，需更高优先级覆盖） */
-  #detailHead #detailCollapse {
-    flex: none;
-    padding: 0 4px;
-    background: none;
-    border: none;
-    box-shadow: none;
-    transform: none;
-    font-size: 14px;
-    font-weight: 400;
-    width: auto;
-  }
-  #detailHead #detailCollapse:hover { background: none; transform: none; box-shadow: none; }
-  #detail .status { margin-top: 10px; font-size: 12px; color: #667085; min-height: 18px; }
-  #detail .empty {
-    color: var(--muted); margin: 48px 24px 0; text-align: center; font-size: 14px;
-    padding: 36px 20px; border: 1.5px dashed var(--panel-border); border-radius: 16px;
-    background: rgba(15,23,42,.015); line-height: 1.8;
-  }
-  #detail .emptyIcon { font-size: 28px; opacity: .45; margin-bottom: 10px; }
-  #detail .emptyTitle { font-size: 14px; color: var(--muted); font-weight: 600; }
-  #detail .emptySub { font-size: 12px; opacity: .8; margin-top: 4px; }
+  #detailHead { height: 52px; flex: none; padding: 0 18px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--panel-border); }
+  #detailHead > span { flex: 1; font-size: 14px; font-weight: 600; }
+  #detailHead button { flex: none; padding: 6px 8px; height: 32px; font-size: 12px; }
+  #detailBody { padding: 20px 18px; overflow-y: auto; min-height: 0; flex: 1; }
+  .detailHeading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .detailKind { color: var(--accent); font-size: 12px; }
+  .detailWordCount { color: var(--muted); font-size: 12px; }
+  #detailDirty { font-size: 12px; color: var(--muted); margin-left: auto; }
+  #detail h2 { flex-basis: 100%; font-size: 18px; line-height: 1.6; font-weight: 600; margin: 0 0 12px; overflow-wrap: anywhere; }
+  .detailSource { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+  .detailSource summary { display: flex; gap: 8px; align-items: center; cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+  .detailSource summary > span { margin-left: auto; flex: none; }
+  .detailSource > div { padding-top: 8px; line-height: 1.7; overflow-wrap: anywhere; }
+  .detailTabs { display: flex; gap: 20px; border-bottom: 1px solid var(--panel-border); margin-bottom: 14px; }
+  #detail .detailTabs button { color: var(--muted); padding: 8px 2px 10px; border-radius: 0; border-bottom: 2px solid transparent; }
+  #detail .detailTabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .detailActions { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }
+  #detail .detailActions button { font-size: 12px; padding: 7px 9px; }
+  #detailAddChatBtn { color: var(--accent); background: var(--accent-soft); }
+  .detailMore { position: relative; margin-left: auto; color: var(--muted); }
+  .detailMore summary { list-style: none; cursor: pointer; padding: 7px; font-size: 12px; }
+  .detailMore > div { position: absolute; right: 0; top: 100%; width: 150px; z-index: 20; padding: 6px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; box-shadow: var(--shadow-md); }
+  #detail .detailMore button { display: block; width: 100%; text-align: left; padding: 8px; }
+  #detail #preview { font: 15px/1.9 var(--font-serif); overflow-wrap: anywhere; }
+  #detail #preview > :first-child { margin-top: 0; }
+  #detail #preview :is(h1,h2,h3,h4) { font-size: 16px; line-height: 1.7; font-weight: 600; }
+  #detail #preview pre { white-space: pre-wrap; }
+  #detail #preview img { max-width: 100%; }
+  #detail #preview table { display: block; overflow-x: auto; }
+  #detail label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 7px; }
+  #detail textarea { width: 100%; min-height: 300px; padding: 12px; background: var(--surface-2); border: 1px solid var(--panel-border); border-radius: 8px; color: var(--text); font-size: 14px; resize: vertical; line-height: 1.8; }
+  #detail textarea:focus { border-color: var(--accent); }
+  #detail .btnRow { display: flex; margin-top: 12px; }
+  #detail .btnRow button { padding: 8px 14px; }
+  .detailCounter { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  #detailBody[data-mode="preview"] .detailEditLabel,
+  #detailBody[data-mode="preview"] .detailCounter,
+  #detailBody[data-mode="preview"] .detailSaveRow { display: none; }
+  #detail .nodeProps { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px 12px; padding: 0; background: transparent; border: 0; margin: 0; }
+  #detail .propRow { min-width: 0; }
+  #detail .propRow input, #detail .propRow select { width: 100%; min-width: 0; height: 36px; border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; background: var(--surface-2); color: var(--text); font-size: 13px; }
+  .detailPropHint { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.8; color: var(--muted); }
+  #detailForeshadow { border-bottom: 1px solid var(--panel-border); padding-bottom: 14px; margin-bottom: 16px; }
+  #detailForeshadow > summary { cursor: pointer; color: var(--text); font-size: 13px; font-weight: 600; padding: 0 0 10px; }
+  .foreshadowMeta { color: var(--text); font-size: 12px; line-height: 1.8; }
+  .foreshadowHint { font-size: 11px; line-height: 1.7; color: var(--muted); margin: 8px 0; }
+  .foreshadowChapterList { max-height: 190px; overflow: auto; margin: 8px 0 12px; }
+  #detail .foreshadowChapter { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; padding: 10px 0; border-radius: 0; border-bottom: 1px solid var(--panel-border); background: transparent; }
+  #detail .foreshadowChapter:hover { background: var(--accent-soft); }
+  .foreshadowChapter strong { font-size: 12px; font-weight: 500; }
+  .foreshadowReason { color: var(--accent); font-size: 11px; }
+  .foreshadowExcerpt { color: var(--muted); font-size: 11px; line-height: 1.7; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .foreshadowActions { display: flex; gap: 8px; }
+  #detail .foreshadowActions button { font-size: 12px; padding: 7px 9px; border: 1px solid var(--panel-border); border-radius: 5px; }
+  #detail .foreshadowActions button:last-child { color: var(--accent); background: var(--accent-soft); }
+  #detailForeshadow button:focus-visible,#detailForeshadow summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #axisNodes .node.foreshadowMatch { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #axisNodes .node.foreshadowOrigin { outline: 3px solid var(--accent); outline-offset: 1px; }
+  #detail #preview .foreshadowRecord { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 14px; font: 12px/1.8 var(--font-ui); margin: 0; }
+  .foreshadowRecord dt { color: var(--muted); }
+  .foreshadowRecord dd { margin: 0; overflow-wrap: anywhere; }
+  #detail #propSave { grid-column: 1 / -1; justify-self: start; padding: 8px 14px; }
+  #detail .status { margin-top: 12px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  #detail .status:empty { display: none; }
+  #detail .empty { margin: 60px 10px 0; text-align: center; color: var(--muted); line-height: 1.8; }
+  #detail .emptyIcon { font-size: 26px; opacity: .5; margin-bottom: 12px; }
+  #detail .emptyTitle { font-size: 14px; font-weight: 500; }
+  #detail .emptySub { font-size: 12px; margin-top: 8px; }
   #topBar {
     display: flex;
     align-items: center;
@@ -1297,7 +1295,7 @@
   #searchCount.show { display: block; }
   .modal-mask {
     position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none;
-    align-items: center; justify-content: center; z-index: 200;
+    align-items: center; justify-content: center; z-index: 500;
   }
   .modal-mask.show { display: flex; }
   /* 快捷键速查表 */
@@ -1387,6 +1385,44 @@
   .modal.analysisModal[data-pane="health"] { width: min(820px, 94vw); }
   .modal.analysisModal[data-pane="plot"] { width: min(920px, 96vw); }
   .modal.analysisModal[data-pane="board"] { width: min(1000px, 94vw); }
+  .modal.analysisModal[data-pane="roles"] { width: min(1040px, 96vw); }
+  .characterTools { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  #analysisPaneRoles .characterTools input { flex:1; min-width:160px; width:auto; }
+  #analysisPaneRoles .characterTools select { width:170px; flex:none; }
+  #analysisPaneRoles .characterTools button { flex:none; }
+  .characterTools input,.characterTools select { background:var(--surface-2); color:var(--text); border:1px solid var(--panel-border); border-radius:5px; padding:8px; }
+  .characterSummary { display:flex; gap:24px; flex-wrap:wrap; padding:0 0 16px; color:var(--muted); font-size:12px; }
+  .characterSummary strong { color:var(--text); font-size:20px; margin-right:5px; }
+  .characterWorkspace { display:grid; grid-template-columns:210px minmax(0,1fr); gap:22px; }
+  .characterRoster { max-height:55vh; overflow:auto; }
+  .characterItem { display:flex; flex-direction:column; gap:7px; width:100%; text-align:left; padding:12px; background:transparent; color:var(--text); border:0; border-bottom:1px solid var(--panel-border); border-radius:0; }
+  .characterItem.active { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
+  .characterItem small { color:var(--muted); line-height:1.5; }
+  .characterDetail { min-width:0; }
+  .characterHead { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  .characterHead h3 { margin:0 0 6px; font-size:20px; }
+  .characterSource,.characterNote { color:var(--muted); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+  .characterActions { display:flex; gap:8px; align-items:flex-start; }
+  .characterActions button,.characterTools button { border:1px solid var(--panel-border); background:var(--surface-2); color:var(--text); padding:8px 10px; border-radius:5px; }
+  .characterActions button:last-child { color:var(--accent); background:var(--accent-soft); }
+  .characterIssues { color:var(--accent); font-size:12px; line-height:1.8; margin-bottom:14px; }
+  .characterFields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px; background:var(--panel-border); border:1px solid var(--panel-border); margin:0 0 20px; }
+  .characterField { background:var(--surface-2); padding:12px; min-width:0; }
+  .characterField dt { color:var(--muted); font-size:11px; margin-bottom:6px; }
+  .characterField dd { color:var(--text); margin:0; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+  .characterSection { border-top:1px solid var(--panel-border); padding-top:12px; margin-top:16px; }
+  .characterSection > summary { cursor:pointer; font-size:13px; font-weight:600; padding-bottom:8px; }
+  .characterEvidence { max-height:280px; overflow:auto; }
+  .characterMention { display:block; width:100%; text-align:left; border:0; border-bottom:1px solid var(--panel-border); border-radius:0; background:transparent; color:var(--text); padding:10px 0; font-size:12px; }
+  .characterMention span { display:block; margin-top:5px; color:var(--muted); line-height:1.7; overflow-wrap:anywhere; }
+  .characterChange { border-bottom:1px solid var(--panel-border); padding:10px 0; font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+  .characterChange time { color:var(--muted); }
+  .characterChange del { color:var(--muted); }
+  .characterChange ins { color:var(--accent); text-decoration:none; }
+  #detailCharacter { border-bottom:1px solid var(--panel-border); padding-bottom:14px; margin-bottom:16px; }
+  #detailCharacter > summary { cursor:pointer; font-size:13px; font-weight:600; padding-bottom:8px; }
+  .characterWorkspace button:focus-visible,.characterTools :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  @media(max-width:700px) { .characterWorkspace { grid-template-columns:minmax(0,1fr); gap:14px; } .characterRoster { max-height:160px; } .characterFields { grid-template-columns:minmax(0,1fr); } }
   .modal.analysisModal[data-pane="link"] { width: min(640px, 94vw); }
   .modal.analysisModal[data-pane="stats"] { width: min(680px, 94vw); }
   .modal.analysisModal[data-pane="timeline"] { width: min(1000px, 96vw); }
@@ -2149,23 +2185,23 @@
         <div id="fileEditorBody"></div>
       </div>
       <div id="chatPanel">
-        <div id="chatHeader"><div class="chLeft"><div class="agentHeading"><span class="chTitle" id="chatTitle">写作 Agent</span><span id="agentTaskTitle">新任务</span></div><button id="chatDetailTab">详情</button></div><div class="chRight"><button id="chatTaskHistoryBtn" title="查看当前小说的任务历史">历史</button><button id="newChatBtn" title="新建独立任务" aria-label="新建任务">＋</button><button id="chatWideBtn" title="展开对话到主工作区" aria-label="展开任务">⛶</button><details class="chatMore"><summary title="更多设置">•••</summary><div><label>模型<select id="chatModel" title="选择 AI 模型"></select></label><label>位置<select id="chatDock" title="对话框停靠位置"><option value="right">右侧</option><option value="bottom">底部</option><option value="left">左侧</option><option value="float">悬浮</option></select></label><label>写作侧重<select id="chatTask" aria-label="写作侧重"><option value="general">自动</option><option value="character">人物设计</option><option value="outline">规划大纲</option><option value="writer">生成正文</option><option value="polish">润色正文</option><option value="reviewer">检查一致性</option></select></label></div></details><button id="chatToggle" title="收起写作 Agent" aria-label="收起写作 Agent">＋</button></div></div>
-        <section id="chatTaskHistory" hidden aria-label="任务历史"><div class="agentHistoryHead"><strong>任务历史</strong><button id="chatTaskHistoryClose" aria-label="关闭任务历史">✕</button></div><input id="chatTaskSearch" placeholder="搜索任务…" aria-label="搜索任务"><div id="chatTaskList"></div></section>
+        <div id="chatHeader"><div class="chLeft"><div class="agentHeading"><span class="chTitle" id="chatTitle">写作 Agent</span><span id="agentTaskTitle">新任务</span><span id="agentTaskState" role="status">未开始</span></div><button id="chatDetailTab" title="切换到节点详情">节点详情</button></div><div class="chRight"><button id="chatTaskHistoryBtn" title="查看当前小说的任务历史">历史</button><button id="newChatBtn" title="新建独立任务" aria-label="新建任务">＋</button><button id="chatWideBtn" title="展开对话到主工作区" aria-label="展开任务">⛶</button><details class="chatMore"><summary title="更多设置">•••</summary><div><label>位置<select id="chatDock" title="对话框停靠位置"><option value="right">右侧</option><option value="bottom">底部</option><option value="left">左侧</option><option value="float">悬浮</option></select></label></div></details><button id="chatToggle" title="收起写作 Agent" aria-label="收起写作 Agent">＋</button></div></div>
+        <section id="chatTaskHistory" hidden aria-label="任务历史"><div class="agentHistoryHead"><strong>任务历史</strong><button id="chatTaskHistoryClose" aria-label="关闭任务历史">✕</button></div><input id="chatTaskSearch" placeholder="搜索任务、文件或对话…" aria-label="搜索任务"><div id="chatTaskList"></div></section>
         <div id="chatResizeHandle" title="拖拽调整大小"></div>
         <div id="chatMessages" style="display: none"><details id="chatChanges" hidden><summary><span id="chatChangesSummary">修改清单</span></summary><div id="chatChangesBody"></div></details></div>
         <div id="skillBar" style="display: none"></div>
         <button id="chatNewReply" hidden>有新回复 ↓</button>
-        <div id="chatContext"><div id="chatContextTags"></div><details id="chatScope"><summary>范围</summary><label>重点文件<select id="chatTarget" aria-label="重点文件"><option value="">项目资料</option></select></label><small>Agent 可查阅项目内相关文件；修改会生成待审提案。</small></details></div>
+        <div id="chatContext"><label class="agentStageControl">写作侧重<select id="chatTask" aria-label="写作侧重"><option value="general">自动</option><option value="character">人物设计</option><option value="outline">规划大纲</option><option value="writer">生成正文</option><option value="polish">润色正文</option><option value="reviewer">检查一致性</option></select></label><div id="chatContextTags"></div><details id="chatScope"><summary>范围</summary><label>重点文件<select id="chatTarget" aria-label="重点文件"><option value="">跟随正在查看的内容</option><option value="__project__">仅项目资料</option></select></label><small>选择文件可固定任务重点；切换节点不会更改。修改会生成待审提案。</small></details></div>
         <details id="chatSources"><summary><span id="chatSourceSummary">参考资料 · 展开查看</span></summary><div id="refBar"></div><div class="chatSourceActions"><button id="chatRestoreSources">恢复已移除资料</button></div></details>
         <div id="chatComposer">
-          <div id="chatInputRow" style="display: none"><textarea id="chatInput" aria-label="给 Agent 的任务" placeholder="交给 Agent 一个写作任务，例如：加强这一章的冲突，并检查前文设定…" rows="2"></textarea><div id="chatToolbar" class="chatComposeFooter"><button id="chatAttachActive" title="添加当前文件或画布节点" aria-label="添加当前内容">＋</button><select id="chatMode" aria-label="执行方式"><option value="agent">Agent · 可提案</option><option value="discuss">讨论 · 只读</option></select><input type="checkbox" id="chatAllowProposals" hidden><button id="chatSend" title="发送（Enter）" aria-label="发送">↑</button><button id="chatStop" style="display:none" title="停止执行">停止</button></div></div>
+          <div id="chatInputRow" style="display: none"><textarea id="chatInput" aria-label="给 Agent 的任务" placeholder="输入写作要求，或添加节点与片段…" rows="2"></textarea><div id="chatToolbar" class="chatComposeFooter"><button id="chatAttachActive" title="添加当前文件或画布节点" aria-label="添加当前内容">＋</button><select id="chatMode" aria-label="执行方式"><option value="agent">可提出修改</option><option value="discuss">仅讨论</option></select><input type="checkbox" id="chatAllowProposals" hidden><label class="agentModelControl">模型<select id="chatModel" title="选择 AI 模型"></select></label><button id="chatSend" title="发送（Enter）" aria-label="发送">↑</button><button id="chatStop" style="display:none" title="停止执行">停止</button></div></div>
         </div>
-        <div class="chatInputHint">Enter 发送 · Shift + Enter 换行 · 文件修改需审阅</div>
+        <div class="chatInputHint">Enter 发送 · Shift + Enter 换行</div>
       </div>
     </div>
     <div id="detailResizer" class="resizer" title="拖拽调整右侧栏宽度"></div>
     <aside id="detail">
-      <div id="detailHead"><span>详情 / 编辑</span><button id="detailAiTab">AI 助手</button><button id="detailCollapse">▶</button></div>
+      <div id="detailHead"><span>节点详情</span><button id="detailAiTab" title="展开现有 Agent 工作区">打开 Agent</button><button id="detailCollapse" title="收起节点详情" aria-label="收起节点详情">›</button></div>
       <div id="detailBody"><div class="empty"><div class="emptyIcon">◈</div><div class="emptyTitle">点击节点查看完整内容</div><div class="emptySub">在画布中选择角色 · 设定 · 伏笔 · 章节节点</div></div></div>
     </aside>
   </div>
@@ -2330,6 +2366,7 @@
         <button class="analysisTab" data-pane="plot">剧情提案</button>
         <button class="analysisTab" data-pane="matrix">关系矩阵</button>
         <button class="analysisTab" data-pane="board">状态看板</button>
+        <button class="analysisTab" data-pane="roles">角色追踪</button>
         <button class="analysisTab" data-pane="link">手动连线</button>
         <button class="analysisTab" data-pane="stats">全书统计</button>
         <button class="analysisTab" data-pane="timeline">时间线</button>
@@ -2353,6 +2390,11 @@
         <div class="analysisPane" id="analysisPaneBoard" data-pane="board">
           <div id="boardSummary" class="boardSummary"></div>
           <div id="boardBody" class="boardBody"></div>
+        </div>
+        <div class="analysisPane" id="analysisPaneRoles" data-pane="roles">
+          <div class="characterTools"><input id="characterSearch" type="search" placeholder="搜索角色、别名或状态" aria-label="搜索角色"><select id="characterFilter" aria-label="角色筛选"><option value="all">全部角色</option><option value="review">待核对</option><option value="missing">缺少当前状态</option><option value="changed">有变更记录</option></select><button id="characterRefresh">刷新磁盘状态</button></div>
+          <div id="characterSummary" class="characterSummary"></div>
+          <div class="characterWorkspace"><div id="characterRoster" class="characterRoster"></div><div id="characterDetail" class="characterDetail"></div></div>
         </div>
         <div class="analysisPane" id="analysisPaneLink" data-pane="link">
           <div class="linkOptions">

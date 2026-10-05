@@ -2,24 +2,29 @@
 #chatPanel { background:var(--panel); border-color:var(--panel-border); box-shadow:none; min-height:0; }
 #chatPanel.chat-collapsed #chatComposer,#chatPanel.chat-collapsed #chatToolbar,#chatPanel.chat-collapsed #chatSources,#chatPanel.chat-collapsed #chatContext,#chatPanel.chat-collapsed #chatChanges,#chatPanel.chat-collapsed .chatInputHint { display:none; }
 #chatPanel.dock-right.chat-collapsed { display:none; }
-#chatPanel #chatHeader { height:72px; min-height:72px; padding:0 20px; background:var(--panel); border-bottom:1px solid var(--panel-border); cursor:default; gap:8px; }
+#chatPanel #chatHeader { height:64px; min-height:64px; padding:0 18px; background:var(--panel); border-bottom:1px solid var(--panel-border); cursor:default; gap:8px; }
 #chatTitle { color:var(--text); font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #chatDetailTab { font-size:12px; color:var(--muted); padding:6px; border:0; }
 #chatHeader .chLeft { display:flex; flex:1; gap:10px; min-width:0; }
 #chatHeader .chRight { display:flex; gap:2px; flex:none; }
 .agentHeading { display:flex; flex:1; flex-direction:column; min-width:0; gap:5px; }
+#agentTaskState { font-size:11px; color:var(--muted); white-space:nowrap; }
+#agentTaskState[data-state="running"],#agentTaskState[data-state="review"] { color:var(--accent); }
+#agentTaskState[data-state="failed"] { color:var(--danger); }
+#chatPanel:not(.dock-bottom):not(.chat-collapsed) .agentHeading { flex-direction:row; flex-wrap:wrap; gap:4px 8px; }
+#chatPanel:not(.dock-bottom):not(.chat-collapsed) #agentTaskTitle { flex-basis:100%; order:3; }
 #chatHeader #chatDetailTab { flex:none; white-space:nowrap; }
 #chatPanel #chatHeader .chRight #newChatBtn { flex:none; width:28px; padding:0; border:0; background:transparent; color:var(--muted); }
 #chatPanel #chatHeader .chRight #newChatBtn:hover { background:var(--accent-soft); color:var(--text); border:0; }
-#agentTaskTitle { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#agentTaskTitle { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #chatHeader button { color:var(--muted); font-size:12px; height:28px; padding:4px 6px; }
 .chatMore { position:relative; font-size:12px; font-weight:400; color:var(--muted); }
 .chatMore summary { cursor:pointer; padding:6px; list-style:none; }
 .chatMore > div { position:absolute; right:0; top:100%; width:220px; padding:14px; background:var(--panel); border:1px solid var(--panel-border); box-shadow:var(--shadow-md); border-radius:8px; z-index:20; }
 .chatMore label { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px; }
 .chatMore select { border:1px solid var(--panel-border); border-radius:5px; padding:5px; max-width:145px; background:var(--surface-2); color:var(--text); }
-#chatPanel #chatMessages { flex:1; overflow:auto; padding:26px 24px 20px; gap:24px; min-height:60px; background:var(--panel); }
-#chatPanel #chatMessages .msg { font-size:15px; line-height:1.85; max-width:100%; box-shadow:none; color:var(--text); }
+#chatPanel #chatMessages { flex:1; overflow:auto; padding:20px; gap:20px; min-height:40px; background:var(--panel); }
+#chatPanel #chatMessages .msg { font-size:14px; line-height:1.85; max-width:100%; box-shadow:none; color:var(--text); }
 #chatPanel #chatMessages .msg.user { align-self:flex-end; margin-left:22px; border:0; background:var(--bg); padding:12px 14px; border-radius:9px; font-size:13px; }
 #chatPanel #chatMessages .msg.assistant { width:100%; background:transparent; border:0; padding:0; border-radius:0; }
 #chatPanel .chatMessageBody h1,#chatPanel .chatMessageBody h2,#chatPanel .chatMessageBody h3,#chatPanel .chatMessageBody h4 { color:var(--text); font-size:17px; font-weight:600; line-height:1.6; margin:0 0 14px; }
@@ -40,7 +45,7 @@
 #chatPanel .chatProposalActions .review { color:var(--accent); background:var(--accent-soft); }
 .chatProposal[data-state="applied"],.chatProposal[data-state="rejected"] { background:var(--surface-2); }
 #chatSources { flex:none; max-height:22%; overflow:auto; border:0; background:var(--panel); font-size:12px; margin:0 20px 4px; }
-#chatSources > summary { padding:9px 4px; color:var(--muted); cursor:pointer; font-size:11px; line-height:1.8; }
+#chatSources > summary { padding:6px 0; color:var(--muted); cursor:pointer; font-size:12px; line-height:1.8; }
 #chatPanel #refBar { display:block; padding:0 4px; border:0; }
 .chatSourceItem,#chatPanel #refBar .refChip { display:block; max-width:none; background:transparent; border:0; border-top:1px solid var(--panel-border); border-radius:0; padding:8px 0; color:var(--text); }
 .chatSourceItem > summary { cursor:pointer; display:flex; align-items:center; gap:6px; list-style:none; }
@@ -67,7 +72,7 @@
 #chatPanel #chatNewReply { flex:none; align-self:center; padding:6px 12px; border:1px solid var(--panel-border); background:var(--panel); color:var(--muted); border-radius:6px; cursor:pointer; font-size:11px; }
 #chatPanel.chat-wide { position:fixed; inset:54px 0 28px; width:auto !important; height:auto !important; z-index:300; box-shadow:none; border:0; border-radius:0; }
 #chatPanel.chat-wide #chatMessages { padding:24px max(24px,calc((100% - 720px)/2)); }
-#chatPanel.chat-wide #chatComposer,#chatPanel.chat-wide #chatSources,#chatPanel.chat-wide #chatContext { margin-left:max(20px,calc((100% - 720px)/2)); margin-right:max(20px,calc((100% - 720px)/2)); }
+#chatPanel.chat-wide #chatComposer,#chatPanel.chat-wide #chatSources { margin-left:max(20px,calc((100% - 720px)/2)); margin-right:max(20px,calc((100% - 720px)/2)); }
 .agentWelcome { margin:auto 0; padding:12px 0 24px; }
 .agentWelcome h3 { font-size:19px; font-weight:600; color:var(--text); margin:0 0 12px; }
 .agentWelcome p { font-size:13px; line-height:1.9; color:var(--muted); margin:0 0 24px; }
@@ -82,7 +87,7 @@
 .agentStepMark { flex:none; width:12px; color:var(--accent); }
 .agentStep[data-status="failed"] .agentStepMark { color:var(--danger); }
 #chatPanel .agentStep button { font-size:11px; color:var(--muted); padding:0 4px; height:22px; }
-#chatTaskHistory { position:absolute; inset:72px 0 0; z-index:30; display:flex; flex-direction:column; gap:16px; padding:22px; background:var(--panel); overflow:hidden; }
+#chatTaskHistory { position:absolute; inset:64px 0 0; z-index:30; display:flex; flex-direction:column; gap:16px; padding:22px; background:var(--panel); overflow:hidden; }
 .agentHistoryHead { display:flex; align-items:center; justify-content:space-between; font-size:14px; }
 #chatTaskSearch { flex:none; width:100%; font-size:13px; padding:10px; border:1px solid var(--panel-border); border-radius:6px; }
 #chatTaskList { overflow:auto; min-height:0; display:flex; flex-direction:column; gap:6px; }
@@ -90,8 +95,15 @@
 .agentTaskItem strong { font-size:13px; font-weight:500; line-height:1.6; overflow-wrap:anywhere; }
 .agentTaskItem span { font-size:11px; color:var(--muted); }
 #chatPanel .agentTaskItem.active { background:var(--accent-soft); border-color:var(--panel-border); }
-#chatContext { flex:none; display:flex; align-items:flex-start; gap:8px; margin:4px 20px; font-size:11px; }
+#chatContext { flex:none; display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:12px; }
 #chatContextTags { flex:1; min-width:0; display:flex; flex-wrap:wrap; gap:6px; max-height:64px; overflow:auto; }
+.agentStageControl { flex:none; color:var(--muted); font-size:11px; display:flex; align-items:center; gap:4px; }
+#chatPanel .agentStageControl #chatTask { max-width:110px; background:transparent; font-size:12px; }
+#chatPanel .agentContextFile { height:auto; min-height:24px; font-size:12px; padding:4px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+#chatPanel .agentContextFile:hover { color:var(--text); background:var(--accent-soft); }
+.agentModelControl { min-width:0; flex:1; display:flex; align-items:center; gap:4px; color:var(--muted); font-size:11px; }
+#chatPanel .agentModelControl #chatModel { width:auto; max-width:180px; min-width:0; height:28px; font-size:11px; padding:4px; border:0; background:transparent; color:var(--muted); }
+#chatPanel .agentTaskItem:disabled { opacity:.6; }
 .agentContextHint { color:var(--muted); line-height:24px; }
 .agentContextTag { display:flex; gap:5px; align-items:center; min-width:0; max-width:100%; padding:4px 6px; background:var(--surface-2); border:1px solid var(--panel-border); border-radius:5px; color:var(--muted); }
 .agentContextTag > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -102,13 +114,18 @@
 #chatScope > label { position:absolute; right:0; bottom:32px; width:280px; padding:14px 14px 58px; background:var(--panel); border:1px solid var(--panel-border); border-radius:8px; box-shadow:var(--shadow-md); z-index:20; }
 #chatScope > label select { display:block; margin-top:8px; width:100%; }
 #chatScope > small { position:absolute; right:14px; bottom:46px; width:252px; color:var(--muted); font-size:11px; line-height:1.7; z-index:21; }
-#chatChanges { flex:none; margin:0 0 8px; max-height:none; overflow:visible; border:1px solid var(--panel-border); border-radius:8px; background:var(--surface-2); }
+#chatChanges { flex:none; margin:0 0 8px; max-height:none; overflow:visible; border:1px solid var(--panel-border); border-radius:8px; background:var(--panel); }
 #chatChanges > summary { padding:12px; color:var(--text); font-size:12px; cursor:pointer; }
-#chatChangesBody { display:flex; flex-direction:column; gap:8px; padding:0 10px 10px; }
-#chatChanges .chatProposal { padding:10px 12px; background:var(--panel); }
-#chatChanges .chatProposalTitle { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-#chatChanges .chatProposalMeta { display:none; }
-#chatChanges .chatProposalActions { margin-top:6px; }
+#chatChangesBody { display:flex; flex-direction:column; gap:0; padding:0 12px; }
+#chatChanges .chatProposal { display:flex; align-items:center; gap:10px; padding:12px 0; border:0; border-top:1px solid var(--panel-border); border-radius:0; background:transparent; }
+.chatProposalInfo { flex:1; min-width:0; }
+#chatChanges .chatProposalTitle { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#chatChanges .chatProposalMeta { font-size:12px; display:block; }
+#chatChanges .chatProposalActions { flex:none; align-items:center; gap:4px; margin:0; }
+.chatProposalMore { position:relative; color:var(--muted); }
+.chatProposalMore summary { padding:6px; cursor:pointer; list-style:none; }
+.chatProposalMore > div { position:absolute; right:0; bottom:100%; width:110px; padding:6px; border:1px solid var(--panel-border); border-radius:6px; background:var(--panel); box-shadow:var(--shadow-md); z-index:20; }
+#chatPanel .chatProposalMore button { display:block; text-align:left; width:100%; padding:8px; font-size:12px; }
 #chatAttachActive { width:28px; height:28px; padding:0; font-size:18px; color:var(--muted); }
 .fileReviewChanges { background:var(--surface-2); padding:14px; max-height:48vh; overflow:auto; border:1px solid var(--panel-border); border-radius:8px; }
 .fileReviewLine { white-space:pre-wrap; overflow-wrap:anywhere; padding:5px 10px; font-size:14px; line-height:1.8; }
@@ -116,5 +133,25 @@
 .fileReviewLine.added { border-left:2px solid var(--success); background:color-mix(in srgb,var(--success) 9%,transparent); }
 .fileReviewLabel { color:var(--muted); font-size:12px; margin:12px 0 6px; }
 #chatPanel button:focus-visible,#chatPanel summary:focus-visible,#chatPanel select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatHeader { height:44px; min-height:44px; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentHeading { flex-direction:row; align-items:center; gap:12px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatTitle { flex:none; }
+#chatPanel.dock-bottom:not(.chat-wide) #agentTaskTitle { font-size:12px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatMessages { padding:14px max(18px,calc((100% - 880px)/2)); gap:16px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatComposer,#chatPanel.dock-bottom:not(.chat-wide) #chatSources { margin-left:max(18px,calc((100% - 880px)/2)); margin-right:max(18px,calc((100% - 880px)/2)); }
+#chatPanel.dock-bottom:not(.chat-wide) #chatComposer { padding:8px 12px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatInput { min-height:40px; max-height:96px; font-size:13px; }
+#chatPanel.dock-bottom:not(.chat-wide) .chatInputHint { padding:5px 12px 8px; }
+#chatPanel.dock-bottom:not(.chat-wide) #chatTaskHistory { top:44px; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentWelcome { display:flex; align-items:center; gap:12px; padding:0; margin:0; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentWelcome h3 { flex:none; font-size:13px; margin:0; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentWelcome p { display:none; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentExamples { min-width:0; flex-direction:row; flex-wrap:nowrap; overflow-x:auto; }
+#chatPanel.dock-bottom:not(.chat-wide) .agentExamples button { flex:none; padding:6px 8px; font-size:12px; }
+#chatPanel.chat-collapsed #chatHeader { height:40px; min-height:40px; border-bottom:0; }
+#chatPanel.dock-bottom.chat-collapsed:not(.chat-wide) #chatHeader { height:40px; min-height:40px; }
+#chatPanel.chat-collapsed .agentHeading { flex-direction:row; align-items:center; gap:10px; }
+#chatPanel.chat-collapsed #chatNewReply { display:none; }
+@media(max-width:600px) { .agentStageControl { font-size:0; } .agentModelControl { font-size:0; } #chatPanel .agentModelControl #chatModel { max-width:100px; } #agentTaskState { display:none; } #chatContext { gap:4px; } }
 @media(hover:none) { .chatMessageActions { opacity:1; } }
 @media(max-width:980px) { #chatPanel.dock-right:not(.chat-collapsed),#chatPanel.dock-left:not(.chat-collapsed) { position:fixed; top:54px; bottom:28px; right:0; left:auto !important; width:min(400px,94vw) !important; height:auto !important; z-index:250; border-left:1px solid var(--panel-border); box-shadow:var(--shadow-md); } #chatPanel.chat-wide { inset:54px 0 28px; } }

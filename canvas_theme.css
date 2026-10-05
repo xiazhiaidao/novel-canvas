@@ -9,6 +9,7 @@
   --type-setting:#a47946; --type-foreshadow:#a34e5e; --type-volume:#4b7893; --type-context:#667e89;
   --shadow-sm:0 2px 8px #20324008; --shadow-md:0 8px 24px #20324012; --shadow-lg:0 24px 70px #15212f33;
   --shadow:var(--shadow-md); --radius:10px; --radius-lg:12px; --rad-sm:6px; --rad-md:10px; --rad-lg:12px;
+  --grid-line:#b8c4ce; --grid-strong:#8c9eac;
   --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
   --font-ui:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;
   --font-serif:"SimSun","Songti SC",serif;
@@ -23,6 +24,7 @@
   --danger:#d39aa3; --success:#94c5b0; --type-role:#b6a4cf; --type-faction:#88bcb7; --type-setting:#cfaf84;
   --type-foreshadow:#d39aa3; --type-volume:#9cbcd3; --type-context:#9db4bd;
   --shadow-sm:0 2px 8px #00000012; --shadow-md:0 8px 24px #0003; --shadow-lg:0 24px 70px #0006;
+  --grid-line:#435363; --grid-strong:#637c90;
   --edge-auto:#687b8a; --edge-entity:#7099ae; --edge-title:#77a69d; --edge-chapter:#b29d83;
   --mini-bg:#181d23; --mini-dot:#a3afbb;
 }
@@ -103,14 +105,6 @@ input[type="checkbox"],input[type="radio"] { accent-color:var(--accent); }
 .resizer:hover,.resizer.active { background:var(--accent); }
 #sidebarShow { left:0; }
 .edgeToggle { background:var(--panel); color:var(--muted); border:1px solid var(--panel-border); box-shadow:none; }
-#detail { width:380px; flex:none; background:var(--panel); backdrop-filter:none; }
-#detailHead { height:58px; padding:0 22px; font-size:14px; font-weight:600; color:var(--text); }
-#detailHead button { flex:none; font-size:12px; padding:6px; }
-#detailBody { padding:24px; }
-#detail h2 { color:var(--text); font:600 18px/1.6 var(--font-ui); }
-#detail textarea { font-size:15px; line-height:1.85; background:var(--surface-2); }
-#detail .previewMode #preview { background:var(--panel); font-size:15px; line-height:1.85; }
-#detail .nodeProps { background:var(--surface-2); }
 .empty { border-color:var(--panel-border); background:transparent; }
 /* 中央画布与独立坐标尺 */
 #workspaceHeader { height:54px; min-height:54px; display:flex; align-items:center; padding:0 24px; gap:10px; }
@@ -126,8 +120,9 @@ body.editing-file #workspaceHeader { display:none; }
 .fileTab.pinned:not(.active) { background:var(--surface-2); }
 #canvas { background:var(--bg); background-image:none; }
 #axisGrid { background-image:none; }
-#axisGrid .axisPctLine { border-top:1px solid var(--panel-border); opacity:.45; }
-#axisGrid .axisLevelLine,#axisGrid .axisBandLine { border-top:1px solid var(--panel-border); opacity:.7; }
+#axisGrid .axisChapterLine { position:absolute; width:calc(1px / var(--axis-grid-scale,1)); background:var(--grid-line); pointer-events:none; }
+#axisGrid .axisPctLine { height:calc(1px / var(--axis-grid-scale,1)); border-top:0; background:var(--grid-line); opacity:1; }
+#axisGrid .axisLevelLine,#axisGrid .axisBandLine { height:calc(1px / var(--axis-grid-scale,1)); border-top:0; background:var(--grid-strong); opacity:1; }
 #axisGrid .axisDiagLine,#axisGrid .axisFrameLine { display:none; }
 #axisXLabels { position:absolute; top:0; left:96px; right:0; height:36px; overflow:hidden; background:var(--panel); border-bottom:1px solid var(--panel-border); z-index:5; pointer-events:auto; }
 #axisXLabels .axisXLabel { position:absolute; top:0; height:36px; padding:0 9px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:11px; font-weight:400; transform:translateX(-50%); background:transparent; border:0; white-space:nowrap; cursor:pointer; }
@@ -232,7 +227,7 @@ body.focus-mode #fileEditorBody { width:min(100%,1000px); margin:0 auto; padding
 #focusExitBtn { background:var(--panel); color:var(--text); border-color:var(--panel-border); border-radius:6px; }
 #searchCount { background:var(--panel); color:var(--muted); border:1px solid var(--panel-border); }
 @media(max-width:1180px) { #sidebar:not(.responsive-open),#sidebarResizer:not(.responsive-open) { display:none; } .topBarLeft { flex:0 0 auto; } #topBar #projectSelect { max-width:150px; } #axisStats { display:none; } }
-@media(max-width:980px) { #topBar { padding:0 12px; gap:8px; } #topBar #projectSelect { max-width:115px; } #appTitle { font-size:13px; } #focusBtn { display:none; } .topBarRight { gap:2px; } .topBarGroup { gap:2px; } #workspaceHeader { padding:0 16px; } #axisTicks { display:none; } #detail:not(.hidden) { position:fixed; top:54px; bottom:28px; right:0; width:min(380px,94vw); z-index:200; } #detailResizer { display:none; } }
+@media(max-width:980px) { #topBar { padding:0 12px; gap:8px; } #topBar #projectSelect { max-width:115px; } #appTitle { font-size:13px; } #focusBtn { display:none; } .topBarRight { gap:2px; } .topBarGroup { gap:2px; } #workspaceHeader { padding:0 16px; } #axisTicks { display:none; } #detail:not(.responsive-open) { display:none; } #detail.responsive-open:not(.hidden) { display:flex; position:fixed; top:54px; bottom:28px; right:0; width:min(350px,94vw) !important; z-index:260; box-shadow:var(--shadow-md); } #detailResizer { display:none; } #detailShow { display:block; } body:has(#detail.responsive-open:not(.hidden)) #detailShow { display:none; } }
 @media(max-width:720px) { #topBar #projectSelect,.topBarLeft .workspaceMenu,#analysisBtn { display:none; } #axisBar .barLabel { display:none; } #axisBar { gap:3px; padding:0 6px; } #axisYLabels,#axisCorner { width:80px; } #axisXLabels { left:80px; } #axisYLabels :is(.axisYLabel,.axisPctLabel) { width:80px; padding:4px 8px; } #axisCursorY { left:73px; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
 [hidden] { display:none !important; }

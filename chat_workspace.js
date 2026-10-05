@@ -8,6 +8,28 @@ const writingTaskStores = new Map(), writingProposalCache = new Map();
 const writingChangesPanel = document.getElementById('chatChanges');
 let activeWritingTask = null, writingTaskProject = '', writingTaskSaveTimer = null;
 const writingStateLabels = { idle:'未开始', running:'执行中', completed:'已完成', review:'待审阅', stopped:'已停止', failed:'执行失败', interrupted:'已中断', limited:'待继续' };
+const writingStages = {
+  general: { heading:'想推进哪一段故事？', hint:'讨论冲突、节奏或下一步剧情', examples:[['检查设定与动机','检查当前章节的设定与人物动机'],['加强本章冲突','加强这一章的冲突，保留原有人物动机'],['查找未回收伏笔','查找尚未回收的伏笔，给出后续安排']] },
+  character: { heading:'先把人物想清楚', hint:'描述人物的目标、动机或关系', examples:[['梳理目标与阻力','梳理当前人物的目标、动机与阻力，指出需要补足的地方'],['检查人物关系','检查已有角色关系，找出能推动剧情的矛盾'],['设计人物转变','根据已有情节设计人物转变，保留现有设定']] },
+  outline: { heading:'把故事推进到下一步', hint:'描述想规划的故事段落', examples:[['规划接下来三章','根据已有剧情规划接下来三章的冲突、转折与章末悬念'],['安排伏笔回收','整理未回收伏笔，安排合适的回收节点'],['检查节奏','检查大纲节奏，指出重复情节与缺少转折的段落']] },
+  writer: { heading:'准备写哪一个场景？', hint:'说明目标章节、场景及必须保留的信息', examples:[['续写当前章节','根据当前章节续写下一个场景，保持人物动机与叙事视角'],['扩写关键场景','扩写当前章节的关键场景，加强动作与人物互动'],['写出章末悬念','为当前章节设计并写出章末悬念，不引入与设定冲突的信息']] },
+  polish: { heading:'让这一段更有力', hint:'说明要改的范围、节奏和文风', examples:[['精简重复表达','精简当前文本的重复表达，保留事件与信息'],['打磨人物对话','打磨当前章节的人物对话，让语气符合各自身份与动机'],['加强场景张力','润色当前场景，加强张力，保留原有情节与叙事视角']] },
+  reviewer: { heading:'检查故事是否前后一致', hint:'说明要检查的设定、时间线或人物状态', examples:[['核对设定','核对当前章节与项目设定，逐条列出冲突及依据'],['检查时间线','检查已有章节的事件顺序与时间线，标明矛盾所在'],['核对人物状态','核对人物的位置、知识与持有物，找出前后不一致的地方']] }
+};
+
+function syncWritingStage() {
+  const stage = writingStages[document.getElementById('chatTask').value] || writingStages.general;
+  chatInput.placeholder = stage.hint + '…（Shift+Enter 换行）';
+  const empty = chatMessages.querySelector('.agentWelcome');
+  if (!empty) return;
+  empty.querySelector('h3').textContent = stage.heading;
+  const examples = empty.querySelector('.agentExamples'); examples.replaceChildren();
+  for (const [label,prompt] of stage.examples) {
+    const button = document.createElement('button'); button.textContent = label; button.title = prompt;
+    button.onclick = () => { chatInput.value = prompt; chatInput.focus(); writingTaskChanged(); };
+    examples.appendChild(button);
+  }
+}
 
 function writingTasksKey(project) { return 'novelAgentTasks_' + encodeURIComponent(project); }
 function writingStore(project = currentProject) { return writingTaskStores.get(project); }
@@ -33,6 +55,9 @@ function writingTaskChanged() {
   const project = currentProject;
   writingTaskSaveTimer = setTimeout(() => saveWritingTasks(project), 180);
 }
+function flushWritingTask() { clearTimeout(writingTaskSaveTimer); captureWritingTask(); saveWritingTasks(writingTaskProject); }
+window.addEventListener('pagehide', flushWritingTask);
+window.addEventListener('beforeunload', flushWritingTask);
 function makeWritingTask(messages = []) {
   return { id:crypto.randomUUID(), title:messages.find(m => m.role === 'user')?.content.slice(0,32) || '新任务', created:Date.now(), updated:Date.now(), state:'idle', messages, turns:[], proposals:[], draft:'', refs:[], excluded:[], target:'', mode:'agent', role:'general' };
 }
@@ -84,21 +109,107 @@ function newWritingTask() {
   const task = makeWritingTask(); writingStore().tasks.unshift(task);
   activateWritingTask(task.id); expandChatPanel(); chatInput.focus();
 }
+
+function startForeshadowTask(id, mode) {
+  if (writingBusy) { showToast('先停止当前执行，再检查另一条伏笔', 'info'); return; }
+  const n = nodeMap[id];
+  if (!n || n.label !== '伏笔') return;
+  captureDetailDraft();
+  const content = detailDrafts.get(currentProject + ':' + id)?.content ?? n.content ?? '';
+  const { plan, rows } = foreshadowEvidence(n);
+  const lines = ['伏笔节点：' + n.id, '当前引用状态：' + (parseForeshadowStatus(content === n.content ? n : { ...n,content,foreshadowStatus:'' }) || '未标记'), '已保存的埋设记录：' + (plan.planted || '未记录'), '已保存的回收计划：' + (plan.expected || '未记录'), '匹配依据仅是章节记录和字面关键词，不是剧情结论。相关章节共 ' + rows.length + ' 个：'];
+  let chars = lines.join('\n').length, included = 0;
+  for (const row of rows) {
+    const line = '- ' + row.node.title + ' | ' + row.node.file + ' | 节点 ' + row.node.id + (row.line ? ' | 行 ' + row.line : '') + ' | ' + row.reasons.join('、') + (row.dirty ? '（未保存草稿）' : '') + '\n  ' + (row.excerpt || '记录关联，尚无关键词命中。');
+    if (chars + line.length > 8000) break;
+    lines.push(line); chars += line.length + 1; included++;
+  }
+  if (included < rows.length) lines.push('索引容量限制，另有 ' + (rows.length-included) + ' 个章节未列出，请使用 search/read_node/read_file 补查。');
+  if (!rows.length) lines.push('未找到字面匹配。请检索别称与间接铺垫，不能据此断言正文没有埋设。');
+  newWritingTask();
+  activeWritingTask.structureNodeId = n.id;
+  activeWritingTask.title = (mode === 'plan' ? '规划回收 · ' : '检查伏笔 · ') + n.title;
+  document.getElementById('chatTask').value = mode === 'plan' ? 'outline' : 'reviewer';
+  document.getElementById('chatTask').dispatchEvent(new Event('change'));
+  // 单条伏笔及证据优先进入资料包，避免整份追踪文件挤掉相关章节。
+  document.getElementById('chatTarget').value = '__project__';
+  addSelectionToChat(n.file,n.title,'来源：' + n.file + ' · 行 ' + n.startLine + '–' + n.endLine + '\n节点 ID：' + n.id + '\n' + content,String(n.startLine) + '-' + n.endLine,'伏笔',false);
+  if (content !== n.content) pendingRefs[pendingRefs.length-1].draft = true;
+  addSelectionToChat('','伏笔关联章节索引',lines.join('\n'),'','章节证据',false);
+  chatInput.value = mode === 'plan'
+    ? '请围绕「' + n.title + '」规划回收。先核对伏笔记录、关联章节原文和大纲，区分已埋设、已强化、实际已回收与仅有关键词提及。给出建议章节、需要补足的铺垫与改稿理由；有必要时生成正文或伏笔记录的待审提案。记录中是回收计划的，不能直接当成实际回收；核对不足时说明缺少什么证据。'
+    : '请检查「' + n.title + '」的埋设、强化和回收脉络。先读取相关章节原文，逐条给出章节、文件位置和依据，核对伏笔记录与正文是否一致。关键词命中只作线索；无法确认的明确列出待核对项。本次只分析，不生成修改提案。';
+  writingTaskChanged(); updateWritingTaskHeader(); saveWritingTasks(); requestChatSourcePreview(); chatInput.focus();
+}
+async function startCharacterTask(id) {
+  if (writingBusy) { showToast('先停止当前执行，再核对角色','info'); return; }
+  const project = currentProject;
+  captureDetailDraft();
+  try {
+    const d = await fetchHealth(project);
+    if (project !== currentProject || writingBusy) return;
+    publishHealth(d,project);
+    const c = d.characters.find(c=>c.id===id), n = nodeMap[id];
+    if (!c || !n) { showToast('此节点未识别为人物卡，请在角色追踪页检查','info'); return; }
+    const file = openFiles.find(f=>f.path===n.file&&f.dirty);
+    const draft = detailDrafts.get(project+':'+id)?.content;
+    const content = file?.content ?? draft ?? n.content ?? '';
+    const lines = ['角色：'+c.title+'；节点 ID：'+id,'已保存状态截至：'+(c.updatedChapter != null?'第 '+c.updatedChapter+' 章':'未记录'),'待核对：'+c.issues.join('、'),'下列是字面匹配线索，不能据此判定实际出场或状态变化。'];
+    let chars = lines.join('\n').length, included = 0;
+    const rows = [];
+    for (const chapter of nodes.filter(x=>x.label==='章节'&&!isGlobalBoardNode(x))) {
+      const f = openFiles.find(f=>f.path===chapter.file&&f.dirty), draft = detailDrafts.get(project+':'+chapter.id)?.content;
+      const text = f?.content ?? draft ?? chapter.content ?? '';
+      const hits = c.aliases.filter(a=>text.includes(a));
+      if (!hits.length) continue;
+      const offset = Math.min(...hits.map(a=>text.indexOf(a)));
+      rows.push({ chapter,number:nodeAxisData(chapter).chapter,hits,line:(chapter.startLine || 1)+text.slice(0,offset).split('\n').length-1,
+        excerpt:text.slice(Math.max(0,offset-40),offset+150).replace(/\s+/g,' ').trim(),dirty:!!f||draft!=null });
+    }
+    // 先给最近章节，避免长篇索引容量用完时只剩早期状态。
+    rows.sort((a,b)=>(b.number ?? -1)-(a.number ?? -1)||a.chapter.file.localeCompare(b.chapter.file,'zh'));
+    for (const row of rows) {
+      const line = '- '+row.chapter.title+' | '+row.chapter.file+' | 节点 '+row.chapter.id+' | 行 '+row.line+' | '+row.hits.join('、')+(row.dirty?'（未保存草稿）':'')+'\n  '+row.excerpt;
+      if (chars+line.length>8000) break;
+      lines.push(line); chars+=line.length+1; included++;
+    }
+    if (included<rows.length) lines.push('索引未列出另外 '+(rows.length-included)+' 章，请通过 search/read_node/read_file 补查。');
+    if (!rows.length) lines.push('没有字面匹配，请检查别称和间接叙述，不可断言角色没有出场。');
+    newWritingTask(); closeAnalysis();
+    activeWritingTask.structureNodeId = id; activeWritingTask.title = '核对角色 · '+c.title;
+    document.getElementById('chatTask').value = 'character'; document.getElementById('chatTask').dispatchEvent(new Event('change'));
+    document.getElementById('chatAllowProposals').checked = true; document.getElementById('chatMode').value = 'agent';
+    document.getElementById('chatTarget').value = '__project__';
+    addSelectionToChat(n.file,c.title,'来源：'+n.file+' · '+(file?'整份未保存文件草稿':'行 '+n.startLine+'–'+n.endLine)+'\n人物节点 ID：'+id+'\n'+content,'','角色卡',false);
+    if (file || draft!=null) pendingRefs[pendingRefs.length-1].draft = true;
+    addSelectionToChat('','角色章节线索索引',lines.join('\n'),'','章节证据',false);
+    chatInput.value = '请核对并更新「'+c.title+'」的角色状态。先读取最近相关章节及必要前文，逐项核对当前状态、位置、境界/实力、伤势、目标、关系和持有物。每项变化给出章节、文件位置和原文依据；区分实际发生、回忆、他人提及与计划。核对卡片的截至章节，并保留原有格式与其他人物内容。有充分证据时生成角色卡的待审修改提案，补上状态更新章；未确认的保留原值并列为待核对，不能编造。引用若含草稿，只能作为暂定线索，明确提示作者。本次通过审阅后才写盘，不要直接覆盖小说文件。';
+    writingTaskChanged(); updateWritingTaskHeader(); saveWritingTasks(); renderWritingContext(); requestChatSourcePreview(); chatInput.focus();
+  } catch(e) { showToast('角色核对任务创建失败：'+e.message,'error'); }
+}
 function updateWritingTaskHeader() {
   const title = document.getElementById('agentTaskTitle');
   title.textContent = activeWritingTask?.title || '新任务'; title.title = title.textContent;
   document.getElementById('chatTitle').textContent = '写作 Agent';
+  const state = document.getElementById('agentTaskState');
+  state.textContent = writingStateLabels[activeWritingTask?.state] || '未开始';
+  state.dataset.state = activeWritingTask?.state || 'idle';
   renderWritingTaskHistory();
 }
 function renderWritingTaskHistory() {
   const host = document.getElementById('chatTaskList'), query = document.getElementById('chatTaskSearch').value.trim().toLowerCase();
   host.replaceChildren();
   for (const task of [...(writingStore()?.tasks || [])].sort((a,b) => b.updated - a.updated)) {
-    if (query && !String(task.title).toLowerCase().includes(query)) continue;
+    const role = document.querySelector('#chatTask option[value="' + (Object.hasOwn(writingStages, task.role) ? task.role : 'general') + '"]').textContent;
+    const target = task.target && task.target !== '__project__' ? task.target.split(/[\\/]/).pop() : task.target === '__project__' ? '项目资料' : '跟随正在查看';
+    if (query && ![task.title,role,target,...task.messages.map(m => m.content)].join(' ').toLowerCase().includes(query)) continue;
     const button = document.createElement('button'); button.className = 'agentTaskItem'; button.classList.toggle('active', task.id === activeWritingTask?.id);
+    button.setAttribute('aria-current', String(task.id === activeWritingTask?.id)); button.disabled = writingBusy;
     const name = document.createElement('strong'); name.textContent = task.title;
     const meta = document.createElement('span'); meta.textContent = (writingStateLabels[task.state] || '已保存') + ' · ' + new Date(task.updated).toLocaleDateString('zh-CN');
-    button.append(name,meta); button.onclick = () => activateWritingTask(task.id); host.appendChild(button);
+    const context = document.createElement('span'); const pending = (task.proposals || []).filter(p => p.state === 'pending').length;
+    context.textContent = role + ' · ' + target + (pending ? ' · ' + pending + ' 项待审' : '');
+    button.append(name,context,meta); button.onclick = () => activateWritingTask(task.id); host.appendChild(button);
   }
   if (!host.childElementCount) host.textContent = '没有匹配的任务';
 }
@@ -123,21 +234,34 @@ function renderWritingTask() {
   if (!task) return;
   if (!task.messages.length) {
     const empty = document.createElement('div'); empty.className = 'agentWelcome';
-    empty.innerHTML = '<h3>把一个写作任务交给 Agent</h3><p>它会查阅项目资料、处理要求，并把文件修改交给你审阅。</p><div class="agentExamples"></div>';
-    for (const prompt of ['检查当前章节的设定与人物动机', '加强这一章的冲突，保留原有人物动机', '查找尚未回收的伏笔，给出后续安排']) { const button = document.createElement('button'); button.textContent = prompt; button.onclick = () => { chatInput.value = prompt; chatInput.focus(); writingTaskChanged(); }; empty.querySelector('.agentExamples').appendChild(button); }
+    empty.innerHTML = '<h3>想推进哪一段故事？</h3><p>添加节点或片段，交给 Agent 查阅与处理。文件修改会先交给你审阅。</p><div class="agentExamples"></div>';
     chatMessages.appendChild(empty);
   }
+  syncWritingStage();
   for (const [i,m] of task.messages.entries()) {
     addWritingMessage(m.role,m.content);
     const turn = task.turns.find(t => t.messageIndex === i);
     if (turn) chatMessages.appendChild(renderWritingTurn(turn));
   }
-  renderWritingChanges(); chatScrollEnd(true);
+  renderWritingChanges();
+  if (task.messages.length) chatScrollEnd(true); else chatMessages.scrollTop = 0;
 }
 function renderWritingContext() {
   const host = document.getElementById('chatContextTags'); host.replaceChildren();
+  const origin = nodeMap[activeWritingTask?.structureNodeId];
+  if (origin) {
+    const tag = document.createElement('button'); tag.className = 'agentContextTag agentContextFile'; tag.textContent = origin.label === '角色' ? '返回角色' : '返回伏笔'; tag.title = '返回画布：' + origin.title; tag.disabled = writingBusy;
+    tag.onclick = () => { switchSidebarMode('canvas'); focusNode(origin.id); document.getElementById('chatDetailTab').click(); };
+    host.appendChild(tag);
+  }
   const target = writingTargetFile();
-  if (target) { const tag = document.createElement('span'); tag.className = 'agentContextTag'; tag.title = target; tag.textContent = (document.getElementById('chatTarget').value ? '重点：' : '正在编辑：') + target.split(/[\\/]/).pop(); host.appendChild(tag); }
+  if (target) {
+    const tag = document.createElement('button'); tag.className = 'agentContextTag agentContextFile';
+    tag.title = '打开 ' + target; tag.disabled = writingBusy;
+    tag.textContent = (document.getElementById('chatTarget').value ? '重点：' : '跟随：') + target.split(/[\\/]/).pop();
+    tag.onclick = () => { switchSidebarMode('files'); openFile(target).catch(e => showToast(e.message,'error')); };
+    host.appendChild(tag);
+  }
   for (const ref of pendingRefs) {
     const tag = document.createElement('span'); tag.className = 'agentContextTag'; tag.title = ref.title || ref.file;
     const label = document.createElement('span'); label.textContent = ref.title || ref.file || '选中片段';
@@ -167,9 +291,9 @@ function refreshChatTargets(preferred) {
   const sel = document.getElementById('chatTarget');
   const previous = preferred ?? sel.value;
   const files = [...new Set(nodes.filter(n => n.file && !n.synthetic).map(n => n.file))];
-  sel.replaceChildren(new Option('项目资料', ''));
+  sel.replaceChildren(new Option('跟随正在查看的内容', ''), new Option('仅项目资料', '__project__'));
   for (const file of files) sel.add(new Option(file.split(/[\\/]/).pop(), file));
-  sel.value = files.includes(previous) ? previous : '';
+  sel.value = files.includes(previous) || previous === '__project__' ? previous : '';
   if (sourceProject !== currentProject) {
     sourceProject = currentProject;
     chatSourcePacket = null;
@@ -186,9 +310,11 @@ function refreshChatTargets(preferred) {
 
 function writingTargetFile() {
   const chosen = document.getElementById('chatTarget').value;
+  if (chosen === '__project__') return '';
   if (chosen) return chosen;
   const current = activeEditorKind === 'file' && openFiles.find(f => f.path === activeFilePath && !f.pendingCreate);
-  return current ? current.path : '';
+  const node = nodeMap[currentDetailNodeId];
+  return current ? current.path : node && !node.synthetic ? node.file || '' : '';
 }
 function chatSourceSpec() {
   const targetFile = writingTargetFile();
@@ -318,10 +444,10 @@ function renderWritingChanges() {
   for (const p of changes) {
     const card = document.createElement('div');
     card.className = 'chatProposal'; card.id = 'chat-proposal-' + p.id; card.dataset.state = p.state;
-    card.innerHTML = '<div class="chatProposalTitle"></div><div class="chatProposalMeta"></div><div class="chatProposalActions"><button class="review">查看差异</button><button class="adjust">继续调整</button><button class="reject">拒绝</button></div>';
-    card.querySelector('.chatProposalTitle').textContent = ({pending:'待审阅', applied:'已写入', rejected:'已拒绝', unavailable:'已不在待审清单'}[p.state] || '待审阅') + ' · ' + (p.title === p.file ? p.file.split(/[\\/]/).pop() : p.title || p.file);
+    card.innerHTML = '<div class="chatProposalInfo"><div class="chatProposalTitle"></div><div class="chatProposalMeta"></div></div><div class="chatProposalActions"><button class="review">查看差异</button><details class="chatProposalMore"><summary aria-label="更多修改操作">•••</summary><div><button class="adjust">继续调整</button><button class="reject">拒绝</button></div></details></div>';
+    card.querySelector('.chatProposalTitle').textContent = p.title === p.file ? p.file.split(/[\\/]/).pop() : p.title || p.file || '文件修改';
     card.title = p.file;
-    card.querySelector('.chatProposalMeta').textContent = p.file + ' · ' + (p.kind === 'create' ? '新增内容' : p.kind === 'delete' ? '删除内容' : '修改内容');
+    card.querySelector('.chatProposalMeta').textContent = ({pending:'待审阅', applied:'已写入', rejected:'已拒绝', unavailable:'已不在待审清单'}[p.state] || '待审阅') + ' · ' + (p.kind === 'create' ? '新增内容' : p.kind === 'delete' ? '删除内容' : '修改内容');
     card.querySelector('.review').onclick = async () => {
       if (p.project && p.project !== currentProject) return;
       try {
@@ -383,7 +509,8 @@ function renderWritingSteps(steps) {
 }
 
 function setWritingControls(disabled) {
-  ['chatTask', 'chatTarget', 'chatAllowProposals', 'chatMode', 'newChatBtn', 'chatTaskHistoryBtn', 'chatAttachActive', 'chatRestoreSources'].forEach(id => { document.getElementById(id).disabled = disabled; });
+  ['chatTask', 'chatModel', 'chatTarget', 'chatAllowProposals', 'chatMode', 'newChatBtn', 'chatTaskHistoryBtn', 'chatAttachActive', 'chatRestoreSources'].forEach(id => { document.getElementById(id).disabled = disabled; });
+  renderWritingContext();
 }
 
 async function sendWritingChat() {
@@ -438,7 +565,6 @@ async function sendWritingChat() {
     renderChatSources(packet, true);
     chatInput.value = '';
     turn.sources = packet.items.map(i => ({ title:i.title,kind:i.kind,truncated:i.truncated }));
-    if (spec.targetFile && [...document.getElementById('chatTarget').options].some(o => o.value === spec.targetFile)) { document.getElementById('chatTarget').value = spec.targetFile; task.target = spec.targetFile; renderWritingContext(); }
     turn.phase = '资料已准备，正在执行任务'; updateRun();
     live = document.createElement('div'); live.className = 'msg assistant'; chatMessages.appendChild(live); chatScrollEnd(true);
     const result = await chatFetchStream({ project, role, model, workspaceMode:allowProposals ? 'agent' : 'discuss', taskId:task.id, turnId:turn.id, messages: history.filter(m => m.role !== 'ref').slice(-20), contextPacket: packet, allowProposals }, delta => {
@@ -485,8 +611,7 @@ document.getElementById('chatTask').onchange = e => {
   setCurrentRole(e.target.value);
   document.getElementById('chatAllowProposals').checked = ['outline', 'writer', 'polish'].includes(e.target.value);
   document.getElementById('chatMode').value = document.getElementById('chatAllowProposals').checked ? 'agent' : 'discuss';
-  const hints = { general: '讨论冲突、节奏或下一步剧情…', character: '描述人物的目标、动机或关系…', outline: '描述想规划的故事段落…', writer: '说明目标章节、场景及必须保留的信息…', polish: '说明要改的范围、节奏和文风…', reviewer: '说明要检查的设定、时间线或人物状态…' };
-  chatInput.placeholder = hints[e.target.value] + '（Shift+Enter 换行）';
+  syncWritingStage();
   writingTaskChanged();
 };
 document.getElementById('chatMode').onchange = e => { document.getElementById('chatAllowProposals').checked = e.target.value === 'agent'; writingTaskChanged(); };
@@ -516,15 +641,16 @@ document.getElementById('chatNewReply').onclick = () => chatScrollEnd(true);
 document.getElementById('chatWideBtn').onclick = () => { chatPanel.classList.toggle('chat-wide'); document.getElementById('chatWideBtn').textContent = chatPanel.classList.contains('chat-wide') ? '还原' : '⛶'; };
 document.getElementById('detailAiTab').onclick = () => expandChatPanel();
 document.getElementById('chatDetailTab').onclick = () => {
-  if (!isChatCollapsed()) toggleChat();
+  if (chatDockNow() === 'right' && !isChatCollapsed()) toggleChat();
   document.getElementById('detail').classList.remove('hidden');
+  document.getElementById('detail').classList.add('responsive-open');
   document.getElementById('detailResizer').classList.remove('hidden');
 };
 document.getElementById('detailShow').addEventListener('click', () => { if (chatDockNow() === 'right' && !isChatCollapsed()) toggleChat(); });
 document.getElementById('chatStop').addEventListener('click', () => writingPreparing?.abort());
 chatInput.addEventListener('input', () => { chatInput.style.height = 'auto'; chatInput.style.height = Math.min(160, chatInput.scrollHeight) + 'px'; writingTaskChanged(); });
 document.addEventListener('projectDataUpdated', () => refreshChatTargets());
-document.addEventListener('detailNodeChanged', e => { if (!writingBusy) refreshChatTargets(e.detail.file); });
+document.addEventListener('detailNodeChanged', () => { if (!writingBusy) refreshChatTargets(); });
 document.addEventListener('activeFileChanged', () => { if (!writingBusy) requestChatSourcePreview(); });
 document.getElementById('projectSelect').addEventListener('change', () => {
   if (activeWritingTask) { activeWritingTask.draft = chatInput.value; activeWritingTask.refs = pendingRefs.map(r => ({...r})); saveWritingTasks(writingTaskProject); }
@@ -539,6 +665,7 @@ document.getElementById('projectSelect').addEventListener('change', () => {
   activeWritingTask = null; writingTaskProject = ''; document.getElementById('chatTaskHistory').hidden = true; writingChangesPanel.hidden = true; document.getElementById('chatContextTags').replaceChildren();
 });
 refreshChatTargets();
+document.getElementById('chatComposer').prepend(document.getElementById('chatContext'));
 syncChatPanel();
 if (innerWidth > 980) expandChatPanel();
 
@@ -560,5 +687,5 @@ document.querySelectorAll('.workspaceMenu').forEach(menu => {
 document.addEventListener('click', e => {
   if (!e.target.closest('.workspaceMenu')) document.querySelectorAll('.workspaceMenu').forEach(menu => menu.open = false);
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.getElementById('chatTaskHistory').hidden = true; document.querySelectorAll('.workspaceMenu,.fileTools,.chatMore,#chatScope').forEach(menu => menu.open = false); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.getElementById('chatTaskHistory').hidden = true; document.querySelectorAll('.workspaceMenu,.fileTools,.chatMore,#chatScope,.detailMore,.detailSource,.chatProposalMore').forEach(menu => menu.open = false); } });
 new ResizeObserver(() => updateAxisRulers()).observe(document.getElementById('canvasWrap'));

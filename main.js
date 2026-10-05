@@ -126,7 +126,7 @@ async function startServer() {
   try {
     // 如果端口已被外部占用（例如手动启动过 node server.js），直接复用，不重复拉起
     if (await isPortOpen()) return;
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NOVEL_CANVAS_TRACKING_DIR:path.join(app.getPath('userData'),'character-history') };
     if (projectsRoot) env.NOVEL_PROJECTS_ROOT = projectsRoot;
     serverProc = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
       env,
