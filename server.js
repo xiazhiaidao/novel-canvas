@@ -8,28 +8,26 @@ const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
+const reviewDiff = require('./review_diff');
+const timelineSync = require('./timeline_sync');
 
 const ROOT = __dirname; // 应用目录：存放页面/静态资源
+const DATA_DIR = process.env.NOVEL_CANVAS_DATA_DIR || path.join(ROOT, '.data');
 const PROJECTS_ROOT = process.env.NOVEL_PROJECTS_ROOT || path.dirname(ROOT); // 小说项目根目录
 const PORT = process.env.PORT || 8787;
 const proposals = new Map();
-let proposalSeq = 1;
 
 function proposalsFile() {
-  return path.join(ROOT, '.data', 'proposals.json');
+  return path.join(DATA_DIR, 'proposals.json');
 }
 function loadProposals() {
   try {
     const arr = JSON.parse(fs.readFileSync(proposalsFile(), 'utf8'));
     if (!Array.isArray(arr)) return;
-    let max = 0;
     for (const p of arr) {
       if (!p || !p.id) continue;
       proposals.set(p.id, p);
-      const m = /^p(\d+)$/.exec(String(p.id));
-      if (m) max = Math.max(max, parseInt(m[1], 10));
     }
-    if (max >= proposalSeq) proposalSeq = max + 1;
   } catch (_) {}
 }
 function persistProposals() {
@@ -47,6 +45,40 @@ function proposalSet(p) {
 function proposalDelete(id) {
   proposals.delete(id);
   persistProposals();
+}
+
+// 每次采纳独立记录整份文件；撤销仅在采纳后文件未再变动时开放。
+function applicationFile(id) {
+  if (!/^[a-z0-9-]{36}$/i.test(String(id))) throw new Error('无效的采纳记录');
+  return path.join(DATA_DIR, 'applications', id + '.json');
+}
+function saveApplication(record) {
+  const file = applicationFile(record.id);
+  fs.mkdirSync(path.dirname(file), { recursive:true });
+  fs.writeFileSync(file + '.tmp', JSON.stringify(record), 'utf8');
+  fs.renameSync(file + '.tmp', file);
+}
+function contentHash(content) { return createHash('sha256').update(content).digest('hex'); }
+function applyWithHistory(prop, root, file, change, reviewed) {
+  if (!isSafePath(file,root) || !isMdPath(file)) throw new Error('unsafe file path');
+  file=path.relative(root,path.resolve(root,file)).replace(/\\/g,'/');
+  const full = path.resolve(root,file), existed = fs.existsSync(full);
+  const record = { id:randomUUID(), proposalId:prop.id, root:path.resolve(root), project:prop.project || projectNameOfRoot(root), file,
+    before:existed ? fs.readFileSync(full,'utf8') : null, state:'prepared', time:Date.now(), partial:!!reviewed && reviewed.selectedCount < reviewed.hunkCount };
+  saveApplication(record); // 保存失败时不写用户文件。
+  change();
+  record.afterHash = contentHash(fs.readFileSync(full,'utf8')); record.state = 'applied';
+  saveApplication(record);
+  return { id:record.id, file, time:record.time, partial:record.partial, state:record.state };
+}
+function listApplications(root) {
+  const dir = path.join(DATA_DIR,'applications');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f=>f.endsWith('.json')).flatMap(file=>{
+    try { const r=JSON.parse(fs.readFileSync(path.join(dir,file),'utf8'));
+      return r.root===path.resolve(root) ? [{id:r.id,proposalId:r.proposalId,file:r.file,state:r.state,time:r.time,partial:r.partial}] : [];
+    } catch (_) { return []; }
+  }).sort((a,b)=>b.time-a.time);
 }
 function projectNameOfRoot(root) {
   try {
@@ -1553,7 +1585,7 @@ async function advanceConsistency(root, project, targetId, content) {
       if (!node || (node.label !== '角色' && node.label !== '伏笔')) continue;
       if (typeof u.newContent !== 'string' || !u.newContent.trim()) continue;
       if (String(node.content || '') === u.newContent) continue;
-      const proposalId = 'p' + (proposalSeq++);
+      const proposalId = 'p-' + randomUUID();
       created.push(proposalSet({
         id: proposalId,
         kind: 'edit',
@@ -1659,7 +1691,7 @@ async function writeNextChapter(root, project, targetId, content, instruction) {
 }
 
 function auditStatsDir() {
-  return path.join(ROOT, '.data', 'audit-history');
+  return path.join(DATA_DIR, 'audit-history');
 }
 function auditStatsFile(project) {
   const safe = String(project || 'default').replace(/[^\w\u4e00-\u9fa5-]+/g, '_');
@@ -1735,7 +1767,7 @@ function summarizeAuditStats(root, project) {
 
 // ── AI 配置（设置面板可编辑，存 .data/ai-config.json） ──
 function aiConfigFile() {
-  return path.join(ROOT, '.data', 'ai-config.json');
+  return path.join(DATA_DIR, 'ai-config.json');
 }
 function loadAiConfig() {
   try { return JSON.parse(fs.readFileSync(aiConfigFile(), 'utf8')); } catch (_) { return null; }
@@ -1793,7 +1825,7 @@ function getApiConfig() {
 }
 
 // ── 自动备份 / 回滚（快照目录 .data/backups/{ts}-{seq}/{project}/…） ──
-function backupDir() { return path.join(ROOT, '.data', 'backups'); }
+function backupDir() { return path.join(DATA_DIR, 'backups'); }
 function safeProjectName(project) {
   return String(project || 'default').replace(/[^\w\u4e00-\u9fa5-]+/g, '_') || 'default';
 }
@@ -1928,7 +1960,7 @@ function restoreBackup(ts, project) {
 }
 
 // ── 用量统计（.data/usage.json） ──
-function usageFile() { return path.join(ROOT, '.data', 'usage.json'); }
+function usageFile() { return path.join(DATA_DIR, 'usage.json'); }
 function loadUsage() {
   try {
     const u = JSON.parse(fs.readFileSync(usageFile(), 'utf8'));
@@ -2200,7 +2232,7 @@ function characterMentions(aliases, chapters) {
 // 仅保存两次磁盘扫描之间的卡片字段差异；检测时间不是剧情发生时间。
 // 不写小说 Markdown，未采纳的提案和编辑器草稿不会进入此记录。
 function trackCharacterStates(root, characters) {
-  const dir = process.env.NOVEL_CANVAS_TRACKING_DIR || path.join(ROOT,'.data','character-history');
+  const dir = process.env.NOVEL_CANVAS_TRACKING_DIR || path.join(DATA_DIR,'character-history');
   const file = path.join(dir,createHash('sha256').update(path.resolve(root)).digest('hex')+'.json');
   let saved = { startedAt:new Date().toISOString(),cards:{} };
   try { saved = JSON.parse(fs.readFileSync(file,'utf8')); } catch (e) {
@@ -2793,14 +2825,14 @@ function buildVoiceprint(root) {
     han: s.han
   };
   try {
-    fs.mkdirSync(path.join(ROOT, '.data'), { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(voiceprintFile(vp.project), JSON.stringify(vp, null, 2), 'utf8');
   } catch (_) {}
   return vp;
 }
 function voiceprintFile(project) {
   const safe = String(project || 'default').replace(/[\\/:*?"<>|]/g, '_');
-  return path.join(ROOT, '.data', 'voiceprint-' + safe + '.json');
+  return path.join(DATA_DIR, 'voiceprint-' + safe + '.json');
 }
 function loadVoiceprint(project) {
   try { return JSON.parse(fs.readFileSync(voiceprintFile(project), 'utf8')); } catch (_) { return null; }
@@ -2815,7 +2847,7 @@ function loadVoiceprint(project) {
 //   ⑤ 采纳后转成**分章大纲提案**，走既有 /api/apply_proposal 审阅写盘，不直写。
 function plotDevicesFile(project) {
   const safe = String(project || 'default').replace(/[\\/:*?"<>|]/g, '_');
-  return path.join(ROOT, '.data', 'plot-devices-' + safe + '.json');
+  return path.join(DATA_DIR, 'plot-devices-' + safe + '.json');
 }
 function loadPlotDevices(project) {
   try {
@@ -2825,7 +2857,7 @@ function loadPlotDevices(project) {
 }
 function savePlotDevices(project, data) {
   try {
-    fs.mkdirSync(path.join(ROOT, '.data'), { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(plotDevicesFile(project), JSON.stringify(data, null, 2), 'utf8');
   } catch (_) {}
 }
@@ -3319,7 +3351,7 @@ function resolveFileLoose(root, rel) {
 
 async function runAgentTool(name, args, root) {
   try {
-    const id = 'p' + (proposalSeq++);
+    const id = 'p-' + randomUUID();
     if (name === 'read_node') {
       const nodes = buildNodes(root);
       const found = findNodeLoose(nodes, args.id);
@@ -3677,7 +3709,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, { error: '改写把篇幅撑大了 25% 以上，已放弃生成提案（AI 味倾向是「收敛」而不是「加料」）' });
       }
       const proposal = proposalSet({
-        id: 'p' + (proposalSeq++),
+        id: 'p-' + randomUUID(),
         kind: 'file_edit',
         file: node.file,
         title: node.title + '（AI 味改写）',
@@ -3812,7 +3844,7 @@ const server = http.createServer(async (req, res) => {
         + '\n---\n\n';
       const output = head + md;
       const proposal = proposalSet({
-        id: 'p' + (proposalSeq++),
+        id: 'p-' + randomUUID(),
         kind: 'file_edit',
         file: target,
         title: prop.title + '（剧情提案 → 分章大纲）',
@@ -3842,6 +3874,54 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── 时间线（作者手动维护的重要节点，按章节排序） ──
+  if (['/api/timeline/preview','/api/timeline/sync'].includes(pathname) && req.method==='POST') {
+    try {
+      const body=await readBody(req), root=resolveProjectRoot(body.project || defaultProjectName());
+      if(typeof body.path!=='string' || !isSafePath(body.path,root) || !isMdPath(body.path)) throw new Error('unsafe file path');
+      const file=path.relative(root,path.resolve(root,body.path)).replace(/\\/g,'/');
+      const scope=body.chapter==null ? null : Number(body.chapter);
+      if(scope!=null && (!Number.isInteger(scope) || scope<=0)) throw new Error('无效的章节');
+      const layout=loadLayout(root), pins=layout.timelineNodes || [];
+      const content=fs.existsSync(path.resolve(root,file)) ? readText(file,root) : pins.some(p=>p.sourceFile===file) ? '' : readText(file,root);
+      const events=timelineSync.extract(content,chapterNumberFromTitle), operations=timelineSync.plan(events,pins,file,scope);
+      const token=timelineSync.hash([path.resolve(root),file,scope,content,pins]);
+      if(pathname==='/api/timeline/preview') return sendJson(res,{ok:true,token,operations,events:events.length});
+      if(body.token!==token) return sendJson(res,{error:'时间线文件或画布已变化，请重新预览',conflict:true});
+      if(!Array.isArray(body.selected) || !body.selected.length || new Set(body.selected).size!==body.selected.length || body.selected.some(i=>!Number.isInteger(i)||i<0||i>=operations.length)) throw new Error('请选择有效的同步项目');
+      let next=[...pins];
+      for(const i of body.selected) {
+        const op=operations[i];
+        if(op.action==='delete') next=next.filter(p=>p.id!==op.id);
+        else if(op.action==='update') next=next.map(p=>p.id===op.id ? {...p,...op.next} : p);
+        else next.push({id:'tl-'+randomUUID(),progress:null,...op.next});
+      }
+      snapshotFiles(root,projectNameOfRoot(root),['小说画布.json'],'时间线同步');
+      saveLayout({...layout,version:3,timelineNodes:next},root);
+      return sendJson(res,{ok:true,events:next,changed:body.selected.length});
+    } catch(e) { return sendJson(res,{error:e.message}); }
+  }
+  if(pathname==='/api/proposals/applied' && req.method==='GET') {
+    try { return sendJson(res,{ok:true,applications:listApplications(resolveProjectRoot(url.searchParams.get('project') || defaultProjectName()))}); }
+    catch(e) { return sendJson(res,{error:e.message}); }
+  }
+  if(pathname==='/api/proposals/undo' && req.method==='POST') {
+    try {
+      const body=await readBody(req), root=resolveProjectRoot(body.project || defaultProjectName());
+      const record=JSON.parse(fs.readFileSync(applicationFile(body.id),'utf8'));
+      if(record.root!==path.resolve(root)) throw new Error('采纳记录不属于当前项目');
+      if(record.state!=='applied') throw new Error('这次采纳已撤销或未完成');
+      if(!isSafePath(record.file,root) || !isMdPath(record.file)) throw new Error('unsafe file path');
+      const full=path.resolve(root,record.file);
+      if(!fs.existsSync(full) || contentHash(fs.readFileSync(full,'utf8'))!==record.afterHash) return sendJson(res,{error:'采纳后文件已再次修改，请通过备份查看历史，不能直接撤销',conflict:true});
+      snapshotFiles(root,record.project,[record.file],'撤销采纳前保护');
+      if(record.before===null) {fs.unlinkSync(full);invalidateFmCache(root);}
+      else writeText(record.file,record.before,root);
+      const devices=loadPlotDevices(record.project);
+      devices.devices=devices.devices.filter(d=>d.proposalId!==record.proposalId); savePlotDevices(record.project,devices);
+      record.state='undone'; record.undoneAt=Date.now(); saveApplication(record);
+      return sendJson(res,{ok:true,file:record.file,removed:record.before===null,proposalId:record.proposalId});
+    } catch(e) { return sendJson(res,{error:e.message}); }
+  }
   if (pathname === '/api/timeline' && req.method === 'GET') {
     try {
       const project = url.searchParams.get('project') || defaultProjectName();
@@ -3906,7 +3986,8 @@ const server = http.createServer(async (req, res) => {
         axisSegSize: layout.axisSegSize || 0,
         axisY: layout.axisY || null,
         overrides: layout.overrides || {},
-        timelineNodes: (layout.timelineNodes || []).map(n => ({ id: String(n.id), title: String(n.title || ''), chapter: n.chapter != null ? Number(n.chapter) : null, note: String(n.note || ''), progress: n.progress != null ? Number(n.progress) : null })),
+        timelineNodes: (layout.timelineNodes || []).map(n => ({ id: String(n.id), title: String(n.title || ''), chapter: n.chapter != null ? Number(n.chapter) : null, note: String(n.note || ''), progress: n.progress != null ? Number(n.progress) : null,
+          ...(n.sourceFile ? {sourceFile:String(n.sourceFile),sourceKey:String(n.sourceKey || ''),sourceLine:Number(n.sourceLine)||1,sourceChapter:Number(n.sourceChapter ?? n.chapter)} : {}) })),
         unrecognized: (layout.unrecognized || []).map(String),
         // 视图记忆（缩放/平移/泳道/折叠）：必须在这里透出，否则前端存了也读不回来（漏了这一步就白存）
         view: layout.view || null,
@@ -4019,7 +4100,7 @@ const server = http.createServer(async (req, res) => {
       const nodes = buildNodes(root);
       const node = nodes.find(n => n.id === id);
       if (!node) return sendJson(res, { error: 'node not found' });
-      const proposalId = 'p' + (proposalSeq++);
+      const proposalId = 'p-' + randomUUID();
       const proposal = proposalSet({
         id: proposalId,
         kind: 'edit',
@@ -4049,7 +4130,7 @@ const server = http.createServer(async (req, res) => {
       if (!isSafePath(rel, root) || !isMdPath(rel)) return sendJson(res, { error: 'unsafe file path' });
       const full = path.resolve(root, rel);
       const oldContent = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.readFileSync(full, 'utf8') : '';
-      const proposalId = 'p' + (proposalSeq++);
+      const proposalId = 'p-' + randomUUID();
       const proposal = proposalSet({
         id: proposalId,
         kind: 'file_edit',
@@ -4103,33 +4184,37 @@ const server = http.createServer(async (req, res) => {
       const prop = proposals.get(body.id);
       if (!prop) return sendJson(res, { error: 'proposal not found' });
       const root = prop.root || resolveProjectRoot(body.project || defaultProjectName());
+      if (body.project && path.resolve(root) !== path.resolve(resolveProjectRoot(body.project))) return sendJson(res, { error: '提案不属于当前项目' });
+      if (body.selectedHunks !== undefined && !['edit', 'file_edit'].includes(prop.kind)) return sendJson(res, { error: '此类提案不支持逐段采纳' });
+      const reviewed = body.selectedHunks === undefined ? null : reviewDiff.apply(String(prop.oldContent || ''), String(prop.newContent || ''), body.selectedHunks);
+      const acceptedContent = reviewed ? reviewed.content : String(prop.newContent || '');
       if (prop.kind === 'edit') {
         const nodes = buildNodes(root);
         const node = nodes.find(n => n.id === prop.nodeId);
         if (!node) return sendJson(res, { error: 'node not found for edit' });
         if (String(node.content || '') !== String(prop.oldContent || '')) return sendJson(res, { error: '节点内容已改变，请基于最新内容重新生成提案', conflict: true });
         const lines = readText(node.file, root).split('\n');
-        lines.splice(node.startLine - 1, node.endLine - node.startLine + 1, ...String(prop.newContent || '').split('\n'));
+        lines.splice(node.startLine - 1, node.endLine - node.startLine + 1, ...acceptedContent.split('\n'));
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [node.file], 'AI 修改');
-        writeText(node.file, lines.join('\n'), root);
+        const application = applyWithHistory(prop,root,node.file,()=>writeText(node.file, lines.join('\n'), root),reviewed);
         proposalDelete(body.id);
-        return sendJson(res, { ok: true, nodes: buildNodes(root) });
+        return sendJson(res, { ok: true, nodes: buildNodes(root), selectedCount:reviewed?.selectedCount, application });
       }
       if (prop.kind === 'create') {
         const def = findDefByType(prop.type);
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [def.file], 'AI 修改');
-        appendSection(prop.type, prop.title, prop.desc, root);
+        const application = applyWithHistory(prop,root,def.file,()=>appendSection(prop.type, prop.title, prop.desc, root));
         proposalDelete(body.id);
-        return sendJson(res, { ok: true, nodes: buildNodes(root) });
+        return sendJson(res, { ok: true, nodes: buildNodes(root), application });
       }
       if (prop.kind === 'delete') {
         const nodes = buildNodes(root);
         const node = nodes.find(n => n.content === prop.oldContent && n.file === prop.file);
         if (!node) return sendJson(res, { error: 'node not found for delete' });
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [node.file], 'AI 修改');
-        deleteSegment(node, root);
+        const application = applyWithHistory(prop,root,node.file,()=>deleteSegment(node, root));
         proposalDelete(body.id);
-        return sendJson(res, { ok: true, nodes: buildNodes(root) });
+        return sendJson(res, { ok: true, nodes: buildNodes(root), application });
       }
       if (prop.kind === 'file_edit') {
         if (!isSafePath(prop.file, root) || !isMdPath(prop.file)) return sendJson(res, { error: 'unsafe file path' });
@@ -4145,12 +4230,12 @@ const server = http.createServer(async (req, res) => {
         }
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         snapshotFiles(root, prop.project || projectNameOfRoot(root), [prop.file], 'AI 修改');
-        writeText(prop.file, String(prop.newContent || ''), root);
-        if (prop.plotDevice) appendPlotDevice(prop.project || projectNameOfRoot(root), {
+        const application = applyWithHistory(prop,root,prop.file,()=>writeText(prop.file, acceptedContent, root),reviewed);
+        if (prop.plotDevice && acceptedContent === String(prop.newContent || '')) appendPlotDevice(prop.project || projectNameOfRoot(root), {
           ...prop.plotDevice, proposalId: prop.id, state: 'planned', adoptAt: new Date().toISOString()
         });
         proposalDelete(body.id);
-        return sendJson(res, { ok: true });
+        return sendJson(res, { ok: true, selectedCount:reviewed?.selectedCount, application });
       }
       return sendJson(res, { error: 'unknown proposal kind' });
     } catch (e) {
@@ -4654,7 +4739,7 @@ const api = getApiConfig();
         let newContent = reply;
         const fence = newContent.match(/^```[\w-]*\n([\s\S]*?)\n```$/);
         if (fence) newContent = fence[1].trim();
-        const id = 'p' + (proposalSeq++);
+        const id = 'p-' + randomUUID();
         const proposal = proposalSet({ id, kind: 'file_edit', file: rel, title: rel, oldContent: current, newContent, root, project: projectNameOfRoot(root) });
         return sendJson(res, {
           ok: true,

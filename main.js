@@ -127,6 +127,8 @@ async function startServer() {
     // 如果端口已被外部占用（例如手动启动过 node server.js），直接复用，不重复拉起
     if (await isPortOpen()) return;
     const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NOVEL_CANVAS_TRACKING_DIR:path.join(app.getPath('userData'),'character-history') };
+    // asar 只读，服务数据保存在 Electron 用户目录；源码/旧目录版沿用 .data。
+    if(!env.NOVEL_CANVAS_DATA_DIR && __dirname.toLowerCase().endsWith('.asar')) env.NOVEL_CANVAS_DATA_DIR=path.join(app.getPath('userData'),'service-data');
     if (projectsRoot) env.NOVEL_PROJECTS_ROOT = projectsRoot;
     serverProc = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
       env,
@@ -186,7 +188,7 @@ async function changeProjectsRoot() {
 function setupDevReload() {
   if (app.isPackaged) return;
   // 注意：必须覆盖全部前端 JS。漏掉 app.js/file_editor.js 会导致改了它们窗口不刷新（用户看不到新功能）
-  const watchFiles = ['index.html', 'canvas_upgrade.js', 'canvas_theme.css', 'app.js', 'file_editor.js', 'chat_workspace.js', 'chat_workspace.css'];
+  const watchFiles = ['index.html', 'canvas_upgrade.js', 'canvas_theme.css', 'app.js', 'file_editor.js', 'chat_workspace.js', 'chat_workspace.css', 'review_diff.js'];
   for (const f of watchFiles) {
     const p = path.join(__dirname, f);
     try {

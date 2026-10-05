@@ -31,6 +31,7 @@ for (let i = 1; i <= 35; i++) write(`正文/第一卷/第${String(i).padStart(2,
 let reply = '', gatewayCalls = 0, server, edge, ws, passed = 0;
 const upstreamBodies = [], gatewayMessages = [];
 const gateway = http.createServer((req, res) => {
+  if(req.method!=='POST') {res.writeHead(405);res.end();return;}
   let body = ''; req.on('data', c => { body += c; }); req.on('end', () => {
     gatewayCalls++;
     const payload = JSON.parse(body); upstreamBodies.push(payload);
@@ -54,15 +55,17 @@ const stop = async child => {
 };
 const check = (label, fn) => { fn(); passed++; console.log('PASS ' + label); };
 async function availablePort() { const s = http.createServer(); await listen(s); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
-async function until(fn) { for (let i = 0; i < 100; i++) { try { if (await fn()) return; } catch (_) {} await pause(100); } throw new Error('等待服务/页面超时'); }
+async function until(fn) { for (let i = 0; i < 300; i++) { try { if (await fn()) return; } catch (_) {} await pause(100); } throw new Error('等待服务/页面超时'); }
 
 (async () => {
   await listen(gateway);
   fs.mkdirSync(path.join(app, '.data'));
   const config = path.join(app, '.data', 'ai-config.json');
   fs.writeFileSync(config, JSON.stringify({ key: 'local-test-only', base: `http://127.0.0.1:${gateway.address().port}/v1`, model: 'local-test' }));
-  const port = await availablePort(), cdpPort = await availablePort(), url = `http://127.0.0.1:${port}`;
-  const env = { ...process.env, PORT: String(port), NOVEL_PROJECTS_ROOT: projects, NOVEL_CANVAS_TRACKING_DIR:path.join(temp,'writable-user-data','character-history'), DEFAULT_PROJECT: project, DEEPSEEK_API_KEY: '', INKPILOT_CONFIG: path.join(temp, 'absent.json') };
+  const port = await availablePort(), url = `http://127.0.0.1:${port}`;
+  let cdpPort=await availablePort();
+  while(cdpPort===port)cdpPort=await availablePort();
+  const env = { ...process.env, PORT: String(port), NOVEL_PROJECTS_ROOT: projects, NOVEL_CANVAS_DATA_DIR:path.join(app,'.data'), NOVEL_CANVAS_TRACKING_DIR:path.join(temp,'writable-user-data','character-history'), DEFAULT_PROJECT: project, DEEPSEEK_API_KEY: '', INKPILOT_CONFIG: path.join(temp, 'absent.json') };
   const startServer = async () => {
     server = spawn(process.execPath, ['server.js'], { cwd: app, env, windowsHide: true, stdio: 'ignore' });
     await until(() => fetch(url + '/api/projects').then(r => r.ok));
@@ -204,7 +207,7 @@ async function until(fn) { for (let i = 0; i < 100; i++) { try { if (await fn())
   await new Promise(r => ws.addEventListener('open', r, { once: true }));
   let seq = 0; const pending = new Map(); const exceptions = [];
   ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.text); };
-  const send = (method, params = {}) => new Promise(r => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+  const send = (method, params = {}) => new Promise((resolve,reject) => { const id = ++seq; const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP 超时：'+method));},45000);pending.set(id, result=>{clearTimeout(timer);resolve(result);});ws.send(JSON.stringify({ id, method, params })); });
   const run = async expression => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails)); return r.result?.result?.value; };
   await send('Runtime.enable');
   await send('Page.enable');
@@ -401,6 +404,164 @@ async function until(fn) { for (let i = 0; i < 100; i++) { try { if (await fn())
   check('无完成事件的流断连显示失败并保留部分回复', () => { assert.equal(droppedStream.state,'failed'); assert(droppedStream.reply.includes('已生成一部分')); assert(droppedStream.reply.includes('中断')); });
   const scrolling = await run(`(()=>{for(let i=0;i<16;i++)addMsg('assistant','长回复。'.repeat(120));chatMessages.scrollTop=0;addMsg('assistant','最后的新回复');return {top:chatMessages.scrollTop,notice:!document.getElementById('chatNewReply').hidden,editable:!!document.querySelector('#chatMessages [contenteditable="true"]')};})()`);
   check('阅读历史时不抢滚动位置，消息不可伪编辑', () => { assert.equal(scrolling.top, 0); assert(scrolling.notice); assert(!scrolling.editable); });
+
+  // 本章收尾、逐段采纳、缩放分层：沿用隔离小说与真实工具/HTTP 写回链路。
+  const wrapCalls = gatewayCalls, wrapChapterBefore = fs.readFileSync(path.join(book,chapterFile),'utf8');
+  const wrapDraft = await run(String.raw`(async()=>{await loadData();newWritingTask();const old=activeWritingTask.id;chatInput.value='保留原任务要求';writingTaskChanged();await openFile(${JSON.stringify(chapterFile)});const n=nodes.find(n=>n.file===activeFilePath),f=openFiles.find(f=>f.path===activeFilePath);f.content=f.savedContent+'\n未保存收尾草稿';f.dirty=true;renderFileEditor();document.getElementById('fileWrapUpBtn').click();const source=document.getElementById('chapterWrapUpSource').textContent;document.querySelectorAll('#chapterWrapUpChecks input').forEach(el=>el.checked=false);const count=writingStore().tasks.length;createChapterWrapUpTask();const emptyBlocked=count===writingStore().tasks.length;document.querySelector('#chapterWrapUpChecks input[value="summary"]').checked=true;createChapterWrapUpTask();const task=activeWritingTask,ref=task.refs.find(r=>r.file===n.file),retained=writingStore().tasks.find(t=>t.id===old).draft;f.content=f.savedContent;f.dirty=false;renderFileEditor();return {source,emptyBlocked,checks:task.wrapUp.checks,draft:ref.draft,content:ref.content,retained,quiet:task.messages.length===0,returnChapter:document.getElementById('chatContextTags').textContent.includes('返回章节')};})()`);
+  check('本章收尾支持正文入口、草稿引用、选择检查项、保留原任务且不自动发送',()=>{assert(wrapDraft.source.includes('未保存'));assert(wrapDraft.emptyBlocked&&wrapDraft.draft&&wrapDraft.quiet&&wrapDraft.returnChapter);assert.deepEqual(wrapDraft.checks,['summary']);assert(wrapDraft.content.includes('未保存收尾草稿'));assert.equal(wrapDraft.retained,'保留原任务要求');assert.equal(gatewayCalls,wrapCalls);assert.equal(fs.readFileSync(path.join(book,chapterFile),'utf8'),wrapChapterBefore);});
+  const wrapFresh = await run(`(()=>{openChapterWrapUp(nodes.find(n=>n.file===${JSON.stringify(chapterFile)}).id);createChapterWrapUpTask();return {checks:activeWritingTask.wrapUp.checks,title:activeWritingTask.title,target:document.getElementById('chatTarget').value,prompt:chatInput.value};})()`);
+  check('默认四项收尾固定目标章节，要求证据和单文件合并提案',()=>{assert.equal(wrapFresh.checks.length,4);assert(wrapFresh.title.startsWith('本章收尾'));assert.equal(wrapFresh.target,chapterFile);assert(wrapFresh.prompt.includes('每个文件合并成一个待审提案'));assert(wrapFresh.prompt.includes('不能倒退覆盖'));});
+  const wrapRoleBefore=fs.readFileSync(path.join(book,roleFile),'utf8'),wrapForesBefore=fs.readFileSync(path.join(book,trackerFile),'utf8');
+  const wrapOutputs=[{path:roleFile,content:wrapRoleBefore.replace('寻找钥匙','持钥匙守住木门')},{path:trackerFile,content:wrapForesBefore.replace('已埋','已强化')},{path:'追踪/章节摘要.md',content:'# 章节摘要\n\n## 第1章\n林舟守住木门。\n'},{path:'追踪/时间线.md',content:'# 时间线\n\n## 第1章\n林舟守门，具体日期未明确。\n'}];
+  gatewayMessages.push({role:'assistant',content:null,tool_calls:[{id:'wrap-read',type:'function',function:{name:'read_file',arguments:JSON.stringify({path:chapterFile})}}]}, {role:'assistant',content:null,tool_calls:wrapOutputs.map((item,i)=>({id:'wrap-edit-'+i,type:'function',function:{name:'edit_file',arguments:JSON.stringify(item)}}))}, {role:'assistant',content:'已核对本章，人物、伏笔、摘要与时间线四份资料等待审阅。'});
+  const wrapRun=await run(`(async()=>{await sendChat();return {state:activeWritingTask.state,proposals:activeWritingTask.proposals,steps:activeWritingTask.turns.at(-1).steps};})()`);
+  check('收尾任务通过模拟模型实际查阅并集中生成四份提案，采纳前不写盘',()=>{assert.equal(wrapRun.state,'review');assert.equal(wrapRun.proposals.length,4);assert(wrapRun.steps.some(s=>s.tool==='read_file'));assert.equal(fs.readFileSync(path.join(book,roleFile),'utf8'),wrapRoleBefore);assert.equal(fs.readFileSync(path.join(book,trackerFile),'utf8'),wrapForesBefore);assert(!fs.existsSync(path.join(book,'追踪/章节摘要.md')));});
+  for(const p of wrapRun.proposals) await run(`(async()=>{const p=await getWritingProposal(${JSON.stringify(p.id)});await openFileProposal(p);await acceptFileProposal(p.id);})()`);
+  const wrapApplied=await run(`(()=>({states:activeWritingTask.proposals.map(p=>p.state),state:activeWritingTask.state,title:activeWritingTask.title}))()`);
+  check('逐份审阅后收尾资料落盘、任务完成，正文不受影响',()=>{assert(wrapApplied.states.every(s=>s==='applied'));assert.equal(wrapApplied.state,'completed');for(const item of wrapOutputs)assert.equal(fs.readFileSync(path.join(book,item.path),'utf8'),item.content);assert.equal(fs.readFileSync(path.join(book,chapterFile),'utf8'),wrapChapterBefore);});
+  const progress=await run(`(()=>{const task=activeWritingTask,states=task.wrapUp.checks.map(k=>wrapUpItemState(task,k)),fresh=writingTaskStateLabel(task),n=nodeMap[task.wrapUp.nodeId];n.content+='外部变化';const stale=writingTaskStateLabel(task);n.content=task.wrapUp.sourceContent;return {states,fresh,stale,undo:task.proposals.every(p=>p.applicationId),rows:document.querySelectorAll('.wrapUpProgressRow').length};})()`);
+  check('四项收尾以实际采纳完成，正文变更立即提示旧依据，采纳记录可撤销',()=>{assert.deepEqual(progress.states,['已采纳','已采纳','已采纳','已采纳']);assert.equal(progress.fresh,'收尾完成');assert(progress.stale.includes('需重新核对'));assert(progress.undo);assert.equal(progress.rows,4);});
+  const progressRejected=await run(`(()=>{const task=activeWritingTask,p=task.proposals.find(p=>p.wrapUpChecks.includes('summary'));p.state='rejected';const rejected=wrapUpItemState(task,'summary');p.state='applied';p.partial=true;const partial=wrapUpItemState(task,'summary');p.partial=false;return {rejected,partial};})()`);
+  check('拒绝与部分采纳不会误报该项收尾完成',()=>{assert.equal(progressRejected.rejected,'待处理');assert.equal(progressRejected.partial,'部分采纳');});
+  const noChange=await run(`(async()=>{const original=activeWritingTask.id;openChapterWrapUp(activeWritingTask.wrapUp.nodeId);document.querySelectorAll('#chapterWrapUpChecks input').forEach(el=>el.checked=el.value==='summary');createChapterWrapUpTask();const native=promptDialog;promptDialog=async()=> '已核对本章第一段，无需修改摘要';try {await document.querySelector('.wrapUpProgressRow button').onclick();const state=writingTaskStateLabel(activeWritingTask),note=activeWritingTask.wrapUp.confirmed.summary;activateWritingTask(original);return {state,note};}finally{promptDialog=native;}})()`);
+  check('无需修改可由作者明确核对并记录依据，空提案不会自动当完成',()=>{assert.equal(noChange.state,'收尾完成');assert(noChange.note.includes('无需修改'));});
+  const syncUI=await run(`(async()=>{await openTimelineSync('追踪/时间线.md',1);return {count:timelineSyncPreview.operations.length,checked:document.querySelectorAll('.timelineSyncRows input:checked').length,source:document.querySelector('.timelineSyncSource').textContent};})()`);
+  check('已采纳时间线先展示同步预览与章节来源',()=>{assert.equal(syncUI.count,1);assert.equal(syncUI.checked,1);assert(syncUI.source.includes('第1章'));});
+  await run(`timelineSyncModal.querySelector('.syncApply').click()`);
+  await until(()=>run(`!timelineSyncBusy && !timelineSyncModal.classList.contains('show')`));
+  const syncUIApplied=await get('/api/data?project='+project);
+  check('时间线确认同步后生成带来源的画布节点，布局读取保留来源字段',()=>{const pin=syncUIApplied.layout.timelineNodes.find(p=>p.sourceFile==='追踪/时间线.md');assert.equal(pin.chapter,1);assert.equal(pin.sourceChapter,1);assert.equal(pin.sourceLine,4);assert(pin.sourceKey);});
+
+  const partialFile='追踪/逐段审阅.md',partialBefore='# 记录\r\n\r\n原句一。\r\n保持不变。\r\n原句二。\r\n尾句';
+  const partialAfter=partialBefore.replace('原句一。','新句一。').replace('原句二。','新句二。');write(partialFile,partialBefore);
+  const partialProposal=await post('/api/propose_file_edit',{path:partialFile,content:partialAfter});
+  for(const selectedHunks of [[],[{index:99}],[{index:0},{index:0}]]) {const r=await post('/api/apply_proposal',{id:partialProposal.proposal.id,selectedHunks});check('分段写回拒绝无效选择 '+JSON.stringify(selectedHunks),()=>{assert(r.error);assert.equal(fs.readFileSync(path.join(book,partialFile),'utf8'),partialBefore);});}
+  const partialUI=await run(String.raw`(async()=>{await openFileProposal(${JSON.stringify(partialProposal.proposal)});document.querySelector('#fileProposalBox .selectNone').click();const disabled=document.querySelector('#fileProposalBox .accept').disabled;const rows=document.querySelectorAll('.fileReviewHunk'),row=rows[1];row.querySelector('input').click();row.querySelector('.editSuggestion').click();const ta=row.querySelector('textarea');ta.value='手动调整。\r\n';ta.dispatchEvent(new Event('input'));const preview=document.querySelector('.fileReviewMerged pre').textContent;renderFileProposal(currentFileProposal);const retained=document.querySelectorAll('.fileReviewHunk input:checked').length===1;await acceptFileProposal(currentFileProposal.id);return {count:rows.length,disabled,preview,retained,closed:currentFileProposal===null};})()`);
+  const partialEditedExpected=partialBefore.replace('原句二。','手动调整。');
+  check('界面逐段勾选、手动编辑、合并预览与重新打开保留选择，未选中原文和CRLF不变',()=>{assert.equal(partialUI.count,2);assert(partialUI.disabled&&partialUI.retained&&partialUI.closed);assert.equal(partialUI.preview,partialEditedExpected);assert.equal(fs.readFileSync(path.join(book,partialFile),'utf8'),partialEditedExpected);});
+  const partialApplication=(await get('/api/proposals/applied?project='+project)).applications.find(a=>a.proposalId===partialProposal.proposal.id);
+  check('部分采纳持久记录真实结果，清理对应审阅草稿',()=>assert(partialApplication.partial));
+  const partialUndo=await post('/api/proposals/undo',{id:partialApplication.id});
+  check('撤销部分采纳完整恢复原文及CRLF，无重复撤销',()=>{assert(partialUndo.ok,partialUndo.error);assert.equal(fs.readFileSync(path.join(book,partialFile),'utf8'),partialBefore);});
+  check('重复撤销被拒绝',()=>assert.equal(partialUndo.proposalId,partialProposal.proposal.id));
+  assert((await post('/api/proposals/undo',{id:partialApplication.id})).error);
+  const restoreProposal=(await post('/api/propose_file_edit',{path:partialFile,content:partialAfter})).proposal;
+  await run(`(async()=>{await openFileProposal(${JSON.stringify(restoreProposal)});document.querySelector('#fileProposalBox .selectNone').click();const row=document.querySelectorAll('.fileReviewHunk')[1];row.querySelector('input').click();const ta=row.querySelector('textarea');ta.value='刷新后保留。\\r\\n';ta.dispatchEvent(new Event('input'));flushWritingTask();})()`);
+  const reloadBefore=(await send('Page.getFrameTree')).result.frameTree.frame.loaderId;
+  await send('Page.reload');
+  await until(async()=>{const frame=(await send('Page.getFrameTree')).result.frameTree.frame;if(frame.loaderId===reloadBefore)return false;return run(`document.readyState==='complete' && typeof openFileProposal==='function' && typeof currentProject!=='undefined' && currentProject===${JSON.stringify(project)} && nodes.length>0 && !!activeWritingTask`);});
+  const restoredReview=await run(`(async()=>{await openFileProposal(${JSON.stringify(restoreProposal)});return {count:document.querySelectorAll('.fileReviewHunk input:checked').length,edited:document.querySelectorAll('.fileReviewHunk textarea')[1].value,preview:document.querySelector('.fileReviewMerged pre').textContent};})()`);
+  check('真实页面刷新后恢复逐段选择与手工编辑，未选原文仍保留',()=>{assert.equal(restoredReview.count,1);assert(restoredReview.edited.includes('刷新后保留'));assert(restoredReview.preview.includes('原句一。'));});
+  await run(`acceptFileProposal(${JSON.stringify(restoreProposal.id)})`);
+  const restoreApplication=(await get('/api/proposals/applied?project='+project)).applications.find(a=>a.proposalId===restoreProposal.id);
+  const badUndo=await post('/api/proposals/undo',{project:'OtherProject',id:restoreApplication.id});
+  check('撤销严格隔离小说项目',()=>assert(badUndo.error));
+  write(partialFile,'外部改写');
+  const conflictedUndo=await post('/api/proposals/undo',{id:restoreApplication.id});
+  check('采纳后外部修改阻止撤销，不覆盖新内容',()=>{assert(conflictedUndo.conflict);assert.equal(fs.readFileSync(path.join(book,partialFile),'utf8'),'外部改写');});
+  write(partialFile,partialEditedExpected);
+  const undoUIFile='追踪/界面撤销.md';write(undoUIFile,'# 原记录\n');
+  const undoUIProposal=(await post('/api/propose_file_edit',{path:undoUIFile,content:'# 新记录\n'})).proposal;
+  const undoUI=await run(`(async()=>{await openFileProposal(${JSON.stringify(undoUIProposal)});await acceptFileProposal(currentFileProposal.id);const f=openFiles.find(f=>f.path===${JSON.stringify(undoUIFile)}),entries=await fetch('/api/proposals/applied?project='+encodeURIComponent(currentProject)).then(r=>r.json()),entry=entries.applications.find(a=>a.proposalId===${JSON.stringify(undoUIProposal.id)});f.dirty=true;await undoFileApplication(entry.id,f.path);const blocked=f.dirty;f.dirty=false;const native=confirmDialog;confirmDialog=async()=>true;try {await undoFileApplication(entry.id,f.path);return {blocked,content:f.content,dirty:f.dirty};}finally{confirmDialog=native;}})()`);
+  check('撤销界面阻止未保存草稿，确认后刷新正文与文件状态',()=>{assert(undoUI.blocked);assert.equal(undoUI.content,'# 原记录\n');assert(!undoUI.dirty);assert.equal(fs.readFileSync(path.join(book,undoUIFile),'utf8'),'# 原记录\n');});
+  const partialStale=await post('/api/propose_file_edit',{path:partialFile,content:partialAfter});write(partialFile,partialEditedExpected+'外部修改');
+  const staleSelected=await post('/api/apply_proposal',{id:partialStale.proposal.id,selectedHunks:[{index:0}]});
+  check('逐段采纳仍阻止外部修改冲突，不静默覆盖',()=>{assert(staleSelected.conflict);assert.equal(fs.readFileSync(path.join(book,partialFile),'utf8'),partialEditedExpected+'外部修改');});
+  const partialWrongProject=await post('/api/apply_proposal',{project:'OtherProject',id:partialStale.proposal.id,selectedHunks:[{index:0}]});
+  check('分段提案不能跨项目应用',()=>assert(partialWrongProject.error));
+  const segmentNodeData=await get('/api/data?project='+project),segmentNode=segmentNodeData.nodes.find(n=>n.label==='角色'&&n.file.replace(/\\/g,'/')===roleFile&&n.title==='林舟');
+  const segmentNodeAfter=segmentNode.content.replace('主角','配角')+'\n- 位置：门前';
+  const segmentNodeProposal=await post('/api/propose_node_edit',{id:segmentNode.id,content:segmentNodeAfter});
+  const nodeHunks=require('../review_diff').diff(segmentNode.content,segmentNodeAfter).hunks;
+  const segmentFileBefore=fs.readFileSync(path.join(book,segmentNode.file),'utf8');
+  const segmentNodeAccepted=await post('/api/apply_proposal',{id:segmentNodeProposal.proposal.id,selectedHunks:[{index:0}]});
+  check('节点片段也能局部采纳，保持文件其他内容',()=>{assert(segmentNodeAccepted.ok,segmentNodeAccepted.error);const expected=require('../review_diff').apply(segmentNode.content,segmentNodeAfter,[{index:0}]).content;assert.equal(segmentNodeAccepted.nodes.find(n=>n.id===segmentNode.id).content,expected);assert.equal(nodeHunks.length,2);});
+  const segmentUndo=await post('/api/proposals/undo',{id:segmentNodeAccepted.application.id});
+  check('节点片段撤销恢复整份文件，其他节点不丢失',()=>{assert(segmentUndo.ok,segmentUndo.error);assert.equal(fs.readFileSync(path.join(book,segmentNode.file),'utf8'),segmentFileBefore);});
+
+  const undoNewFile='追踪/撤销新文件.md';
+  const undoNewProposal=(await post('/api/propose_file_edit',{path:undoNewFile,content:'# 新文件\n'})).proposal;
+  const undoNewApplied=await post('/api/apply_proposal',{id:undoNewProposal.id});
+  await stop(server);await startServer();
+  const savedApplications=await get('/api/proposals/applied?project='+project);
+  check('服务重启后采纳历史与撤销入口仍在',()=>assert(savedApplications.applications.some(a=>a.id===undoNewApplied.application.id&&a.state==='applied')));
+  const undoNew=await post('/api/proposals/undo',{id:undoNewApplied.application.id});
+  check('撤销新建文件恢复原来的不存在状态',()=>{assert(undoNew.ok&&undoNew.removed);assert(!fs.existsSync(path.join(book,undoNewFile)));});
+
+  const syncFile='追踪/同步验证.md';
+  write(syncFile,'# 时间线\n\n| 事件ID | 章节 | 事件 | 时间 | 依据 |\n| --- | --- | --- | --- | --- |\n| door | 1 | 守门 | 当晚 | 第一段 |\n| key | 1 | 得到钥匙 | 当晚 | 第二段 |\n| next | 2 | 次日开门 | 次日 | 第二章 |\n');
+  await run(`(async()=>{await loadData();timelineNodes.push({id:'manual-protect',chapter:1,title:'作者手动节点',note:'保留',progress:33});clearTimeout(layoutTimer);await postLayout();})()`);
+  const firstSync=await post('/api/timeline/preview',{path:syncFile});
+  check('时间线表格生成三项预览，预览不写入布局',()=>{assert.equal(firstSync.operations.length,3);assert(!JSON.parse(fs.readFileSync(path.join(book,'小说画布.json'),'utf8')).timelineNodes.some(p=>p.sourceFile===syncFile));});
+  const badSync=await post('/api/timeline/sync',{path:syncFile,token:firstSync.token,selected:[999]});
+  check('同步拒绝无效选择与越界源文件',()=>assert(badSync.error));
+  assert((await post('/api/timeline/preview',{path:'../escape.md'})).error);
+  const firstSynced=await post('/api/timeline/sync',{path:syncFile,token:firstSync.token,selected:[0,1,2]});
+  check('同步保留手动节点与剧情推进值',()=>{assert(firstSynced.ok,firstSynced.error);const manual=firstSynced.events.find(p=>p.id==='manual-protect');assert.equal(manual.progress,33);assert.equal(manual.note,'保留');});
+  const priorDoor=firstSynced.events.find(p=>p.sourceKey==='id:door'&&p.sourceFile===syncFile);
+  write(syncFile,'# 时间线\n\n| 事件ID | 章节 | 事件 | 时间 | 依据 |\n| --- | --- | --- | --- | --- |\n| door | 1 | 守住第二道门 | 当晚 | 第一段修订 |\n| next | 2 | 次日开门 | 次日 | 第二章 |\n');
+  const revisedSync=await post('/api/timeline/preview',{path:syncFile,chapter:1});
+  check('再次预览按事件ID更新同一节点，缺失事件只列待确认删除',()=>{assert.deepEqual(revisedSync.operations.map(o=>o.action),['update','delete']);assert.equal(revisedSync.operations[0].id,priorDoor.id);});
+  const syncDeleteUI=await run(`(async()=>{await loadData();await openTimelineSync(${JSON.stringify(syncFile)},1);const result={deletes:timelineSyncPreview.operations.filter(o=>o.action==='delete').length,unchecked:[...document.querySelectorAll('.timelineSyncRows input')].filter(el=>timelineSyncPreview.operations[Number(el.value)].action==='delete').every(el=>!el.checked)};closeTimelineSync();return result;})()`);
+  check('同步界面的删除项目默认不勾选',()=>{assert.equal(syncDeleteUI.deletes,1);assert(syncDeleteUI.unchecked);});
+  const updateSynced=await post('/api/timeline/sync',{path:syncFile,chapter:1,token:revisedSync.token,selected:[0]});
+  check('只采纳更新时，未勾选删除及其他章节节点均保留',()=>{assert(updateSynced.ok,updateSynced.error);assert(updateSynced.events.some(p=>p.sourceKey==='id:key'));assert(updateSynced.events.some(p=>p.sourceKey==='id:next'));assert.equal(updateSynced.events.find(p=>p.id===priorDoor.id).title,'守住第二道门');});
+  const deletionPreview=await post('/api/timeline/preview',{path:syncFile,chapter:1});
+  const confirmedDelete=await post('/api/timeline/sync',{path:syncFile,chapter:1,token:deletionPreview.token,selected:[0]});
+  check('确认删除只移除对应来源事件，重复同步不重复新增',()=>{assert(confirmedDelete.ok,confirmedDelete.error);assert(!confirmedDelete.events.some(p=>p.sourceKey==='id:key'));assert(confirmedDelete.events.some(p=>p.id==='manual-protect'));});
+  assert.equal((await post('/api/timeline/preview',{path:syncFile,chapter:1})).operations.length,0);
+  const staleSync=await post('/api/timeline/preview',{path:syncFile});write(syncFile,fs.readFileSync(path.join(book,syncFile),'utf8').replace('第二道门','第三道门'));
+  const staleSyncResult=await post('/api/timeline/sync',{path:syncFile,token:staleSync.token,selected:[0]});
+  check('时间线源文件在预览后变化，阻止旧方案同步',()=>assert(staleSyncResult.conflict));
+  const layoutStalePreview=await post('/api/timeline/preview',{path:syncFile});
+  const rawLayout=JSON.parse(fs.readFileSync(path.join(book,'小说画布.json'),'utf8'));rawLayout.timelineNodes.push({id:'external-protect',chapter:3,title:'外部新增'});fs.writeFileSync(path.join(book,'小说画布.json'),JSON.stringify(rawLayout));
+  const layoutStaleSync=await post('/api/timeline/sync',{path:syncFile,token:layoutStalePreview.token,selected:[0]});
+  check('画布在预览后变化，阻止同步并保留外部新增节点',()=>{assert(layoutStaleSync.conflict);assert(JSON.parse(fs.readFileSync(path.join(book,'小说画布.json'),'utf8')).timelineNodes.some(p=>p.id==='external-protect'));});
+  await run(`(async()=>{clearTimeout(layoutTimer);layoutTimer=null;await layoutSavePromise;await openTimelineSync(${JSON.stringify(syncFile)});closeTimelineSync();})()`);
+  check('打开同步预览不写回旧画布，保留其他窗口新增的节点',()=>assert(JSON.parse(fs.readFileSync(path.join(book,'小说画布.json'),'utf8')).timelineNodes.some(p=>p.id==='external-protect')));
+
+  const layers=await run(String.raw`(async()=>{await loadData();switchSidebarMode('canvas');if(!isChatCollapsed())toggleChat();laneMode=false;hiddenLanes.clear();axisBandMode='volume';activeCats=new Set(nodes.map(n=>n.label));const n=nodes.find(n=>n.file===${JSON.stringify(chapterFile)});n.content+='\n<!-- 章节核心：守住木门 -->';renderAxisView();const before=JSON.stringify({axis:layoutAxis,progress:axisProgress}),card=document.querySelector('#axisNodes .node[data-id="'+n.id+'"]');axisViewT.scale=.65;applyAxisTransform();const middle=document.getElementById('axisView').dataset.density==='chapters'&&card.querySelector('.ncore').textContent==='守住木门',screenFont=parseFloat(getComputedStyle(card.querySelector('.ntitle')).fontSize)*axisViewT.scale;axisViewT.scale=.2;applyAxisTransform();const overview=document.getElementById('axisView').dataset.density==='overview',groups=document.querySelectorAll('.axisOverviewGroup').length;document.querySelector('.axisOverviewGroup[data-kind="卷"]').click();const expanded=axisViewT.scale===1&&document.getElementById('axisOverview').hidden&&document.getElementById('axisView').dataset.density==='detail';return {middle,screenFont,overview,groups,expanded,untouched:JSON.stringify({axis:layoutAxis,progress:axisProgress})===before};})()`);
+  check('缩放切换可读章节核心、卷概览、点击回到详情，不改变坐标与推进',()=>{assert(layers.middle&&layers.overview&&layers.expanded&&layers.untouched);assert(layers.groups>0);assert(Math.abs(layers.screenFont-12)<.1);});
+  const filteredOverview=await run(`(()=>{axisViewT.scale=.2;applyAxisTransform();activeCats=new Set(['章节']);applyFilters();return [...document.querySelectorAll('.axisOverviewGroup')].every(b=>b.dataset.kind!=='资料');})()`);
+  check('全书概览跟随分类筛选，不显示已过滤资料',()=>assert(filteredOverview));
+  const restoreScale=await run(`(()=>{restoreViewState({scale:.03,x:12,y:34});applyAxisTransform();return {scale:axisViewT.scale,density:document.getElementById('axisView').dataset.density};})()`);
+  check('重开视图保留全书概览比例',()=>{assert.equal(restoreScale.scale,.03);assert.equal(restoreScale.density,'overview');});
+  const overviewStyle=await run(`(()=>{const style=getComputedStyle(document.querySelector('.axisOverviewGroup'));return {background:style.backgroundColor,border:parseFloat(style.borderTopWidth),padding:parseFloat(style.paddingTop)};})()`);
+  check('概览卡片的边框、面板底色和间距不被通用按钮样式覆盖',()=>{assert.notEqual(overviewStyle.background,'rgba(0, 0, 0, 0)');assert.equal(overviewStyle.border,1);assert.equal(overviewStyle.padding,16);});
+
+  write(partialFile,partialBefore);
+  const screenshotProposal=await post('/api/propose_file_edit',{path:partialFile,content:partialAfter});
+  for(const mode of ['light','dark']) {
+    await run(`document.getElementById('toastWrap').replaceChildren()`);
+    await run(`applyTheme({mode:${JSON.stringify(mode)},accent:'#315c72'});openChapterWrapUp(nodes.find(n=>n.file===${JSON.stringify(chapterFile)}).id);`);
+    await pause(100);let shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(temp,'wrap-up-'+mode+'.png'),Buffer.from(shot.result.data,'base64'));
+    await run(`(async()=>{closeChapterWrapUp();switchSidebarMode('canvas');await loadData();axisViewT.scale=.2;applyAxisTransform();})()`);
+    await pause(100);shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(temp,'layers-'+mode+'.png'),Buffer.from(shot.result.data,'base64'));
+    await run(`openFileProposal(${JSON.stringify(screenshotProposal.proposal)})`);
+    await pause(100);shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(temp,'partial-review-'+mode+'.png'),Buffer.from(shot.result.data,'base64'));
+  }
+  await send('Emulation.setDeviceMetricsOverride',{width:720,height:700,deviceScaleFactor:1,mobile:false});
+  const narrowReview=await run(`(()=>{const box=document.querySelector('.fileDiffBox'),r=box.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&box.scrollWidth<=box.clientWidth+1&&document.documentElement.scrollWidth===innerWidth;})()`);
+  check('逐段审阅窄窗口不横向溢出',()=>assert(narrowReview));
+  await run(`openChapterWrapUp(nodes.find(n=>n.file===${JSON.stringify(chapterFile)}).id)`);
+  const narrowWrap=await run(`(()=>{const r=document.querySelector('.chapterWrapUpCard').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;})()`);
+  check('本章收尾窄窗口可完整操作',()=>assert(narrowWrap));
+  await run('closeChapterWrapUp()');
+  await send('Emulation.setDeviceMetricsOverride',{width:480,height:700,deviceScaleFactor:1,mobile:false});
+  const narrowTimeline=await run(`(async()=>{await openTimelineSync(${JSON.stringify(syncFile)});const card=document.querySelector('.timelineSyncCard'),r=card.getBoundingClientRect();const okay=r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&card.scrollWidth<=card.clientWidth+1&&document.documentElement.scrollWidth===innerWidth;closeTimelineSync();return okay;})()`);
+  check('时间线同步窄窗口可操作且无横向溢出',()=>assert(narrowTimeline));
+  await send('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+  for(const mode of ['light','dark']) {
+    await run(`(()=>{applyTheme({mode:${JSON.stringify(mode)},accent:'#315c72'});expandChatPanel();chatPanel.classList.add('chat-wide');const t=writingStore().tasks.find(t=>t.wrapUp&&t.wrapUp.checks.length===4);activateWritingTask(t.id);writingChangesPanel.open=true;writingChangesPanel.querySelector('.wrapUpProgress').scrollIntoView({block:'start'});})()`);
+    await pause(150);let shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(temp,'wrap-progress-'+mode+'.png'),Buffer.from(shot.result.data,'base64'));
+    await run(`openTimelineSync(${JSON.stringify(syncFile)})`);
+    const syncColors=await run(`(()=>{const style=getComputedStyle(timelineSyncModal.querySelector('.syncApply')),theme=getComputedStyle(document.documentElement);return style.color===theme.getPropertyValue('--button-text').trim() || style.color===(document.querySelector('#fileSaveBtn')?getComputedStyle(document.querySelector('#fileSaveBtn')).color:'');})()`);
+    check('时间线同步按钮沿用主题的可读前景色 '+mode,()=>assert(syncColors));
+    await pause(150);shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(temp,'timeline-sync-'+mode+'.png'),Buffer.from(shot.result.data,'base64'));
+    await run('closeTimelineSync()');
+  }
+  await run(`chatPanel.classList.remove('chat-wide');`);
+  await run(`expandChatPanel();`);
   await run(`chatMessages.replaceChildren();addMsg('assistant',${JSON.stringify('# 第36章 · 冲突讨论\n\n**保留人物动机**，把冲突落到行动。\n\n- 林舟必须先交出钥匙。\n- 门外的敲击声提前出现。\n\n修改建议可进入编辑器审阅。')});chatInput.value='让这一章的冲突更具体，保留原有设定。';document.getElementById('chatSources').open=true;requestChatSourcePreview();`);
   await pause(100);
   for (const mode of ['light', 'dark']) {

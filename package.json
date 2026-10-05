@@ -1,6 +1,6 @@
 {
   "name": "novel-canvas",
-  "version": "1.32.0",
+  "version": "1.34.0",
   "description": "小说画布 - 本地写作工作台（Electron 桌面壳 + 本地服务）",
   "main": "main.js",
   "scripts": {
@@ -8,6 +8,7 @@
     "dev": "node scripts/dev.js",
     "test": "node scripts/smoke-test.js",
     "test:upgrade": "node scripts/upgrade-regression-test.js",
+    "test:review": "node scripts/review-diff-test.js",
     "build": "electron-builder",
     "build:portable": "node scripts/build-portable.js"
   },

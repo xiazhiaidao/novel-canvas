@@ -154,4 +154,12 @@
 #chatPanel.chat-collapsed #chatNewReply { display:none; }
 @media(max-width:600px) { .agentStageControl { font-size:0; } .agentModelControl { font-size:0; } #chatPanel .agentModelControl #chatModel { max-width:100px; } #agentTaskState { display:none; } #chatContext { gap:4px; } }
 @media(hover:none) { .chatMessageActions { opacity:1; } }
+.wrapUpProgress { padding:12px 0; display:flex; flex-direction:column; gap:8px; }
+.wrapUpProgress strong { font-size:13px; }
+.wrapUpProgress p,.wrapUpProgress small { color:var(--muted); font-size:12px; margin:0; overflow-wrap:anywhere; }
+.wrapUpProgressRow { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+.wrapUpAssignment { margin-top:6px; font-size:12px; color:var(--muted); }
+.wrapUpAssignment summary { cursor:pointer; }
+.wrapUpAssignment label { display:inline-flex; align-items:center; gap:4px; margin:6px 8px 0 0; }
+#chatChanges .chatProposalActions { flex-wrap:wrap; max-width:140px; justify-content:flex-end; }
 @media(max-width:980px) { #chatPanel.dock-right:not(.chat-collapsed),#chatPanel.dock-left:not(.chat-collapsed) { position:fixed; top:54px; bottom:28px; right:0; left:auto !important; width:min(400px,94vw) !important; height:auto !important; z-index:250; border-left:1px solid var(--panel-border); box-shadow:var(--shadow-md); } #chatPanel.chat-wide { inset:54px 0 28px; } }

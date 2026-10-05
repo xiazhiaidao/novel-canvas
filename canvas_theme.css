@@ -243,3 +243,64 @@ body.focus-mode #fileEditorBody { width:min(100%,1000px); margin:0 auto; padding
 .fileDiffBox details { flex:none; max-height:180px; overflow:auto; font-size:12px; color:var(--muted); }
 @media(max-width:1180px) { #sidebar.responsive-open:not(.hidden) { display:flex; position:fixed; top:54px; bottom:28px; left:0; z-index:220; box-shadow:var(--shadow-md); } #sidebarResizer { display:none; } #sidebarShow { display:block; } body:has(#sidebar.responsive-open:not(.hidden)) #sidebarShow { display:none; } }
 @media(max-width:980px) { .fileReviewChanges,.fileDiffCols { grid-template-columns:minmax(0,1fr); } }
+
+/* 本章收尾与分段审阅沿用面板颜色，浅深主题共用。 */
+.chapterWrapUpCard { width:min(560px,calc(100vw - 32px)); max-height:calc(100vh - 40px); overflow:auto; }
+.chapterWrapUpCard .modalBody { display:flex; flex-direction:column; gap:14px; }
+#chapterWrapUpSelect { width:100%; padding:9px; background:var(--surface-2); color:var(--text); border:1px solid var(--panel-border); border-radius:6px; }
+#chapterWrapUpSource,.chapterWrapUpHint { margin:0; color:var(--muted); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+#chapterWrapUpChecks { border:1px solid var(--panel-border); border-radius:8px; padding:12px; display:grid; gap:14px; }
+#chapterWrapUpChecks label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13px; }
+#chapterWrapUpChecks small { color:var(--muted); font-size:11px; }
+#chapterWrapUpCreate { align-self:flex-end; min-height:34px; padding:8px 14px; border:0; border-radius:6px; background:var(--button-bg); color:var(--button-text); font-size:12px; }
+.fileReviewToolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.fileReviewCount { margin-left:auto; color:var(--muted); font-size:12px; }
+.fileReviewHint { margin:0; font-size:12px; line-height:1.6; color:var(--muted); }
+.fileReviewHunks { flex:1; min-height:100px; overflow:auto; display:flex; flex-direction:column; gap:16px; }
+.fileReviewHunk { flex:none; border:1px solid var(--panel-border); border-radius:8px; overflow:hidden; }
+.fileReviewHunk.unselected { background:var(--surface-2); }
+.fileReviewHunk.unselected .fileReviewChanges { opacity:.5; }
+.fileReviewHunkHead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px; background:var(--surface-2); font-size:12px; }
+.fileReviewHunkHead label { display:flex; align-items:center; gap:6px; }
+.fileReviewHunkHead span { color:var(--muted); margin-right:auto; }
+.fileReviewHunk .fileReviewChanges { padding:12px; }
+.fileReviewHunk pre,.fileReviewMerged pre { white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.8 var(--font-ui); margin:4px 0; }
+.fileReviewHunk pre.removed { color:var(--text); border-left:2px solid var(--danger); padding-left:10px; }
+.fileReviewHunk pre.added { color:var(--text); border-left:2px solid var(--success); padding-left:10px; }
+.fileReviewEdit { display:flex; flex-direction:column; gap:8px; padding:12px; border-top:1px solid var(--panel-border); font-size:12px; }
+.fileReviewEdit textarea { width:100%; min-height:100px; resize:vertical; background:var(--surface-2); color:var(--text); border:1px solid var(--panel-border); border-radius:6px; padding:10px; font:13px/1.8 var(--font-ui); }
+.fileReviewEdit small { color:var(--muted); }
+button:disabled { opacity:.5; cursor:default; }
+
+/* 分层只改变展示，不移动节点与连线端点。 */
+#axisDensityLabel { flex:none; color:var(--muted); font-size:10px; }
+#axisNodes .ncore { display:none; }
+#axisView[data-density="chapters"] #axisNodes .node { padding:calc(7px / var(--axis-grid-scale)); }
+#axisView[data-density="chapters"] #axisNodes .node :is(.typeTag,.ndesc,.nmeta) { display:none; }
+#axisView[data-density="chapters"] #axisNodes .node .ntitle { font-size:calc(12px / var(--axis-grid-scale)); margin:0 0 calc(4px / var(--axis-grid-scale)); }
+#axisView[data-density="chapters"] #axisNodes .ncore { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:calc(10px / var(--axis-grid-scale)); line-height:1.4; color:var(--muted); }
+#axisView[data-density="overview"] :is(#axisInner,#axisXLabels,#axisYLabels,#axisCorner,#axisCursorX,#axisCursorY) { visibility:hidden; }
+#axisOverview { position:absolute; inset:0 0 42px; z-index:6; overflow:auto; padding:24px; background:var(--bg); }
+.axisOverviewHead h3 { margin:0 0 6px; font-size:18px; color:var(--text); }
+.axisOverviewHead p { font-size:12px; color:var(--muted); margin:0 0 20px; }
+.axisOverviewGroups { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr)); gap:14px; align-items:start; }
+#axisOverview .axisOverviewGroup { min-width:0; text-align:left; padding:16px; background:var(--panel); color:var(--text); border:1px solid var(--panel-border); border-radius:10px; display:flex; flex-direction:column; gap:9px; }
+#axisOverview .axisOverviewGroup:hover { border-color:var(--accent); box-shadow:var(--shadow-sm); }
+.axisOverviewGroup small,.axisOverviewRange,.axisOverviewEvents { color:var(--muted); font-size:11px; }
+.axisOverviewGroup strong { font-size:15px; overflow-wrap:anywhere; }
+.axisOverviewGroup p { font-size:12px; line-height:1.7; margin:0; overflow-wrap:anywhere; }
+@media(max-width:720px) { #axisDensityLabel { display:none; } #axisOverview { padding:16px; } .fileDiffActions { flex-wrap:wrap; } .fileDiffBox { padding:12px; } }
+/* 时间线同步审阅沿用两套主题变量。 */
+#timelineSyncModal .timelineSyncCard { width:min(760px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); display:flex; flex-direction:column; gap:12px; overflow:auto; }
+.timelineSyncSource,.timelineSyncHint { margin:0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.timelineSyncRows { display:flex; flex-direction:column; gap:8px; min-height:0; overflow:auto; }
+#timelineSyncModal .timelineSyncRow { display:flex; align-items:flex-start; gap:10px; padding:12px; margin:0; border:1px solid var(--panel-border); background:var(--surface-2); border-radius:8px; cursor:pointer; }
+#timelineSyncModal .timelineSyncRow input { flex:none; width:auto; margin:3px 0 0; }
+.timelineSyncRow span { min-width:0; display:flex; flex-direction:column; gap:6px; overflow-wrap:anywhere; }
+.timelineSyncRow strong { font-size:13px; color:var(--text); }
+.timelineSyncRow small { font-size:12px; color:var(--muted); }
+.timelineSyncActions { display:flex; justify-content:flex-end; gap:8px; }
+#timelineSyncModal .timelineSyncActions button { padding:9px 14px; border:1px solid var(--panel-border); border-radius:6px; background:var(--surface-2); color:var(--text); cursor:pointer; }
+#timelineSyncModal .timelineSyncActions .primary { background:var(--button-bg); color:var(--button-text); border-color:var(--button-bg); }
+#timelineSyncModal button:disabled { opacity:.5; cursor:default; }
+#timelineSyncModal button:focus-visible,#timelineSyncModal input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }

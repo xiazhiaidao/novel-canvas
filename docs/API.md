@@ -484,6 +484,18 @@
 }
 ```
 
+`edit` 和 `file_edit` 支持可选的 `selectedHunks`，编号为 `review_diff.js` 按原文和提案重新计算的 **0 起始**变更区间。省略该字段沿用整份采纳；传入空数组、重复或越界编号会拒绝，不消耗提案。
+
+```json
+{
+  "id": "p1",
+  "project": "项目名",
+  "selectedHunks": [{ "index": 0 }, { "index": 2, "content": "手动调整后的替换段\n" }]
+}
+```
+
+`content` 可省略，默认使用该区间的提案文本；空字符串表示删除所选原文段。服务端只替换所选区间，保留未选原文，仍比较当前磁盘与提案原文并备份。成功后结束该提案（未选区间不保留为新提案），响应可包含 `selectedCount`。新建/删除节点提案不支持分段；跨项目应用会拒绝。
+
 **响应**
 
 ```json
@@ -521,7 +533,21 @@
 
 ---
 
-## 静态文件
+## 采纳历史与撤销
+
+- `GET /api/proposals/applied?project=项目名`：返回 `applications`，每项包含 `id`、`proposalId`、`file`、`state`（applied/undone/prepared）、`time` 与 `partial`，不返回原文。
+- `/api/apply_proposal` 成功响应增加 `application: { id, file, state, time, partial }`。提案 ID 是不透明字符串，新提案使用 UUID；旧 ID 仍有效。
+- `POST /api/proposals/undo` 请求 `{project,id}`，`id` 为采纳记录 ID。校验项目与采纳后文件哈希后恢复整份原文件；原文件不存在时删除本次新文件。重复撤销、文件被删除或再次修改时拒绝，响应 `conflict:true` 表示后续修改冲突。任务中的已采纳状态随之改为已撤销，不自动恢复原提案。
+- 采纳前原文与结果哈希保存在服务数据目录的 `applications/`；源码/目录版默认为应用 `.data/`，asar 桌面包使用 Electron 用户目录 `service-data/`，也可通过 `NOVEL_CANVAS_DATA_DIR` 指定。写入历史失败时不开始修改小说文件，撤销前沿用现有快照保护。
+
+## 时间线同步
+
+- `POST /api/timeline/preview`：`{project,path,chapter?}`，只读取已保存 Markdown，返回 `token`、`events`（解析事件数量）、`operations`。每项 `action` 为 add/update/delete，含 `next` 和/或 `before`。
+- `POST /api/timeline/sync`：`{project,path,chapter?,token,selected:[0,1]}`。服务端重算预览并验证来源/画布未变，只应用所选操作；返回 `{ok:true,events:完整画布时间线,changed}`。空选择、重复/越界序号、越界路径和旧 token 会拒绝。
+- 支持明确章号的分节列表、短事件段落，以及包含“事件/标题”列的表格。表格可包含章节、事件ID、时间、依据；同一源文件的事件 ID 必须唯一。稳定 ID 支持变更章号后更新同一节点；无 ID 时按章节内顺序匹配，预览 UI 明示这一限制。
+- 同步节点增加 `sourceFile/sourceKey/sourceLine/sourceChapter`，`GET /api/data` 保留这些字段；手动节点与已有推进值保留。删除仅针对本来源的缺失事件，需显式选择；原文件撤销删除后仍可预览清理其关联节点。
+
+## 静态文件路径
 
 - `GET /`、`GET /index.html` → 主页面
 - `GET /canvas_upgrade.js`、`GET /canvas_theme.css` 等应用内静态文件

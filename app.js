@@ -471,6 +471,7 @@ function applyFilters() {
   }
   if (matchIndices.length) highlightMatch(0);
   else clearHighlight();
+  renderAxisOverview();
 }
 
 function highlightMatch(idx) {
@@ -1511,7 +1512,7 @@ function showDetail(n) {
     '<section id="detailContentPane" role="tabpanel" aria-labelledby="detailContentTab">' +
       (n.label === '伏笔' && !isGlobalBoardNode(n) ? '<details id="detailForeshadow" open></details>' : '') +
       (n.label === '角色' && !isGlobalBoardNode(n) ? '<details id="detailCharacter" open></details>' : '') +
-      '<div class="detailActions"><button id="detailAddChatBtn" title="加入现有 Agent 的引用资料，不自动发送">添加到 Agent</button><button id="previewToggle">编辑内容</button><details class="detailMore"><summary aria-label="更多节点操作">•••</summary><div><button id="copyIdBtn">复制节点 ID</button><button id="detailDeslopBtn">AI 味检测</button><button id="detailDiscardDraft">放弃本地草稿</button></div></details></div>' +
+      '<div class="detailActions">' + (n.label === '章节' ? '<button id="detailWrapUpBtn">本章收尾</button>' : '') + '<button id="detailAddChatBtn" title="加入现有 Agent 的引用资料，不自动发送">添加到 Agent</button><button id="previewToggle">编辑内容</button><details class="detailMore"><summary aria-label="更多节点操作">•••</summary><div><button id="copyIdBtn">复制节点 ID</button><button id="detailDeslopBtn">AI 味检测</button><button id="detailDiscardDraft">放弃本地草稿</button></div></details></div>' +
       '<div id="preview"></div><label class="detailEditLabel" for="editContent">Markdown 内容</label>' +
       '<textarea id="editContent" aria-label="节点内容">' + escapeHtml(draft?.content ?? n.content ?? '') + '</textarea>' +
       '<div class="btnRow detailSaveRow"><button id="saveBtn" class="primary">保存内容</button></div><div id="deslopBox"></div>' +
@@ -1661,6 +1662,7 @@ function showDetail(n) {
     const status = document.getElementById('saveStatus');
     if (status) status.textContent = '已添加引用「' + (n.title || n.file) + '」，可在输入框继续输入问题后发送';
   });
+  document.getElementById('detailWrapUpBtn')?.addEventListener('click', () => openChapterWrapUp(n.id));
   const deslopBtn = document.getElementById('detailDeslopBtn');
   if (deslopBtn) deslopBtn.addEventListener('click', () => { setDetailEditing(true); detailBody.querySelector('.detailMore').open = false; runDeslopScan(); });
   document.getElementById('saveBtn').addEventListener('click', async () => {
@@ -1820,10 +1822,12 @@ function focusNode(id) {
 }
 
 let layoutTimer = null;
+let layoutSavePromise = null;
 const LAYOUT_VERSION = 3; // 布局文件版本：v3 为"确定性精确尺寸流式布局"（尺寸由孩子数量唯一决定，永不重叠）
 // 立即写入布局（无防抖；返回 Promise，供"保存属性→重载"等需要先落盘再读的流程使用）
 function postLayout() {
-  return fetch('/api/layout', {
+  clearTimeout(layoutTimer); layoutTimer=null;
+  layoutSavePromise = fetch('/api/layout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1842,6 +1846,7 @@ function postLayout() {
       project: currentProject
     })
   }).catch(() => {});
+  return layoutSavePromise;
 }
 function saveLayout() {
   clearTimeout(layoutTimer);
@@ -2216,7 +2221,7 @@ function saveViewStateDebounced() {
 }
 function restoreViewState(v) {
   if (!v || typeof v !== 'object') return;
-  if (typeof v.scale === 'number' && v.scale > 0) axisViewT.scale = Math.min(2.5, Math.max(0.2, v.scale));
+  if (typeof v.scale === 'number' && v.scale > 0) axisViewT.scale = Math.min(2.5, Math.max(0.02, v.scale));
   if (typeof v.x === 'number') axisViewT.x = v.x;
   if (typeof v.y === 'number') axisViewT.y = v.y;
   laneMode = !!v.laneMode;
@@ -2607,10 +2612,72 @@ function applyAxisTransform() {
   inner.style.setProperty('--axis-grid-scale', Math.max(.01, axisViewT.scale));
   const axisView = document.getElementById('axisView');
   axisView.classList.toggle('axis-overview', axisViewT.scale < .65);
+  const density = axisViewT.scale < .35 ? 'overview' : axisViewT.scale < .85 ? 'chapters' : 'detail';
+  const changed = axisView.dataset.density !== density;
+  axisView.dataset.density = density;
+  document.getElementById('axisOverview').hidden = density !== 'overview';
+  document.getElementById('axisDensityLabel').textContent = {overview:'全书概览',chapters:'章节简览',detail:'内容详情'}[density];
+  if (changed && density === 'overview') renderAxisOverview();
   const zoomValue = document.getElementById('axisZoomValue');
   if (zoomValue) zoomValue.textContent = Math.round(axisViewT.scale * 100) + '%';
   updateAxisRulers();
   updateAxisBar();
+}
+
+function chapterOverviewCore(n) {
+  const text = String(n.content || '');
+  for (const pattern of [/<!--\s*(?:章节核心|本章核心|章节目标|本章目标)\s*[:：]\s*([\s\S]*?)-->/i, /^>\s*[【\[]?(?:本章|章节)?(?:核心|目标)[】\]]?\s*[:：]\s*(.+)$/im, /^[【\[]?(?:本章|章节)?(?:核心|目标)[】\]]?\s*[:：]\s*(.+)$/im, /^##\s*(?:本章|章节)?(?:核心|目标)\s*\n\s*([^\n#]+)/im]) {
+    const match = text.match(pattern);
+    if (match) return match[1].replace(/\s+/g,' ').trim();
+  }
+  return '';
+}
+function renderAxisOverview() {
+  const host = document.getElementById('axisOverview');
+  if (!host || host.hidden || !axisGeom) return;
+  const query = search.value.trim().toLowerCase(), groups = new Map(), g = axisGeom;
+  for (const item of g.items) {
+    const n = item.n;
+    if (!activeCats.has(n.label) || (query && !n.title.toLowerCase().includes(query) && !(n.desc || '').toLowerCase().includes(query))) continue;
+    let name, kind;
+    if (item.effCh == null) { name=n.label+'资料'; kind='资料'; }
+    else if (g.laneOn) { name=laneOf(n); kind='剧情线'; }
+    else if (g.bands?.length) {
+      const i=Math.min(g.bands.length-1,Math.max(0,Math.floor((item.progress || 0)/100*g.bands.length)));
+      name=g.bandMode==='volume' ? (volumeFromPath(n) || '未分卷') : g.bands[i]; kind=g.bandMode==='volume'?'卷':'阶段';
+    } else {
+      name=volumeFromPath(n);
+      if (name) kind='卷';
+      else { const size=Math.max(10,g.segSize),from=Math.floor((item.effCh-1)/size)*size+1; name='第'+from+'–'+Math.min(g.maxChapter,from+size-1)+'章';kind='章段'; }
+    }
+    const key=kind+':'+name;
+    if(!groups.has(key))groups.set(key,{name,kind,items:[]});
+    groups.get(key).items.push(item);
+  }
+  host.replaceChildren();
+  const header=document.createElement('div'); header.className='axisOverviewHead';
+  const title=document.createElement('h3');title.textContent='全书概览';
+  const hint=document.createElement('p');hint.textContent=groups.size+' 个卷、阶段或资料组 · 点击展开章节，放大查看内容';
+  header.append(title,hint);host.appendChild(header);
+  const grid=document.createElement('div');grid.className='axisOverviewGroups';host.appendChild(grid);
+  const ordered=[...groups.values()].sort((a,b)=>Math.min(...a.items.map(p=>p.effCh ?? Infinity))-Math.min(...b.items.map(p=>p.effCh ?? Infinity)));
+  for(const group of ordered) {
+    const chapters=group.items.filter(p=>p.n.label==='章节').sort((a,b)=>(a.effCh||0)-(b.effCh||0));
+    const numbered=group.items.filter(p=>p.effCh!=null).map(p=>p.effCh),lo=numbered.length?Math.min(...numbered):null,hi=numbered.length?Math.max(...numbered):null;
+    const button=document.createElement('button');button.className='axisOverviewGroup';
+    button.innerHTML='<small></small><strong></strong><span class="axisOverviewRange"></span><p></p><span class="axisOverviewEvents"></span>';
+    button.querySelector('small').textContent=group.kind;
+    button.querySelector('strong').textContent=group.name;
+    button.querySelector('.axisOverviewRange').textContent=(lo!=null?'第'+lo+'–'+hi+'章 · ':'')+chapters.length+' 章 · '+group.items.length+' 个节点';
+    button.querySelector('p').textContent=chapters.length ? [chapters[0].n.title,chapters.length>1?chapters[chapters.length-1].n.title:''].filter(Boolean).join(' → ') : group.items.slice(0,2).map(p=>p.n.title).join('、');
+    const events=timelineNodes.filter(t=>lo!=null&&t.chapter>=lo&&t.chapter<=hi);
+    button.querySelector('.axisOverviewEvents').textContent=events.length?'⚑ '+events.slice(0,2).map(t=>t.title).join('、')+(events.length>2?' 等 '+events.length+' 个重要节点':''):'展开查看 →';
+    const target=chapters[0]?.n || group.items[0].n;
+    button.dataset.nodeId=target.id;button.dataset.kind=group.kind;
+    button.onclick=()=>focusNode(target.id);
+    grid.appendChild(button);
+  }
+  if(!groups.size){const empty=document.createElement('p');empty.textContent='当前筛选没有可显示的内容。';grid.appendChild(empty);}
 }
 
 // 刻度固定在视口边缘，只转换位置，字号不受节点缩放影响。
@@ -2828,7 +2895,7 @@ function axisWheelZoom(e) {
   const cx = (mx - axisViewT.x) / axisViewT.scale;
   const cy = (my - axisViewT.y) / axisViewT.scale;
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  const next = Math.min(2.5, Math.max(0.2, axisViewT.scale * factor));
+  const next = Math.min(2.5, Math.max(0.02, axisViewT.scale * factor));
   axisViewT.x = mx - cx * next;
   axisViewT.y = my - cy * next;
   axisViewT.scale = next;
@@ -3097,6 +3164,9 @@ function renderAxisView() {
     el.style.top = y + 'px';
     el.innerHTML = '<span class="typeTag"></span><div class="ntitle"></div><div class="ndesc"></div><div class="nmeta"><span class="nfile"></span><span class="nstats"></span></div>';
     fillNodeContent(el, n);
+    const core=document.createElement('div'); core.className='ncore';
+    core.textContent=n.label==='章节' ? (chapterOverviewCore(n) || '未填写章节核心') : (n.desc || '');
+    core.title=core.textContent;el.appendChild(core);
     el.title = n.title;
     if (!n.desc) el.querySelector('.ndesc').textContent = String(n.content || '').replace(/^#+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0,160);
     el.querySelector('.nstats').textContent = (effCh != null ? '第' + effCh + '章 · ' : '未分章 · ') + stripWords(n.content) + ' 字';
@@ -3307,7 +3377,7 @@ function fitAxisView() {
 // 轴视图交互：空白拖拽平移 + 滚轮缩放（挂在 canvasWrap 上，仅在 axis 模式生效）
 function startAxisPan(e) {
   if (e.button !== 0) return;
-  if (e.target.closest('.node,#axisXLabels,#axisYLabels,#axisCorner,#axisBar')) return;
+  if (e.target.closest('.node,#axisXLabels,#axisYLabels,#axisCorner,#axisBar,#axisOverview')) return;
   if (egoNodeId) clearEgo(); // 点空白清除选中节点及其关联连线
   axisPanning = true;
   axisPanStartX = e.clientX;

@@ -85,6 +85,20 @@ function loadWritingTasks() {
   }
   writingTaskProject = project;
   activateWritingTask(store.activeId || store.tasks[0].id, true);
+  reconcileWritingApplications(project);
+}
+async function reconcileWritingApplications(project) {
+  try {
+    const data=await fetch('/api/proposals/applied?project='+encodeURIComponent(project)).then(r=>r.json()), store=writingStore(project);
+    if(!store || data.error) return;
+    for(const task of store.tasks) for(const p of task.proposals) {
+      const entry=data.applications.find(a=>a.proposalId===p.id && ['applied','undone'].includes(a.state));
+      if(!entry) continue;
+      p.applicationId=entry.id;p.partial=entry.partial;p.state=entry.state==='undone'?'undone':'applied';
+    }
+    saveWritingTasks(project);
+    if(project===currentProject){renderWritingChanges();updateWritingTaskHeader();}
+  } catch(_) {}
 }
 function activateWritingTask(id, loading = false) {
   if (writingBusy && !loading) { showToast('先停止当前执行，再切换任务', 'info'); return; }
@@ -100,7 +114,7 @@ function activateWritingTask(id, loading = false) {
   refreshChatTargets(task.target || '');
   document.getElementById('chatTarget').value = task.target || '';
   document.getElementById('chatTaskHistory').hidden = true;
-  renderWritingTask(); saveWritingTasks(); requestChatSourcePreview();
+  renderWritingTask(); if(task.wrapUp) writingChangesPanel.open=true; saveWritingTasks(); requestChatSourcePreview();
 }
 function newWritingTask() {
   if (!currentProject) { showToast('项目尚未加载，请稍候', 'info'); return; }
@@ -108,6 +122,120 @@ function newWritingTask() {
   loadWritingTasks(); captureWritingTask();
   const task = makeWritingTask(); writingStore().tasks.unshift(task);
   activateWritingTask(task.id); expandChatPanel(); chatInput.focus();
+}
+
+let chapterWrapUpProject = '', chapterWrapUpOpener = null;
+const wrapUpLabels={characters:'人物',foreshadows:'伏笔',summary:'摘要',timeline:'时间线'};
+function wrapUpStale(task) {
+  const n=nodes.find(n=>n.id===task.wrapUp?.nodeId || n.file===task.wrapUp?.file);
+  return !n || task.wrapUp.sourceContent==null || chapterWrapUpSource(n).content!==task.wrapUp.sourceContent;
+}
+function wrapUpItemState(task,key) {
+  const ps=task.proposals.filter(p=>(p.wrapUpChecks || []).includes(key));
+  if(ps.some(p=>p.state==='pending')) return '待审阅';
+  if(task.wrapUp.confirmed?.[key]) return '已核对';
+  if(ps.length && ps.every(p=>p.state==='applied' && !p.partial)) return '已采纳';
+  if(ps.some(p=>p.state==='applied')) return '部分采纳';
+  return '待处理';
+}
+function writingTaskStateLabel(task) {
+  if(!task?.wrapUp || task.state==='running') return writingStateLabels[task?.state] || '未开始';
+  if(wrapUpStale(task)) return '正文变化 · 需重新核对';
+  return task.wrapUp.checks.every(k=>['已采纳','已核对'].includes(wrapUpItemState(task,k))) ? '收尾完成' : '收尾待核对';
+}
+function renderWrapUpProgress(host,task) {
+  if(!task?.wrapUp) return;
+  const box=document.createElement('section'); box.className='wrapUpProgress';
+  const title=document.createElement('strong'); title.textContent='本章收尾 · '+writingTaskStateLabel(task); box.appendChild(title);
+  const stale=wrapUpStale(task);
+  if(stale) {
+    const hint=document.createElement('p'); hint.textContent='正文与本次收尾依据不同，以下记录属于旧版本。';
+    const again=document.createElement('button'); again.textContent='重新收尾'; again.disabled=writingBusy; again.onclick=()=>openChapterWrapUp(task.wrapUp.nodeId); box.append(hint,again);
+  }
+  for(const key of task.wrapUp.checks) {
+    const row=document.createElement('div'); row.className='wrapUpProgressRow';
+    const label=document.createElement('span'); label.textContent=wrapUpLabels[key]+' · '+wrapUpItemState(task,key);
+    const confirm=document.createElement('button'); confirm.textContent=task.wrapUp.confirmed?.[key]?'取消核对':'确认已核对';
+    confirm.disabled=stale || writingBusy || task.proposals.some(p=>p.state==='pending' && p.wrapUpChecks?.includes(key));
+    confirm.onclick=async()=>{
+      if(task.wrapUp.confirmed?.[key]) delete task.wrapUp.confirmed[key];
+      else {
+        const note=await promptDialog('确认「'+wrapUpLabels[key]+'」已完成核对。请记录依据或无需修改的原因：',{value:''});
+        if(!note?.trim() || task!==activeWritingTask || writingBusy || wrapUpStale(task)) return;
+        (task.wrapUp.confirmed ||= {})[key]=note.trim();
+      }
+      saveWritingTasks(); renderWritingChanges(); updateWritingTaskHeader();
+    };
+    row.append(label,confirm); box.appendChild(row);
+    if(task.wrapUp.confirmed?.[key]) { const note=document.createElement('small'); note.textContent=task.wrapUp.confirmed[key]; box.appendChild(note); }
+  }
+  host.appendChild(box);
+}
+function guessWrapUpChecks(p,task) {
+  const labels=nodes.filter(n=>n.id===p.nodeId || filePathKey(n.file)===filePathKey(p.file)).map(n=>n.label);
+  return task.wrapUp.checks.filter(k=>k==='characters'?labels.includes('角色'):k==='foreshadows'?labels.includes('伏笔'):k==='summary'?/摘要/.test(p.file):/时间线/.test(p.file));
+}
+function closeChapterWrapUp() {
+  document.getElementById('chapterWrapUpModal').classList.remove('show');
+  chapterWrapUpOpener?.focus();
+}
+function chapterWrapUpSource(n) {
+  captureDetailDraft();
+  const f = openFiles.find(f => f.path === n.file && !f.pendingCreate);
+  const draft = detailDrafts.get(currentProject + ':' + n.id)?.content;
+  // 仅当前正文缓冲区或此节点草稿优先，磁盘节点提供兜底。
+  return { content:f?.dirty ? f.content : (draft ?? n.content ?? ''), dirty:!!f?.dirty || draft != null };
+}
+function openChapterWrapUp(id) {
+  if (writingBusy) { showToast('先停止当前执行，再创建收尾任务', 'info'); return; }
+  const chapters = nodes.filter(n => n.label === '章节' && !isGlobalBoardNode(n)).sort((a,b) => (nodeAxisData(a).chapter || 0) - (nodeAxisData(b).chapter || 0));
+  if (!chapters.length) { showToast('先创建或扫描正文章节', 'info'); return; }
+  const current = id || (activeEditorKind === 'file' ? chapters.find(n=>n.file===activeFilePath)?.id : currentDetailNodeId);
+  chapterWrapUpProject = currentProject; chapterWrapUpOpener = document.activeElement;
+  const select = document.getElementById('chapterWrapUpSelect');
+  select.replaceChildren(new Option('选择收尾章节', ''), ...chapters.map(n=>new Option(n.title,n.id)));
+  select.value = chapters.some(n=>n.id===current) ? current : '';
+  document.querySelectorAll('#chapterWrapUpChecks input').forEach(el=>el.checked=true);
+  updateChapterWrapUpSource();
+  document.getElementById('chapterWrapUpModal').classList.add('show'); select.focus();
+}
+function updateChapterWrapUpSource() {
+  const n = nodeMap[document.getElementById('chapterWrapUpSelect').value];
+  const source = document.getElementById('chapterWrapUpSource');
+  source.textContent = n ? n.file + ' · ' + (chapterWrapUpSource(n).dirty ? '引用未保存草稿，发送前请确认定稿' : '引用已保存正文') : '请选择需要收尾的章节。';
+  document.getElementById('chapterWrapUpCreate').disabled = !n;
+}
+function createChapterWrapUpTask() {
+  if (chapterWrapUpProject !== currentProject) { closeChapterWrapUp(); showToast('项目已切换，请重新选择章节','info'); return; }
+  if (writingBusy) { showToast('先停止当前执行，再创建收尾任务','info'); return; }
+  const n = nodeMap[document.getElementById('chapterWrapUpSelect').value];
+  const checks = [...document.querySelectorAll('#chapterWrapUpChecks input:checked')].map(el=>el.value);
+  if (!n || n.label !== '章节' || !checks.length) { showToast('请选择章节和至少一项收尾内容','info'); return; }
+  const source = chapterWrapUpSource(n), chapter = nodeAxisData(n).chapter;
+  const instructions = {
+    characters:'人物状态：核对本章实际发生的变化，更新相关人物的状态、位置、实力、伤势、目标、关系与持有物，并标明状态截至章号。卡片已记录更晚章节时，保留当前状态，只补本章历史，不能倒退覆盖。',
+    foreshadows:'伏笔记录：区分新埋设、强化、实际回收和未来计划，附章号与原文依据；名字出现不能直接判定回收。更新已有记录，无充分证据的列为待核对。',
+    summary:'章节摘要：提炼本章已发生的事件、人物选择、转折和章末悬念。优先更新项目已有摘要文件；没有时新建「追踪/章节摘要.md」，按章节分节，保留其他章节记录。',
+    timeline:'时间线记录：整理本章事件顺序，区分剧情发生时间与写作时间，只记录正文明确的日期或相对时间。优先更新项目已有时间线 Markdown 文件；没有时新建「追踪/时间线.md」，按章节分节。事件列表使用明确的“第N章”标题；新建表格使用“事件ID、章节、事件、时间、依据”列，同一事件保留原 ID，便于与画布同步。不要把未知时间补成事实。'
+  };
+  const index = nodes.filter(x=>['角色','伏笔','上下文','大纲'].includes(x.label)&&!isGlobalBoardNode(x)).map(x=>'- '+x.label+' | '+x.title+' | '+x.file+' | 节点 '+x.id);
+  const nearby = nodes.filter(x=>x.label==='章节' && x.id!==n.id && nodeAxisData(x).chapter < chapter).sort((a,b)=>(nodeAxisData(b).chapter||0)-(nodeAxisData(a).chapter||0)).slice(0,2).map(x=>'- 前章：'+x.title+' | '+x.file+' | 节点 '+x.id);
+  let guide = [...nearby,...index].join('\n');
+  if (guide.length > 8000) guide = guide.slice(0,8000) + '\n索引已截断，请通过 list_nodes/search/read_file 补查其余资料。';
+  newWritingTask();
+  activeWritingTask.title = '本章收尾 · '+n.title;
+  activeWritingTask.structureNodeId = n.id;
+  activeWritingTask.wrapUp = { nodeId:n.id, file:n.file, chapter, checks, sourceContent:source.content, confirmed:{} };
+  document.getElementById('chatTask').value = 'outline'; document.getElementById('chatTask').dispatchEvent(new Event('change'));
+  document.getElementById('chatAllowProposals').checked = true; document.getElementById('chatMode').value = 'agent';
+  document.getElementById('chatTarget').value = n.file;
+  addSelectionToChat(n.file,n.title+'（收尾正文）','来源：'+n.file+'\n节点 ID：'+n.id+'\n'+(source.dirty?'未保存草稿，作为暂定依据。\n':'')+source.content,'','章节',false);
+  pendingRefs[pendingRefs.length-1].draft = source.dirty;
+  if (guide) addSelectionToChat('','收尾资料索引',guide,'','索引',false);
+  chatInput.value = '请完成「'+n.title+'」的本章收尾（'+(chapter ? '第'+chapter+'章' : '章号未明确')+'）。\n\n'+checks.map(k=>'- '+instructions[k]).join('\n')+'\n\n先读取本章、必要前文和待更新的资料全文。以本章为截止范围，不把后文、回忆、他人提及或计划当成本章新发生的事实。引用中如有草稿，明确标为暂定。只处理上面选中的项目，不修改正文；不要新建重复的人物或伏笔总表。每项结论给出章节、文件位置和依据；不能确认的保留原值。\n每个文件合并成一个待审提案，保留其他章节与其他人物内容，避免同文件提案互相冲突。修改必须通过 edit_node/edit_file 提案，审阅后才写盘。最后列出已核对、待审修改、待核对三类结果。';
+  writingTaskChanged(); saveWritingTasks(); updateWritingTaskHeader(); renderWritingChanges(); renderWritingContext(); requestChatSourcePreview();
+  writingChangesPanel.open=true;
+  closeChapterWrapUp(); chatInput.focus();
 }
 
 function startForeshadowTask(id, mode) {
@@ -192,7 +320,7 @@ function updateWritingTaskHeader() {
   title.textContent = activeWritingTask?.title || '新任务'; title.title = title.textContent;
   document.getElementById('chatTitle').textContent = '写作 Agent';
   const state = document.getElementById('agentTaskState');
-  state.textContent = writingStateLabels[activeWritingTask?.state] || '未开始';
+  state.textContent = writingTaskStateLabel(activeWritingTask);
   state.dataset.state = activeWritingTask?.state || 'idle';
   renderWritingTaskHistory();
 }
@@ -206,7 +334,7 @@ function renderWritingTaskHistory() {
     const button = document.createElement('button'); button.className = 'agentTaskItem'; button.classList.toggle('active', task.id === activeWritingTask?.id);
     button.setAttribute('aria-current', String(task.id === activeWritingTask?.id)); button.disabled = writingBusy;
     const name = document.createElement('strong'); name.textContent = task.title;
-    const meta = document.createElement('span'); meta.textContent = (writingStateLabels[task.state] || '已保存') + ' · ' + new Date(task.updated).toLocaleDateString('zh-CN');
+    const meta = document.createElement('span'); meta.textContent = writingTaskStateLabel(task) + ' · ' + new Date(task.updated).toLocaleDateString('zh-CN');
     const context = document.createElement('span'); const pending = (task.proposals || []).filter(p => p.state === 'pending').length;
     context.textContent = role + ' · ' + target + (pending ? ' · ' + pending + ' 项待审' : '');
     button.append(name,context,meta); button.onclick = () => activateWritingTask(task.id); host.appendChild(button);
@@ -250,7 +378,7 @@ function renderWritingContext() {
   const host = document.getElementById('chatContextTags'); host.replaceChildren();
   const origin = nodeMap[activeWritingTask?.structureNodeId];
   if (origin) {
-    const tag = document.createElement('button'); tag.className = 'agentContextTag agentContextFile'; tag.textContent = origin.label === '角色' ? '返回角色' : '返回伏笔'; tag.title = '返回画布：' + origin.title; tag.disabled = writingBusy;
+    const tag = document.createElement('button'); tag.className = 'agentContextTag agentContextFile'; tag.textContent = origin.label === '角色' ? '返回角色' : origin.label === '章节' ? '返回章节' : '返回伏笔'; tag.title = '返回画布：' + origin.title; tag.disabled = writingBusy;
     tag.onclick = () => { switchSidebarMode('canvas'); focusNode(origin.id); document.getElementById('chatDetailTab').click(); };
     host.appendChild(tag);
   }
@@ -418,6 +546,9 @@ function renderWritingProposals(list) {
     if (!owner && p.taskId) { owner = makeWritingTask(); owner.id = p.taskId; owner.title = p.title || '恢复的修改任务'; store.tasks.unshift(owner); }
     owner ||= activeWritingTask;
     if (!owner.proposals.some(x => x.id === p.id)) owner.proposals.push({ id:p.id, file:p.file, title:p.title, kind:p.kind, project:currentProject, state:'pending' });
+    const item=owner.proposals.find(x=>x.id===p.id);
+    if(owner.wrapUp && !item.wrapUpChecks) item.wrapUpChecks=guessWrapUpChecks(p,owner);
+    if(owner.wrapUp) for(const key of item.wrapUpChecks || []) delete owner.wrapUp.confirmed?.[key];
     if (owner.state !== 'running') owner.state = 'review';
     renderedProposalIds.add(p.id);
   }
@@ -438,16 +569,27 @@ async function getWritingProposal(id) {
 function renderWritingChanges() {
   const panel = writingChangesPanel, host = panel.querySelector('#chatChangesBody');
   const changes = activeWritingTask?.proposals || [], pending = changes.filter(p => p.state === 'pending').length;
-  panel.hidden = !changes.length;
-  panel.querySelector('#chatChangesSummary').textContent = '修改清单 · ' + changes.length + ' 项' + (pending ? ' · ' + pending + ' 待审阅' : ' · 已处理');
+  panel.hidden = !changes.length && !activeWritingTask?.wrapUp;
+  panel.querySelector('#chatChangesSummary').textContent = changes.length ? '修改清单 · ' + changes.length + ' 项' + (pending ? ' · ' + pending + ' 待审阅' : ' · 已处理') : '本章收尾进度';
   host.replaceChildren();
+  renderWrapUpProgress(host,activeWritingTask);
   for (const p of changes) {
     const card = document.createElement('div');
     card.className = 'chatProposal'; card.id = 'chat-proposal-' + p.id; card.dataset.state = p.state;
     card.innerHTML = '<div class="chatProposalInfo"><div class="chatProposalTitle"></div><div class="chatProposalMeta"></div></div><div class="chatProposalActions"><button class="review">查看差异</button><details class="chatProposalMore"><summary aria-label="更多修改操作">•••</summary><div><button class="adjust">继续调整</button><button class="reject">拒绝</button></div></details></div>';
     card.querySelector('.chatProposalTitle').textContent = p.title === p.file ? p.file.split(/[\\/]/).pop() : p.title || p.file || '文件修改';
     card.title = p.file;
-    card.querySelector('.chatProposalMeta').textContent = ({pending:'待审阅', applied:'已写入', rejected:'已拒绝', unavailable:'已不在待审清单'}[p.state] || '待审阅') + ' · ' + (p.kind === 'create' ? '新增内容' : p.kind === 'delete' ? '删除内容' : '修改内容');
+    card.querySelector('.chatProposalMeta').textContent = ({pending:'待审阅', applied:p.partial?'部分采纳':'已写入', rejected:'已拒绝', undone:'已撤销', unavailable:'已不在待审清单'}[p.state] || '待审阅') + ' · ' + (p.kind === 'create' ? '新增内容' : p.kind === 'delete' ? '删除内容' : '修改内容');
+    if(activeWritingTask?.wrapUp) {
+      const assignment=document.createElement('details'); assignment.className='wrapUpAssignment';
+      const summary=document.createElement('summary'); summary.textContent='收尾归属：'+((p.wrapUpChecks || []).map(k=>wrapUpLabels[k]).join('、') || '请选择'); assignment.appendChild(summary);
+      for(const key of activeWritingTask.wrapUp.checks) {
+        const label=document.createElement('label'), input=document.createElement('input'); input.type='checkbox'; input.checked=p.wrapUpChecks?.includes(key); input.disabled=writingBusy;
+        input.onchange=()=>{const task=activeWritingTask;p.wrapUpChecks=[...assignment.querySelectorAll('input:checked')].map(el=>el.value);task.wrapUp.confirmed={};saveWritingTasks();renderWritingChanges();updateWritingTaskHeader();}; input.value=key;
+        label.append(input,document.createTextNode(wrapUpLabels[key])); assignment.appendChild(label);
+      }
+      card.querySelector('.chatProposalInfo').appendChild(assignment);
+    }
     card.querySelector('.review').onclick = async () => {
       if (p.project && p.project !== currentProject) return;
       try {
@@ -471,10 +613,15 @@ function renderWritingChanges() {
         const d = await fetch('/api/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id }) }).then(r => r.json());
         if (d.error) throw new Error(d.error);
         markChatProposal(p.id, 'rejected');
+        removeFileReviewDraft((writingProposalCache.get(p.id)?.root || currentProject)+':'+p.id);
         if (currentFileProposal?.id === p.id) await dismissFileProposal(p);
       } catch (e) { showToast('拒绝失败：' + e.message, 'error'); }
     };
-    if (p.state !== 'pending') card.querySelector('.chatProposalActions').replaceChildren();
+    if (p.state !== 'pending') {
+      const actions=card.querySelector('.chatProposalActions'); actions.replaceChildren();
+      if(p.state==='applied' && p.applicationId) {const undo=document.createElement('button');undo.textContent='撤销采纳';undo.disabled=writingBusy;undo.onclick=()=>undoFileApplication(p.applicationId,p.file);actions.appendChild(undo);}
+      if(['applied','undone'].includes(p.state) && p.wrapUpChecks?.includes('timeline')) {const sync=document.createElement('button');sync.textContent='同步时间线';sync.disabled=writingBusy;sync.onclick=()=>openTimelineSync(p.file,activeWritingTask.wrapUp.chapter);actions.appendChild(sync);}
+    }
     else card.querySelectorAll('button').forEach(b => b.disabled = writingBusy);
     host.appendChild(card);
   }
@@ -482,21 +629,17 @@ function renderWritingChanges() {
   chatMessages.appendChild(panel);
 }
 
-function markChatProposal(id, state) {
+function markChatProposal(id, state, application) {
   for (const [project, store] of writingTaskStores) {
     const task = store.tasks.find(t => t.proposals.some(p => p.id === id));
     if (!task) continue;
-    task.proposals.find(p => p.id === id).state = state;
+    const p=task.proposals.find(p=>p.id===id); p.state=state;
+    if(application) {p.applicationId=application.id;p.partial=application.partial;}
+    if(task.wrapUp) for(const key of p.wrapUpChecks || []) delete task.wrapUp.confirmed?.[key];
     if (task.state === 'review' && task.proposals.every(p => p.state !== 'pending')) task.state = 'completed';
     saveWritingTasks(project);
   }
-  const card = document.getElementById('chat-proposal-' + id);
-  if (!card) return;
-  card.dataset.state = state;
-  card.querySelector('.chatProposalTitle').textContent = (state === 'applied' ? '已写入' : state === 'rejected' ? '已拒绝' : '已不在待审清单') + ' · ' + card.querySelector('.chatProposalMeta').textContent.split(' · ')[0];
-  card.querySelector('.chatProposalActions').replaceChildren();
-  const changes = activeWritingTask?.proposals || [], pending = changes.filter(p => p.state === 'pending').length;
-  writingChangesPanel.querySelector('#chatChangesSummary').textContent = '修改清单 · ' + changes.length + ' 项' + (pending ? ' · ' + pending + ' 待审阅' : ' · 已处理');
+  renderWritingChanges();
   updateWritingTaskHeader();
 }
 
@@ -623,12 +766,27 @@ document.getElementById('writingToolsBtn').onclick = e => {
   e.stopPropagation();
   const r = e.currentTarget.getBoundingClientRect();
   showMenu(r.left, r.bottom + 4, [
+    { label: '本章收尾', action: () => openChapterWrapUp() },
     { label: '生成下一章', action: runWriteChapter },
     { label: '人物推进', action: () => runAdvance() },
     { label: '章节核心', action: runCores },
     { label: '卷管理', action: runVolumes }
   ]);
 };
+document.getElementById('chapterWrapUpClose').onclick = closeChapterWrapUp;
+document.getElementById('chapterWrapUpSelect').onchange = updateChapterWrapUpSource;
+document.getElementById('chapterWrapUpCreate').onclick = createChapterWrapUpTask;
+document.getElementById('chapterWrapUpModal').onclick = e => { if (e.target.id === 'chapterWrapUpModal') closeChapterWrapUp(); };
+document.addEventListener('keydown', e => {
+  const modal=document.getElementById('chapterWrapUpModal');
+  if (!modal.classList.contains('show')) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeChapterWrapUp(); }
+  if (e.key === 'Tab') {
+    const focusable=[...modal.querySelectorAll('button:not(:disabled),select,input')],first=focusable[0],last=focusable[focusable.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+  }
+});
 document.getElementById('chatAttachActive').onclick = () => {
   const f = openFiles.find(f => f.path === activeFilePath);
   const n = nodeMap[currentDetailNodeId];
@@ -649,7 +807,12 @@ document.getElementById('chatDetailTab').onclick = () => {
 document.getElementById('detailShow').addEventListener('click', () => { if (chatDockNow() === 'right' && !isChatCollapsed()) toggleChat(); });
 document.getElementById('chatStop').addEventListener('click', () => writingPreparing?.abort());
 chatInput.addEventListener('input', () => { chatInput.style.height = 'auto'; chatInput.style.height = Math.min(160, chatInput.scrollHeight) + 'px'; writingTaskChanged(); });
-document.addEventListener('projectDataUpdated', () => refreshChatTargets());
+document.addEventListener('projectDataUpdated', () => { refreshChatTargets(); renderWritingChanges(); updateWritingTaskHeader(); });
+let wrapUpRefreshTimer=null;
+document.addEventListener('input',e=>{
+  if(!activeWritingTask?.wrapUp || !['fileContent','editContent'].includes(e.target.id)) return;
+  clearTimeout(wrapUpRefreshTimer);wrapUpRefreshTimer=setTimeout(()=>{renderWritingChanges();updateWritingTaskHeader();},180);
+});
 document.addEventListener('detailNodeChanged', () => { if (!writingBusy) refreshChatTargets(); });
 document.addEventListener('activeFileChanged', () => { if (!writingBusy) requestChatSourcePreview(); });
 document.getElementById('projectSelect').addEventListener('change', () => {

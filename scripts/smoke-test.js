@@ -956,15 +956,15 @@ async function main() {
     let o;
     try { o = JSON.parse(v); } catch (_) { return v; }
     const { validatePlotProposals } = require(path.join(root, 'server.js'));
-    const realName = o.refName || '';
+    const realName = o.refName || '冒烟测试伏笔';
     const p = {
       title: 'T', trigger: 't', conflict: 'c', payoff: 'p', risk: 'r', span: '1 章', differsFrom: '首案',
       uses: [
-        { kind: 'foreshadow', name: realName || '占位' },
+        { kind: 'foreshadow', name: realName },
         { kind: 'role', name: '根本没这个人XYZ' }
       ]
     };
-    const r = validatePlotProposals([p], { foreshadow: realName ? [realName] : [], role: [], setting: [] }, 1);
+    const r = validatePlotProposals([p], { foreshadow: [realName], role: [], setting: [] }, 1);
     if (!r.ok) return '校验失败: ' + r.error;
     const uses = r.proposals[0].uses;
     const invented = r.proposals[0].invented;

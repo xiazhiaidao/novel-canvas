@@ -2151,6 +2151,7 @@
           <div id="axisXLabels" aria-label="章节刻度"></div>
           <div id="axisCorner"><span id="axisRulerName">剧情进度</span><small>章号 →</small></div>
           <div id="axisCursorX" hidden></div><div id="axisCursorY" hidden></div>
+          <section id="axisOverview" aria-label="全书概览" hidden></section>
           <div id="axisBar">
             <select id="axisYModeSel" title="Y 轴划分方式：按卷 / 按境界 / 按剧情关键节点 / 按进度">
               <option value="volume">Y:按卷</option>
@@ -2168,6 +2169,7 @@
             <span class="barLabel" title="输入章号回车跳转">跳转</span>
             <input id="axisJump" type="number" min="1" step="1" placeholder="章号" title="输入章号回车跳转">
             <button id="axisFitAllBtn" class="barBtn" title="缩放让所有章节可见（看整体分布）">全图</button>
+            <span id="axisDensityLabel" role="status" title="缩放自动切换：全书概览 / 章节简览 / 内容详情">内容详情</span>
             <button id="axisZoomOut" class="barBtn" title="缩小画布" aria-label="缩小画布">−</button><span id="axisZoomValue">100%</span><button id="axisZoomIn" class="barBtn" title="放大画布" aria-label="放大画布">＋</button>
             <div id="axisTicks" title="章节刻度：高亮=该章有内容，点击跳转"></div>
             <span id="axisStats" class="barStats"></span>
@@ -2656,8 +2658,26 @@
       </div>
     </div>
   </div>
+  <div id="chapterWrapUpModal" class="modal-mask">
+    <div class="modal chapterWrapUpCard" role="dialog" aria-modal="true" aria-labelledby="chapterWrapUpTitle">
+      <div class="modalHead"><div class="modalTitleMain" id="chapterWrapUpTitle">本章收尾</div><button class="modalClose" id="chapterWrapUpClose" aria-label="关闭本章收尾">✕</button></div>
+      <div class="modalBody">
+        <label for="chapterWrapUpSelect">收尾章节</label><select id="chapterWrapUpSelect"></select>
+        <p id="chapterWrapUpSource"></p>
+        <fieldset id="chapterWrapUpChecks"><legend>需要整理的资料</legend>
+          <label><input type="checkbox" value="characters" checked>人物状态 <small>位置、伤势、关系与持有物</small></label>
+          <label><input type="checkbox" value="foreshadows" checked>伏笔记录 <small>新增埋设、强化与实际回收</small></label>
+          <label><input type="checkbox" value="summary" checked>章节摘要 <small>事件、转折与章末悬念</small></label>
+          <label><input type="checkbox" value="timeline" checked>时间线记录 <small>事件顺序与正文明确的时间</small></label>
+        </fieldset>
+        <p class="chapterWrapUpHint">创建独立 Agent 任务，发送后核对原文并提出资料修改，各项分别审阅。时间线先写入 Markdown，再预览同步到画布。</p>
+        <button id="chapterWrapUpCreate" class="primary">创建收尾任务</button>
+      </div>
+    </div>
+  </div>
   <div id="toastWrap"></div>
 
+<script src="review_diff.js"></script>
 <script src="canvas_upgrade.js"></script>
 <script src="app.js"></script>
 <script src="file_editor.js"></script>

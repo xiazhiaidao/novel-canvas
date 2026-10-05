@@ -8,6 +8,15 @@ let activeFilePath = null;
 let fileTreeLoaded = false;
 let fileSelectedDirPath = '';
 let currentFileProposal = null;
+const fileReviewDrafts = new Map();
+function filePathKey(file) { return String(file || '').replace(/\\/g,'/'); }
+function fileReviewStorageKey(key) { return 'novelFileReview_'+encodeURIComponent(key); }
+function saveFileReviewDraft(key,draft) {
+  try { localStorage.setItem(fileReviewStorageKey(key),JSON.stringify({before:draft.before,after:draft.after,selected:[...draft.selected],replacements:[...draft.replacements]})); }
+  catch(_) { showToast('审阅草稿保存失败，请保留当前窗口','error'); }
+}
+function removeFileReviewDraft(key) { fileReviewDrafts.delete(key); localStorage.removeItem(fileReviewStorageKey(key)); }
+let fileReviewApplying = false;
 let dragTabPath = null;
 let autosaveTimer = null;
 const FILE_AUTOSAVE_DELAY = 3000; // 停止输入 3 秒后自动保存
@@ -532,12 +541,15 @@ function renderFileEditor() {
     '<div class="fileToolbar">' +
       '<span class="filePath" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.name.replace(/\.md$/i,'')) + '</span>' +
       '<div class="fileActions">' +
+        (nodes.some(n=>n.file===f.path && n.label==='章节') ? '<button id="fileWrapUpBtn">本章收尾</button>' : '') +
         '<button id="filePreviewBtn">预览</button>' +
         '<button id="fileSaveBtn">保存</button>' +
         '<details class="fileTools"><summary>写作工具</summary><div>' +
         '<button id="fileDeslopBtn" title="离线检测 AI 味（纯本地规则，不调用大模型；判定权始终在你）">AI 味检测</button>' +
         '<button id="fileSelChatBtn" class="fileChatBtn" title="选中文字加入对话；未选中则加入整个文件">选中加入对话</button>' +
         '<button id="fileEditAiBtn" title="AI 续写 / AI 改写">AI 修改</button>' +
+        '<button id="fileUndoProposalBtn" hidden>撤销最近采纳</button>' +
+        '<button id="fileTimelineSyncBtn">同步到时间线</button>' +
         '<button id="fileDeleteBtn" class="danger">删除</button>' +
         '</div></details>' +
       '</div>' +
@@ -582,6 +594,9 @@ function renderFileEditor() {
     renderFileTabs();
   });
   document.getElementById('fileSaveBtn').addEventListener('click', saveActiveFile);
+  document.getElementById('fileWrapUpBtn')?.addEventListener('click', () => openChapterWrapUp(nodes.find(n=>n.file===f.path && n.label==='章节')?.id));
+  document.getElementById('fileTimelineSyncBtn').onclick=()=>openTimelineSync(f.path);
+  loadFileUndoAction(f);
   initFileFindReplace(ta, f);
   if (pendingFileJumpLine > 0) {
     const targetLine = pendingFileJumpLine;
@@ -983,21 +998,67 @@ function renderFileProposal(proposal) {
   const change = fileProposalChange(proposal);
   const sourceNode = proposal.nodeId ? nodeMap[proposal.nodeId] : nodes.find(n => n.file === proposal.file && n.content === proposal.oldContent);
   const baseLine = ['edit', 'delete'].includes(proposal.kind) ? (sourceNode?.startLine || 1) : 1;
+  const selectable = ['edit','file_edit'].includes(proposal.kind);
+  const review = selectable ? NovelReview.diff(proposal.oldContent || '',proposal.newContent || '') : null;
+  const key = (proposal.root || currentProject) + ':' + proposal.id;
+  let draft = fileReviewDrafts.get(key);
+  if(selectable && !draft) {
+    try {
+      const saved=JSON.parse(localStorage.getItem(fileReviewStorageKey(key)) || 'null');
+      if(saved && saved.before===proposal.oldContent && saved.after===proposal.newContent && Array.isArray(saved.selected) && Array.isArray(saved.replacements) && saved.selected.every(i=>Number.isInteger(i)&&i>=0&&i<review.hunks.length) && saved.replacements.every(x=>Array.isArray(x)&&Number.isInteger(x[0])&&x[0]>=0&&x[0]<review.hunks.length&&typeof x[1]==='string')) {
+        draft={...saved,selected:new Set(saved.selected),replacements:new Map(saved.replacements)};fileReviewDrafts.set(key,draft);
+      }
+    } catch(_) {}
+  }
+  if (selectable && (!draft || draft.before !== proposal.oldContent || draft.after !== proposal.newContent)) {
+    draft = { before:proposal.oldContent, after:proposal.newContent, selected:new Set(review.hunks.map((_,i)=>i)), replacements:new Map() };
+    fileReviewDrafts.set(key,draft);
+  }
   box.innerHTML =
     '<div class="fileDiffBox">' +
       '<h4>AI 修改「' + escapeHtml(proposal.title || proposal.file) + '」</h4>' +
-      '<div class="fileReviewChanges"><section><div class="fileReviewLabel">原文变更区间（区间内可能含未修改行）</div>' +
+      (selectable ? '<div class="fileReviewToolbar"><button class="selectAll">全选</button><button class="selectNone">全不选</button><span class="fileReviewCount" role="status"></span></div><p class="fileReviewHint">未勾选的改动保留原文；采纳所选后结束本次提案。</p><div class="fileReviewHunks"></div>' : '<div class="fileReviewChanges"><section><div class="fileReviewLabel">原文变更区间（区间内可能含未修改行）</div>' +
       change.removed.map((line, i) => '<div class="fileReviewLine removed">− ' + (baseLine + change.line - 1 + i) + '  ' + escapeHtml(line) + '</div>').join('') +
-      '</section><section><div class="fileReviewLabel">建议替换为</div>' + change.added.map(line => '<div class="fileReviewLine added">＋ ' + escapeHtml(line) + '</div>').join('') + '</section></div>' +
+      '</section><section><div class="fileReviewLabel">建议替换为</div>' + change.added.map(line => '<div class="fileReviewLine added">＋ ' + escapeHtml(line) + '</div>').join('') + '</section></div>') +
       '<button class="locateOriginal">定位原文</button><details><summary>查看完整修改前后内容</summary><div class="fileDiffCols">' +
         '<div><div class="fileDiffLabel old">旧内容</div><pre class="old">' + escapeHtml(proposal.oldContent || '（空）') + '</pre></div>' +
         '<div><div class="fileDiffLabel new">新内容</div><pre class="new">' + escapeHtml(proposal.newContent || '（空）') + '</pre></div>' +
-      '</div></details>' +
+      '</div></details>' + (selectable ? '<details class="fileReviewMerged"><summary>预览所选改动合并后的内容</summary><pre></pre></details>' : '') +
       '<div class="fileDiffActions">' +
         '<button class="reject">拒绝修改</button><button class="adjust">继续调整</button><button class="return">返回正文</button>' +
         '<button class="accept">接受修改</button>' +
       '</div>' +
     '</div>';
+  if (selectable) {
+    const host = box.querySelector('.fileReviewHunks');
+    if (review.coarse) { const note=document.createElement('p'); note.className='fileReviewHint'; note.textContent='差异较大，合并为一个改动区间。请编辑建议或查看完整内容后采纳。'; host.appendChild(note); }
+    if (!review.hunks.length) { const note=document.createElement('p'); note.textContent='建议与原文一致，没有可采纳的改动。'; host.appendChild(note); }
+    const updateSelection = () => {
+      saveFileReviewDraft(key,draft);
+      box.querySelector('.fileReviewCount').textContent = '已选 '+draft.selected.size+' / '+review.hunks.length+' 段';
+      const accept=box.querySelector('.accept'); accept.disabled=!draft.selected.size || fileReviewApplying;
+      accept.textContent='采纳所选（'+draft.selected.size+'）';
+      const selected = [...draft.selected].map(index=>({index,content:draft.replacements.get(index)}));
+      box.querySelector('.fileReviewMerged pre').textContent = selected.length ? NovelReview.apply(proposal.oldContent || '',proposal.newContent || '',selected).content : proposal.oldContent || '（空）';
+      host.querySelectorAll('.fileReviewHunk').forEach(row=>{ const index=Number(row.dataset.index); row.classList.toggle('unselected',!draft.selected.has(index)); row.querySelector('input').checked=draft.selected.has(index); });
+    };
+    review.hunks.forEach((h,i)=>{
+      const row=document.createElement('section'); row.className='fileReviewHunk'; row.dataset.index=i;
+      row.innerHTML='<div class="fileReviewHunkHead"><label><input type="checkbox">采纳第 '+(i+1)+' 段</label><span>原文第 '+(baseLine+h.oldStart)+' 行'+(h.removed.length>1?'–'+(baseLine+h.oldEnd-1)+' 行':'')+'</span><button class="editSuggestion">编辑建议</button><button class="locateHunk">定位</button></div><div class="fileReviewChanges"><section><div class="fileReviewLabel">原文</div><pre class="removed"></pre></section><section><div class="fileReviewLabel">建议</div><pre class="added"></pre></section></div><label class="fileReviewEdit" hidden>采纳此段时写入的内容<textarea spellcheck="false" aria-label="编辑第 '+(i+1)+' 段建议"></textarea><small>直接编辑替换文本；删除段保留空文本，插入或替换段请保留需要的换行。</small></label>';
+      row.querySelector('.removed').textContent=h.removed.join('') || '（此处插入）';
+      row.querySelector('.added').textContent=draft.replacements.get(i) ?? (h.added.join('') || '（删除此段）');
+      const ta=row.querySelector('textarea'); ta.value=draft.replacements.get(i) ?? h.added.join('');
+      const editor=row.querySelector('.fileReviewEdit'); editor.hidden=!draft.replacements.has(i);
+      row.querySelector('input').onchange=e=>{ if(e.target.checked)draft.selected.add(i);else draft.selected.delete(i);updateSelection(); };
+      ta.oninput=()=>{ const eol=(h.added.join('') || h.removed.join('')).includes('\r\n')?'\r\n':'\n'; draft.replacements.set(i,ta.value.replace(/\n/g,eol)); row.querySelector('.added').textContent=ta.value || '（删除此段）'; updateSelection(); };
+      row.querySelector('.editSuggestion').onclick=()=>{ editor.hidden=!editor.hidden; if(!editor.hidden)ta.focus(); };
+      row.querySelector('.locateHunk').onclick=()=>{ document.getElementById('fileEditorBody').classList.remove('reviewing-proposal'); jumpTextareaToLine(document.getElementById('fileContent'),baseLine+h.oldStart); };
+      host.appendChild(row);
+    });
+    box.querySelector('.selectAll').onclick=()=>{review.hunks.forEach((_,i)=>draft.selected.add(i));updateSelection();};
+    box.querySelector('.selectNone').onclick=()=>{draft.selected.clear();updateSelection();};
+    updateSelection();
+  }
   box.querySelector('.accept').addEventListener('click', () => acceptFileProposal(proposal.id));
   box.querySelector('.locateOriginal').onclick = () => {
     document.getElementById('fileEditorBody').classList.remove('reviewing-proposal');
@@ -1021,6 +1082,7 @@ function renderFileProposal(proposal) {
       }).then(r => r.json());
       if (d.error) throw new Error(d.error);
       if (typeof markChatProposal === 'function') markChatProposal(proposal.id, 'rejected');
+      removeFileReviewDraft((proposal.root || currentProject)+':'+proposal.id);
       await dismissFileProposal(proposal);
     } catch (e) { showToast('拒绝失败：' + e.message, 'error'); }
   });
@@ -1029,23 +1091,32 @@ function renderFileProposal(proposal) {
 async function acceptFileProposal(id) {
   const p = currentFileProposal;
   if (!p || p.id !== id) return;
+  if (fileReviewApplying) return;
   const project = currentProject;
+  const draftKey=(p.root || project)+':'+id;
+  const draft = fileReviewDrafts.get(draftKey);
+  const selectedHunks = ['edit','file_edit'].includes(p.kind) && draft ? [...draft.selected].map(index=>({index,content:draft.replacements.get(index)})) : undefined;
+  if (selectedHunks && !selectedHunks.length) { showToast('请至少选择一段改动','info'); return; }
   const opened = openFiles.find(f => f.path === p.file);
   const reviewBuffer = opened?.content;
   if (opened && opened.dirty) {
     showToast('文件有未保存修改，请先保存或处理草稿，再接受提案', 'error');
     return;
   }
+  fileReviewApplying = true;
+  const reviewBox = document.getElementById('fileProposalBox');
+  reviewBox?.querySelectorAll('button,input,textarea').forEach(el=>el.disabled=true);
   try {
     const res = await fetch('/api/apply_proposal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, project })
+      body: JSON.stringify({ id, project, selectedHunks })
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    removeFileReviewDraft(draftKey);
     if (project !== currentProject) return;
-    if (typeof markChatProposal === 'function') markChatProposal(id, 'applied');
+    if (typeof markChatProposal === 'function') markChatProposal(id, 'applied', data.application);
     const f = openFiles.find(x => x.path === p.file);
     if (f) {
       const readRes = await fetch('/api/file?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(p.file));
@@ -1057,18 +1128,131 @@ async function acceptFileProposal(id) {
         f.pendingCreate = false;
       }
     }
-    const box = document.getElementById('fileProposalBox');
-    if (box) box.innerHTML = '';
-    currentFileProposal = null;
+    const reviewingSame = currentFileProposal?.id === id;
+    if (reviewingSame) {
+      const box = document.getElementById('fileProposalBox');
+      if (box) box.innerHTML = '';
+      currentFileProposal = null;
+    }
     renderFileTabs();
-    renderFileEditor();
+    if (reviewingSame && activeFilePath === p.file) renderFileEditor();
     plotDevices = []; // 写盘成功后，下次打开剧情页重新读取已采纳记录
     await refreshProjectMonitor().catch(() => {});
     if (fileMode) await loadFileTree();
-    showToast('已接受修改并写回文件', 'success');
+    showToast(selectedHunks ? '已采纳 '+selectedHunks.length+' 段并写回文件' : '已接受修改并写回文件', 'success');
   } catch (e) {
     showToast('接受失败：' + e.message, 'error');
+  } finally {
+    fileReviewApplying = false;
+    if (project === currentProject && currentFileProposal?.id === id) renderFileProposal(currentFileProposal);
   }
 }
+
+async function loadFileUndoAction(f) {
+  const project=currentProject, button=document.getElementById('fileUndoProposalBtn');
+  if(!button || f.pendingCreate) return;
+  try {
+    const data=await fetch('/api/proposals/applied?project='+encodeURIComponent(project)).then(r=>r.json());
+    if(project!==currentProject || button!==document.getElementById('fileUndoProposalBtn') || activeFilePath!==f.path) return;
+    const entry=data.applications?.find(a=>filePathKey(a.file)===filePathKey(f.path) && a.state==='applied');
+    button.hidden=!entry;
+    if(entry) button.onclick=()=>undoFileApplication(entry.id,f.path);
+  } catch(_) {}
+}
+const undoingApplications=new Set();
+async function undoFileApplication(id,file) {
+  const project=currentProject;
+  if(undoingApplications.has(id)) return;
+  const opened=openFiles.find(f=>f.path===file);
+  if(opened?.dirty) {showToast('请先保存或处理未保存草稿，再撤销采纳','info');return;}
+  if(!await confirmDialog('撤销对「'+file+'」的这次采纳？将恢复采纳前的内容；采纳后有其他修改时会停止撤销。')) return;
+  if(project!==currentProject || openFiles.some(f=>f.path===file&&f.dirty)) return;
+  undoingApplications.add(id);
+  const before=opened?.content;
+  try {
+    const data=await fetch('/api/proposals/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project,id})}).then(r=>r.json());
+    if(data.error) throw new Error(data.error);
+    // 即使等待期间切换小说，也更新原任务的持久记录。
+    markChatProposal(data.proposalId,'undone');
+    if(project!==currentProject) return;
+    const f=openFiles.find(f=>f.path===file);
+    if(f) {
+      if(data.removed) {
+        if(f.content===before) {openFiles=openFiles.filter(x=>x!==f);if(activeFilePath===file)activeFilePath=openFiles[0]?.path || null;}
+        else {f.pendingCreate=true;f.savedContent='';f.dirty=true;}
+      } else {
+        const rd=await fetch('/api/file?project='+encodeURIComponent(project)+'&path='+encodeURIComponent(file)).then(r=>r.json());
+        if(rd.error) throw new Error(rd.error);
+        if(project!==currentProject) return;
+        if(f.content===before) f.content=rd.content;
+        f.savedContent=rd.content;f.dirty=f.content!==rd.content;
+      }
+    }
+    if(currentFileProposal?.file===file) {currentFileProposal=null;document.getElementById('fileProposalBox')?.replaceChildren();}
+    plotDevices=[];renderFileTabs();renderFileEditor();await refreshProjectMonitor();if(fileMode)await loadFileTree();
+    showToast('已撤销本次采纳。若已同步画布，可重新预览时间线以核对节点。','success');
+  } catch(e) {showToast('撤销失败：'+e.message,'error');}
+  finally {undoingApplications.delete(id);}
+}
+
+let timelineSyncPreview=null, timelineSyncOpener=null, timelineSyncRequest=0, timelineSyncBusy=false;
+const timelineSyncModal=document.createElement('div'); timelineSyncModal.id='timelineSyncModal';timelineSyncModal.className='modal-mask';
+timelineSyncModal.innerHTML='<div class="modal timelineSyncCard" role="dialog" aria-modal="true" aria-labelledby="timelineSyncTitle"><div class="modalHead"><div class="modalTitleMain" id="timelineSyncTitle">同步到画布时间线</div><button class="modalClose" aria-label="关闭时间线同步">✕</button></div><p class="timelineSyncSource"></p><p class="timelineSyncHint">读取已保存的 Markdown。请核对事件、章号和来源；删除默认不勾选。没有事件 ID 的记录按章节与顺序匹配。</p><div class="timelineSyncRows"></div><div class="timelineSyncActions"><button class="syncRefresh">重新预览</button><button class="syncApply primary" disabled>同步所选</button></div></div>';
+document.body.appendChild(timelineSyncModal);
+function closeTimelineSync() {if(timelineSyncBusy)return;timelineSyncRequest++;timelineSyncModal.classList.remove('show');timelineSyncOpener?.focus();}
+timelineSyncModal.querySelector('.modalClose').onclick=closeTimelineSync;
+timelineSyncModal.onclick=e=>{if(e.target===timelineSyncModal)closeTimelineSync();};
+timelineSyncModal.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeTimelineSync();}
+  if(e.key==='Tab'){const items=[...timelineSyncModal.querySelectorAll('button:not(:disabled),input:not(:disabled)')].filter(el=>el.getClientRects().length);const first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}
+});
+async function openTimelineSync(file,chapter) {
+  if(timelineSyncBusy) return;
+  if(openFiles.some(f=>f.path===file && f.dirty)) {showToast('请先保存时间线记录，再预览同步','info');return;}
+  const project=currentProject, seq=++timelineSyncRequest;
+  if(!timelineSyncModal.classList.contains('show')) timelineSyncOpener=document.activeElement;
+  timelineSyncPreview={project,file,chapter};timelineSyncModal.classList.add('show');
+  timelineSyncModal.querySelector('.timelineSyncSource').textContent=file+(chapter?' · 第'+chapter+'章':'');
+  const host=timelineSyncModal.querySelector('.timelineSyncRows'), apply=timelineSyncModal.querySelector('.syncApply');
+  host.textContent='正在读取事件…';apply.disabled=true;timelineSyncModal.querySelector('.modalClose').focus();
+  try {
+    // 仅冲刷作者已安排的布局保存；打开预览本身不写画布。
+    if(layoutTimer!=null) await postLayout(); else await layoutSavePromise;
+    if(project!==currentProject || seq!==timelineSyncRequest) return;
+    const data=await fetch('/api/timeline/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project,path:file,chapter})}).then(r=>r.json());
+    if(project!==currentProject || seq!==timelineSyncRequest) return;
+    if(data.error) throw new Error(data.error);
+    timelineSyncPreview={project,file,chapter,...data,pinSnapshot:JSON.stringify(timelineNodes)};host.replaceChildren();
+    if(!data.operations.length) host.textContent=data.events ? '画布与记录已一致，没有需要同步的改动。' : '没有找到带明确章号的事件。请使用“## 第N章”加事件列表，或“章节／事件／时间”表格。';
+    data.operations.forEach((op,i)=>{
+      const row=document.createElement('label');row.className='timelineSyncRow';
+      const input=document.createElement('input');input.type='checkbox';input.value=i;input.checked=op.action!=='delete';
+      const text=document.createElement('span'), title=document.createElement('strong'), note=document.createElement('small');
+      const event=op.next || op.before;title.textContent=({add:'新增',update:'更新',delete:'删除'}[op.action])+' · 第'+event.chapter+'章 · '+event.title;
+      note.textContent='来源：'+file+' 第'+event.sourceLine+'行'+(op.action==='update'?' · 原记录：'+op.before.title+' / '+op.before.note:'')+(event.note?' · '+event.note:'');
+      text.append(title,note);row.append(input,text);host.appendChild(row);
+      input.onchange=()=>{apply.disabled=!host.querySelector('input:checked');};
+    });
+    apply.disabled=!host.querySelector('input:checked');
+  } catch(e) {if(seq===timelineSyncRequest)host.textContent='预览失败：'+e.message;}
+}
+timelineSyncModal.querySelector('.syncRefresh').onclick=()=>{const p=timelineSyncPreview;if(p)openTimelineSync(p.file,p.chapter);};
+timelineSyncModal.querySelector('.syncApply').onclick=async()=>{
+  const p=timelineSyncPreview;if(!p?.token || p.project!==currentProject || timelineSyncBusy)return;
+  const selected=[...timelineSyncModal.querySelectorAll('.timelineSyncRows input:checked')].map(el=>Number(el.value));
+  if(!selected.length)return;
+  timelineSyncBusy=true;timelineSyncModal.querySelectorAll('button,input').forEach(el=>el.disabled=true);
+  try {
+    if(p.pinSnapshot!==JSON.stringify(timelineNodes))throw new Error('画布时间线已变化');
+    clearTimeout(layoutTimer);await layoutSavePromise;
+    if(p.project!==currentProject)return;
+    const data=await fetch('/api/timeline/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:p.project,path:p.file,chapter:p.chapter,token:p.token,selected})}).then(r=>r.json());
+    if(data.error)throw new Error(data.error);
+    if(p.project!==currentProject)return;
+    timelineNodes=data.events;renderAxisView();applyAxisTransform();renderTimelineList();saveLayout();
+    timelineSyncBusy=false;closeTimelineSync();showToast('已同步 '+data.changed+' 项时间线改动','success');
+  } catch(e) {showToast('同步失败：'+e.message+'；请重新预览','error');}
+  finally {timelineSyncBusy=false;timelineSyncModal.querySelectorAll('button,input').forEach(el=>el.disabled=false);if(timelineSyncModal.classList.contains('show'))timelineSyncModal.querySelector('.syncApply').disabled=true;}
+};
 
 initFileEditor();

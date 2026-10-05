@@ -13,6 +13,8 @@ const files = [
   'app.js',
   'canvas_upgrade.js',
   'file_editor.js',
+  'review_diff.js',
+  'timeline_sync.js',
   'chat_workspace.js',
   'chat_workspace.css',
   'canvas_theme.css',
